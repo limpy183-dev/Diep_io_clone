@@ -74,6 +74,43 @@
     else if (!best) game.notify('Nothing of yours to take control of nearby', 60);
   }
 
+  // ------------------------------------------------------------------ chat
+  // Offline the command runs against the local sim; online everything that
+  // touches the world is sent to the server, which owns the real answer.
+  function openChat(prefill) {
+    for (var kk in keys) keys[kk] = false;      // stop moving the moment you type
+    mouse.left = mouse.right = false;
+    CHAT.open(prefill);
+  }
+
+  function myName() {
+    var p = player();
+    return (p && p.name) || nameInput.value.trim() || 'you';
+  }
+
+  function chatContext() {
+    var say = function (t) { CHAT.push('system', null, t, null); };
+    return {
+      game: game, tank: player(), online: online, name: myName(),
+      sandbox: !online || !!(game && game.mode.sandbox),
+      say: say, broadcast: say
+    };
+  }
+
+  function sendChat(text) {
+    if (online) { net.sendChat(text); return; }
+    var p = player();
+    CHAT.push('player', myName(), text, p ? p.fill : null);
+    // the bots are not smart, but they are opinionated
+    if (Math.random() < 0.35) setTimeout(function () {
+      if (!running || online) return;
+      var r = botReplyLine(game);
+      if (r) CHAT.push('player', r.name, r.text, r.fill);
+    }, 700 + Math.random() * 2200);
+  }
+
+  CHAT.init({ send: sendChat, context: chatContext, online: function () { return online; } });
+
   function doRespawn() {
     if (online) net.respawn();
     else game.respawnPlayer(nameInput.value.trim());
@@ -101,8 +138,12 @@
   var STAT_KEYS = ['1', '2', '3', '4', '5', '6', '7', '8'];
 
   window.addEventListener('keydown', function (e) {
-    if (!running) return;
+    if (!running || CHAT.isOpen()) return;
     var k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+    // T or Enter opens chat. Everything below is keyboard the game owns, so it
+    // has to stop here or the first letter you type also buys an upgrade.
+    if (k === 't' || k === 'Enter') { e.preventDefault(); openChat(); return; }
+    if (k === '/') { e.preventDefault(); openChat('/'); return; }
     if (keys[k] && (k === 'e' || k === 'c')) return;   // ignore auto-repeat on toggles
     keys[k] = true;
     var p = player();
@@ -139,6 +180,7 @@
   });
 
   window.addEventListener('keyup', function (e) {
+    if (CHAT.isOpen()) return;
     var k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
     keys[k] = false;
     var p = player();
@@ -184,10 +226,12 @@
       return true;                                   // swallow clicks behind the death screen
     }
     if (!p) return false;
-    var cards = renderer.upgradeRects(), i;
-    for (i = 0; i < cards.length; i++) {
-      var r = cards[i];
-      if (x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) { doUpgrade(r.id); return true; }
+    var lay = renderer.upgradeLayout(), i;
+    function inside(r) { return r && x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h; }
+    if (lay) {
+      for (i = 0; i < lay.cards.length; i++) if (inside(lay.cards[i])) { doUpgrade(lay.cards[i].id); return true; }
+      if (inside(lay.close) || inside(lay.ignore)) { renderer.upgradeHidden = true; return true; }
+      if (inside(lay.panel)) return true;             // panel swallows its own clicks
     }
     var stats = renderer.statRects();
     for (i = 0; i < stats.length; i++) {
@@ -214,12 +258,23 @@
   // ---------------------------------------------------------------- loop
   var acc = 0, last = 0, netAcc = 0;
 
+  // The upgrade cards own the top-left corner too; chat sits under them. Card
+  // geometry is canvas pixels, the overlay is CSS pixels.
+  function chatTop() {
+    var lay = renderer.upgradeLayout();
+    if (!lay) return 12;
+    var dpr = canvas.width / window.innerWidth;
+    return Math.round((lay.panel.y + lay.panel.h) / dpr) + 6;
+  }
+
   function frame(now) {
     if (!running) return;
     requestAnimationFrame(frame);
     if (!last) last = now;
     var dt = Math.min(250, now - last);
     last = now;
+    CHAT.fps = CHAT.fps * 0.92 + (1000 / Math.max(1, dt)) * 0.08;
+    CHAT.setTop(chatTop());
     readKeys();
 
     if (online) {
@@ -233,8 +288,9 @@
       if (netAcc >= MSPT) { netAcc = 0; net.sendInput(localInput, p.mouse, cheats); }
       flushQueue();
       net.clientTick();
-      renderer.updateCamera(dt);
-      renderer.render(net.alpha());
+      var a = net.alpha();
+      renderer.updateCamera(dt, a);
+      renderer.render(a);
       return;
     }
 
@@ -255,16 +311,48 @@
     }
     if (steps === 5) acc = 0;
     flushQueue();
-    renderer.updateCamera(dt);
-    renderer.render(acc / MSPT);
+    var alpha = acc / MSPT;
+    renderer.updateCamera(dt, alpha);
+    renderer.render(alpha);
+  }
+
+  // ------------------------------------------------- menu backdrop
+  // diep.io plays a live match behind its menu. Same trick: a headless game
+  // (no local player, so the HUD stays quiet) with the camera trailing the leader.
+  var bg = null, bgR = null, bgAcc = 0, bgLast = 0;
+
+  function bgFrame(now) {
+    if (running || !bg) { bg = bgR = null; return; }
+    requestAnimationFrame(bgFrame);
+    if (!bgLast) bgLast = now;
+    var dt = Math.min(250, now - bgLast); bgLast = now;
+    bgAcc += dt;
+    for (var n = 0; bgAcc >= MSPT && n < 3; n++) { bg.step(); bgAcc -= MSPT; }
+    // No one to watch: drift around the middle on two slow, out-of-phase circles.
+    var t = bg.tick / TPS;
+    bgR.cam.x = Math.cos(t * 0.10) * 1400;
+    bgR.cam.y = Math.sin(t * 0.073) * 1400;
+    bgR.render(bgAcc / MSPT);
+  }
+
+  function startBackdrop() {
+    if (bg || running) return;
+    bg = new Game('ffa', '', { headless: true, difficulty: 'medium', botCount: 30 });
+    bgR = new Renderer(canvas, bg);
+    bgR.cam.fov = 0.32;
+    bgAcc = 0; bgLast = 0;
+    requestAnimationFrame(bgFrame);
   }
 
   // ---------------------------------------------------------------- start
   function beginRender(g) {
+    bg = bgR = null;
     game = g;
     renderer = new Renderer(canvas, g);
     if (g.player) { renderer.cam.x = g.player.x; renderer.cam.y = g.player.y; }
     menu.style.display = 'none';
+    CHAT.show();
+    if (!online) CHAT.system('Press T or Enter to chat. Type /help for commands, /cheats for the rest.');
     running = true; last = 0; acc = 0; netAcc = 0;
     requestAnimationFrame(frame);
   }
@@ -277,8 +365,145 @@
     online = false; net = null;
     saveName();
     setStatus('');
-    beginRender(new Game(modeSelect.value, nameInput.value.trim()));
+    closePicker();
+    beginRender(new Game(modeSelect.value, nameInput.value.trim(), {
+      difficulty: difficultyArg(), botCount: sel === 'custom' ? botCount : undefined
+    }));
+    game.notify('Bots: ' + diffLabel(), 90);
   }
+
+  // -------------------------------------------------- bot difficulty picker
+  // Two ways in: the Play Offline button, and the "change" link on the menu.
+  // Both land here, so the setting is editable without committing to a match.
+  var picker = document.getElementById('picker');
+  var presetBox = document.getElementById('pk-presets');
+  var customBox = document.getElementById('pk-custom');
+  var knobBox = document.getElementById('pk-knobs');
+  var seedBox = document.getElementById('pk-seed');
+  var diffName = document.getElementById('diffname');
+
+  var DIFF_BLURB = {
+    easy: 'Barely aims, wanders off, never dodges. Free score.',
+    medium: 'Leads its shots a little and fights back. A fair game.',
+    hard: 'Kites, strafes, picks its fights and finishes them.',
+    veryhard: 'Dodges your fire, hunts you down, retreats to heal.',
+    extreme: 'Full intercept aim, no mistakes, and it wants you specifically.'
+  };
+  // Where each preset sits on the 0-10 sliders, for the seed chips.
+  var DIFF_SEED = { easy: 0, medium: 3.5, hard: 6.5, veryhard: 8.5, extreme: 10 };
+
+  var sel = 'medium';
+  var custom = { aim: 5, react: 5, dodge: 5, move: 5, aggro: 5, brain: 5 };
+  var botCount = 88;
+
+  function difficultyArg() {
+    if (sel !== 'custom') return sel;
+    var o = { label: 'Custom' };
+    BOT_KNOB_GROUPS.forEach(function (grp) { o[grp.key] = custom[grp.key]; });
+    return o;
+  }
+  function diffLabel() { return sel === 'custom' ? 'Custom' : BOT_SKILL[sel].label; }
+  function saveDiff() {
+    try { localStorage.setItem('ta_diff', JSON.stringify({ sel: sel, custom: custom, botCount: botCount })); } catch (e) { /* private mode */ }
+  }
+  function loadDiff() {
+    var s;
+    try { s = JSON.parse(localStorage.getItem('ta_diff') || 'null'); } catch (e) { s = null; }
+    if (!s) return;
+    if (s.sel === 'custom' || BOT_SKILL[s.sel]) sel = s.sel;
+    if (s.custom) BOT_KNOB_GROUPS.forEach(function (g) { if (typeof s.custom[g.key] === 'number') custom[g.key] = s.custom[g.key]; });
+    if (typeof s.botCount === 'number') botCount = s.botCount;
+  }
+
+  function tile(key, name, blurb, filled, cls) {
+    var b = document.createElement('button');
+    b.className = 'pk-tile' + (cls ? ' ' + cls : '');
+    b.dataset.key = key;
+    b.style.setProperty('--c', { easy: '#00E16E', medium: '#00B2E1', hard: '#F8A231', veryhard: '#F14E54' }[key] || '#8A8A8A');
+    var pips = '';
+    for (var i = 0; i < 5; i++) pips += '<i class="' + (i < filled ? 'f' : '') + '"></i>';
+    b.innerHTML = '<span class="pk-name">' + name + '</span><span class="pk-desc">' + blurb +
+      '</span><span class="pk-pips">' + pips + '</span>';
+    b.addEventListener('click', function () { sel = key; syncPicker(); });
+    return b;
+  }
+
+  function buildPicker() {
+    BOT_DIFFICULTIES.forEach(function (k, i) {
+      presetBox.appendChild(tile(k, BOT_SKILL[k].label, DIFF_BLURB[k], i + 1, k === 'extreme' ? 'x' : ''));
+    });
+    presetBox.appendChild(tile('custom', 'Custom', 'Set all six dials yourself.', 0, 'custom'));
+
+    BOT_DIFFICULTIES.forEach(function (k) {
+      var b = document.createElement('button');
+      b.textContent = BOT_SKILL[k].label;
+      b.addEventListener('click', function () {
+        BOT_KNOB_GROUPS.forEach(function (g) { custom[g.key] = DIFF_SEED[k]; });
+        syncPicker();
+      });
+      seedBox.appendChild(b);
+    });
+    seedBox.insertBefore(Object.assign(document.createElement('span'), {
+      textContent: 'start from:', style: 'align-self:center;font-size:12px;color:#555;font-weight:bold'
+    }), seedBox.firstChild);
+
+    BOT_KNOB_GROUPS.forEach(function (grp) { knobBox.appendChild(knob(grp.key, grp.label, grp.blurb, 0, 10, 0.5)); });
+    knobBox.appendChild(knob('botCount', 'Bot count', 'how many of them are out there', 0, 120, 1));
+  }
+
+  function knob(key, label, blurb, min, max, step) {
+    var row = document.createElement('div');
+    row.className = 'pk-knob';
+    row.innerHTML = '<label>' + label + '<small>' + blurb + '</small></label>' +
+      '<input type="range" min="' + min + '" max="' + max + '" step="' + step + '"><output></output>';
+    var input = row.querySelector('input'), out = row.querySelector('output');
+    input.addEventListener('input', function () {
+      if (key === 'botCount') botCount = +input.value; else custom[key] = +input.value;
+      sel = 'custom';
+      syncPicker();
+    });
+    row.sync = function () {
+      input.value = key === 'botCount' ? botCount : custom[key];
+      out.textContent = input.value;
+    };
+    return row;
+  }
+
+  function syncPicker() {
+    var tiles = presetBox.children;
+    for (var i = 0; i < tiles.length; i++) tiles[i].classList.toggle('on', tiles[i].dataset.key === sel);
+    customBox.classList.toggle('on', sel === 'custom');
+    for (var k = 0; k < knobBox.children.length; k++) knobBox.children[k].sync();
+    // the custom tile's pips track the average of the six dials
+    var avg = 0;
+    BOT_KNOB_GROUPS.forEach(function (g) { avg += custom[g.key]; });
+    avg = avg / BOT_KNOB_GROUPS.length;
+    var pips = tiles[tiles.length - 1].querySelectorAll('.pk-pips i');
+    for (var p = 0; p < pips.length; p++) pips[p].classList.toggle('f', p < Math.round(avg / 2));
+    diffName.textContent = diffLabel();
+    saveDiff();
+  }
+
+  function openPicker() { picker.classList.add('open'); syncPicker(); }
+  function closePicker() { picker.classList.remove('open'); }
+
+  document.getElementById('pk-back').addEventListener('click', closePicker);
+  document.getElementById('pk-play').addEventListener('click', startOffline);
+  document.getElementById('diffedit').addEventListener('click', openPicker);
+
+  var settings = document.getElementById('settings');
+  document.getElementById('settingsBtn').addEventListener('click', function () { settings.classList.add('open'); });
+  document.getElementById('set-back').addEventListener('click', function () { settings.classList.remove('open'); });
+
+  window.addEventListener('keydown', function (e) {
+    if (settings.classList.contains('open')) {
+      if (e.key === 'Escape') { settings.classList.remove('open'); e.preventDefault(); }
+      return;
+    }
+    if (!picker.classList.contains('open')) return;
+    if (e.key === 'Escape') { closePicker(); e.preventDefault(); }
+    else if (e.key === 'Enter') { startOffline(); e.preventDefault(); }
+  });
 
   function startOnline() {
     saveName();
@@ -309,14 +534,16 @@
     running = false;
     if (net) { net.close(); net = null; }
     online = false;
+    CHAT.hide();
     menu.style.display = '';
+    startBackdrop();
   }
 
   function setStatus(msg) { status.textContent = msg; }
 
-  playBtn.addEventListener('click', startOffline);
+  playBtn.addEventListener('click', openPicker);
   onlineBtn.addEventListener('click', startOnline);
-  nameInput.addEventListener('keydown', function (e) { if (e.key === 'Enter') startOffline(); });
+  nameInput.addEventListener('keydown', function (e) { if (e.key === 'Enter') openPicker(); });
 
   try {
     nameInput.value = localStorage.getItem('ta_name') || '';
@@ -329,5 +556,10 @@
     o.value = k; o.textContent = GAMEMODES[k].name;
     modeSelect.appendChild(o);
   });
+
+  loadDiff();
+  buildPicker();
+  syncPicker();
+  startBackdrop();
   hint.textContent = TANK_DEFS.filter(Boolean).length + ' tank classes loaded';
 })();

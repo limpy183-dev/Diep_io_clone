@@ -2139,7 +2139,7 @@ var TANK_DEFS = [
                     "sizeRatio": 1,
                     "health": 2,
                     "damage": 0.42,
-                    "speed": 0.72,
+                    "speed": 0.8,
                     "scatterRate": 1,
                     "lifeLength": -1,
                     "absorbtionFactor": 1
@@ -2163,7 +2163,7 @@ var TANK_DEFS = [
                     "sizeRatio": 1,
                     "health": 2,
                     "damage": 0.42,
-                    "speed": 0.72,
+                    "speed": 0.8,
                     "scatterRate": 1,
                     "lifeLength": -1,
                     "absorbtionFactor": 1

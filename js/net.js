@@ -90,6 +90,12 @@ NetGame.prototype.read = function (b) {
   }
   if (op === SV.DEATH) return this.readDeath(b);
   if (op === SV.MAPSTATE) return this.readMapState(b);
+  if (op === SV.CHAT) {
+    var kind = CHATKIND[b.ru8()] || 'system';
+    var who = b.rstr(), text = b.rstr();
+    CHAT.push(kind, who, text, rgb(b.ru8(), b.ru8(), b.ru8()));
+    return;
+  }
 };
 
 // Objective overlay for the minimap: tiles, dominators, motherships, flags.
@@ -206,7 +212,15 @@ NetGame.prototype.readUpdate = function (b) {
   if (this.leader && this.leader.id === this.myId) this.leader = null;
 
   this.entities = Array.from(this.byId.values());
-  this.lastPacket = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+  var now = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+  // Track how far apart snapshots actually land. A server running a hair slow
+  // than MSPT leaves the lerp pinned at 1 for the tail of every tick, which
+  // reads as a stutter on every other tank.
+  if (this.lastPacket) {
+    var gap = now - this.lastPacket;
+    if (gap < MSPT * 4) this.packetDt = this.packetDt ? this.packetDt * 0.9 + gap * 0.1 : gap;
+  }
+  this.lastPacket = now;
 };
 
 // Unpack the per-entity flag byte. `team` is only ever compared against null
@@ -247,7 +261,7 @@ NetGame.prototype.create = function (b) {
     e.scaleFactor = 1;
   }
   if (isRect) e.width = b.ru16() / 4;
-  if (hasName) e.name = b.rstr();
+  if (hasName) { e.name = b.rstr(); e.score = b.ru32(); }
   this.readTurretAngles(b, e);
 
   e.hiddenHealthbar = !isTank && e.type !== 'shape' && e.type !== 'skimmer' && e.type !== 'rocket' && e.type !== 'glider' && e.type !== 'firework';
@@ -281,7 +295,7 @@ function buildTurrets(parent, count) {
     out.push({
       parent: parent, index: i, arc: count > 1,
       base: count === 1 ? 0 : (Math.PI * 2 * i) / count,
-      angle: 0, x: parent.x, y: parent.y,
+      angle: 0,                                      // the renderer mounts these off the parent pose
       barrel: { def: TURRET_BARREL, recoilAnim: 0 }
     });
   }
@@ -291,18 +305,7 @@ function buildTurrets(parent, count) {
 NetGame.prototype.readTurretAngles = function (b, e) {
   if (e.type !== 'tank' || !e.turrets || !e.turrets.length) return;
   for (var i = 0; i < e.turrets.length; i++) e.turrets[i].angle = unpackAngle(b.ru8());
-  placeTurrets(e);
 };
-
-// Same mount maths the server uses, so side-mounted turrets sit where they should.
-function placeTurrets(e) {
-  for (var i = 0; i < e.turrets.length; i++) {
-    var t = e.turrets[i];
-    var mount = (t.arc ? e.angle : 0) + t.base;
-    t.x = e.x + (t.arc ? Math.cos(mount) * e.size * TURRET.dist : 0);
-    t.y = e.y + (t.arc ? Math.sin(mount) * e.size * TURRET.dist : 0);
-  }
-}
 
 NetGame.prototype.update = function (b) {
   var id = b.ru32();
@@ -313,6 +316,7 @@ NetGame.prototype.update = function (b) {
   var isTank = e ? (e.type === 'tank' || e.type === 'boss') : false;
   var level = null;
   if (e && isTank) level = b.ru8();
+  if (e && e.name) e.score = b.ru32();
   if (!e) return;                       // unknown id: turret angles can't be sized, bail
 
   e.px = e.x; e.py = e.y; e.pa = e.angle; e.psize = e.size;
@@ -356,6 +360,12 @@ NetGame.prototype.upgradeStat = function (wire) { this.send1(OP.STAT, wire); };
 NetGame.prototype.upgradeTo = function (tankId) { this.send1(OP.UPGRADE, tankId); };
 NetGame.prototype.toggle = function (which) { this.send1(OP.TOGGLE, which); };
 NetGame.prototype.possess = function () { this.send1(OP.POSSESS, 0); };
+NetGame.prototype.sendChat = function (text) {
+  if (!this.connected) return;
+  var b = new Buf(4 + 3 * CHAT_MAX);
+  b.u8(OP.CHAT); b.str(text);
+  this.ws.send(b.bytes());
+};
 NetGame.prototype.respawn = function () {
   if (!this.connected) return;
   var b = new Buf(2); b.u8(OP.RESPAWN);
@@ -369,7 +379,6 @@ NetGame.prototype.clientTick = function () {
   for (var j = 0; j < this.entities.length; j++) {
     var e = this.entities[j];
     if (e.guardAngle !== undefined) e.guardAngle += 1;
-    if (e.turrets && e.turrets.length) placeTurrets(e);
   }
 };
 
@@ -378,7 +387,7 @@ NetGame.prototype.clientTick = function () {
 // ride out jitter better; add one if packet loss becomes visible.
 NetGame.prototype.alpha = function () {
   var now = (typeof performance !== 'undefined' ? performance.now() : Date.now());
-  return Math.max(0, Math.min(1, (now - this.lastPacket) / MSPT));
+  return Math.max(0, Math.min(1, (now - this.lastPacket) / (this.packetDt || MSPT)));
 };
 
 NetGame.prototype.close = function () { this.failed = true; if (this.ws) try { this.ws.close(); } catch (e) {} };

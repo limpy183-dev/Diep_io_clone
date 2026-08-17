@@ -88,8 +88,8 @@ var SHAPES = {
   alpha:    { health: 3000, size: 200 * Math.SQRT1_2, sides: 5, damage: 5, score: 3000, fill: C.pentagon, stroke: C.pentagonS, absorb: 0.05, push: 11 },
   // Hexagon geometry was never published; 1500 HP / 1500 XP is confirmed.
   hexagon:  { health: 1500, size: 130 * Math.SQRT1_2, sides: 6, damage: 4, score: 1500, fill: C.pentagon, stroke: C.pentagonS, absorb: 0.2,  push: 11 }, // TODO: unverified size/damage
-  crasherS: { health: 10,   size: 35 * Math.SQRT1_2,  sides: 3, damage: 2, score: 15,   fill: C.crasher,  stroke: C.crasherS,  absorb: 2,    push: 8,  speed: 5.2 },
-  crasherL: { health: 30,   size: 55 * Math.SQRT1_2,  sides: 3, damage: 2, score: 25,   fill: C.crasher,  stroke: C.crasherS,  absorb: 0.1,  push: 12, speed: 5.28 }
+  crasherS: { health: 10,   size: 35 * Math.SQRT1_2,  sides: 3, damage: 2, score: 15,   fill: C.crasher,  stroke: C.crasherS,  absorb: 2,    push: 8,  speed: 13 },
+  crasherL: { health: 30,   size: 55 * Math.SQRT1_2,  sides: 3, damage: 2, score: 25,   fill: C.crasher,  stroke: C.crasherS,  absorb: 0.1,  push: 12, speed: 13.2 }
 };
 var SHAPE_ROTATION = 0.01, SHAPE_ORBIT = 0.005, SHAPE_VELOCITY = 1, TURN_TIMEOUT = 300;
 
@@ -115,7 +115,8 @@ var TURRET = { barrelLen: 1.1, barrelWidth: 0.588, base: 0.5, dist: 0.8 };
 var TURRET_BARREL = {
   angle: 0, offset: 0, size: 55, width: 29.4, delay: 0.01, reload: 1, recoil: 0.3,
   isTrapezoid: false, trapezoidDirection: 0, addon: null,
-  bullet: { type: 'bullet', sizeRatio: 1, health: 1, damage: 0.3, speed: 1.2, scatterRate: 1, lifeLength: 1, absorbtionFactor: 1 }
+  // scatterRate 0: the turret solves an exact intercept, so spread would just undo it
+  bullet: { type: 'bullet', sizeRatio: 1, health: 1, damage: 0.3, speed: 1.2, scatterRate: 0, lifeLength: 1, absorbtionFactor: 1 }
 };
 var PASSIVE_ROTATION = 0.01;
 

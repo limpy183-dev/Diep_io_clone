@@ -3,12 +3,10 @@
   "configurations": [
     {
       "name": "tank-arena",
-      "runtimeExecutable": "node",
-      "runtimeArgs": [
-        "server.js",
-        "8137"
-      ],
-      "port": 8137
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["start"],
+      "port": 8137,
+      "autoPort": true
     }
   ]
 }

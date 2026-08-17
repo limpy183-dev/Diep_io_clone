@@ -4,10 +4,13 @@
 // Why binary: a full view is ~150 entities at 25 Hz. As JSON that's ~1.2 Mbps;
 // packed it's ~390 kbps.
 
-var OP = { JOIN: 1, INPUT: 2, STAT: 3, UPGRADE: 4, RESPAWN: 5, TOGGLE: 6, POSSESS: 7 };
+var OP = { JOIN: 1, INPUT: 2, STAT: 3, UPGRADE: 4, RESPAWN: 5, TOGGLE: 6, POSSESS: 7, CHAT: 8 };
 // MAPSTATE only goes out when the objective layout actually changes (a capture,
 // a tile flip), so the minimap stays live without costing bandwidth every tick.
-var SV = { WELCOME: 1, UPDATE: 2, NOTIFY: 3, DEATH: 4, MAPSTATE: 5 };
+var SV = { WELCOME: 1, UPDATE: 2, NOTIFY: 3, DEATH: 4, MAPSTATE: 5, CHAT: 6 };
+
+// Chat line kinds, matching the CSS classes in index.html.
+var CHATKIND = ['player', 'system', 'whisper', 'notice'];
 
 // Input bitfield, matching the spec's layout.
 var IN = { FIRE: 1, UP: 2, LEFT: 4, DOWN: 8, RIGHT: 16, GOD: 32, SUICIDE: 64, ALTFIRE: 128, LEVELUP: 256, SWITCHTANK: 1024 };
@@ -87,6 +90,6 @@ function turretCount(defs, addons, tankId) {
 }
 
 if (typeof module !== 'undefined') module.exports = {
-  OP: OP, SV: SV, IN: IN, ETYPES: ETYPES, Buf: Buf, MAX_PACKET: MAX_PACKET,
+  OP: OP, SV: SV, IN: IN, ETYPES: ETYPES, Buf: Buf, MAX_PACKET: MAX_PACKET, CHATKIND: CHATKIND,
   packAngle: packAngle, unpackAngle: unpackAngle, turretCount: turretCount
 };

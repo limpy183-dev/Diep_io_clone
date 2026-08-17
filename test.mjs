@@ -415,6 +415,35 @@ test('Auto Shotgun follows the Auto-X convention the shipped data uses', () => {
   assert.equal(tank.turrets.length, 1, 'plus one turret');
   assert.equal(G('TANK_DEFS[66].upgrades').length, 0, 'a leaf of the tree');
 });
+test('turret aim is an intercept solve, not a guess: it leads a crossing target onto the bullet', () => {
+  // Fly the bullet with the exact integrator the sim uses (accel, then move, then
+  // 10% friction) and check the closest approach lands inside a tank's hitbox.
+  const aim = G('interceptAim');
+  const S = 24, muzzle = 55;                      // turret bullet at 0 bullet-speed points
+  for (const [dx, dy, vx, vy] of [[900, 0, 0, 12], [1500, 0, 0, -18], [600, 600, 9, -9], [300, 0, 20, 0], [120, 0, 0, 6]]) {
+    const t = { x: dx, y: dy, vx, vy };
+    const a = aim({ x: 0, y: 0 }, t, S, muzzle);
+    let bx = Math.cos(a) * muzzle, by = Math.sin(a) * muzzle, v = S + 30;
+    let tx = t.x, ty = t.y, best = Infinity;
+    for (let n = 0; n < 75; n++) {
+      v += S * 0.1;                                // maintainVelocity
+      bx += Math.cos(a) * v; by += Math.sin(a) * v;
+      v *= 0.9;                                    // friction
+      tx += vx / 0.9; ty += vy / 0.9;
+      best = Math.min(best, Math.hypot(bx - tx, by - ty));
+    }
+    assert.ok(best < 50, `leads (${dx},${dy}) moving (${vx},${vy}): missed by ${best.toFixed(1)}`);
+  }
+});
+test('turret shots belong to the tank, not the turret, so they leave without hurting it', () => {
+  const g = new Game('sandbox', 'T');
+  const t = g.player;
+  t.level = 45; t.setTank(59); t.recompute();     // Auto Tank: barrels + one turret
+  t.health = t.maxHealth; t.godMode = false;
+  const shot = t.turrets[0].barrel.shoot();
+  assert.equal(shot.owner, t, 'owner is the tank (kill credit walks .owner)');
+  assert.equal(G('canInteract')(shot, t), false, 'and so it passes through its own body');
+});
 test('Dual-Barrel fires 24, Pellet Shot fires 30', () => {
   assert.equal(fireAll(new Game('sandbox', 'T'), 61).spawned, 24);
   assert.equal(fireAll(new Game('sandbox', 'T'), 62).spawned, 30);

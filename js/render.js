@@ -10,6 +10,8 @@ function Renderer(canvas, game) {
   this.cam = { x: 0, y: 0, fov: 0.35 };
   this.gridPattern = null;
   this.showClassTree = false;
+  this.treeT0 = 0;      // ms stamp of the last Y press; 0 = closed
+  this.tree = null;     // lazy: TANK_DEFS is patched by tankdefs-extra.js at load
   this.alpha = 0;
   this.statsT = 0;      // 0 = panel parked off-screen left, 1 = fully in
   this.statsTime = 0;
@@ -34,25 +36,37 @@ function lerp(a, b, t) { return a + (b - a) * t; }
 function lerpAngle(a, b, t) { var d = b - a; while (d > Math.PI) d -= Math.PI * 2; while (d < -Math.PI) d += Math.PI * 2; return a + d * t; }
 function ipos(e, t) { return { x: lerp(e.px, e.x, t), y: lerp(e.py, e.y, t), a: lerpAngle(e.pa, e.angle, t), s: lerp(e.psize, e.size, t) }; }
 
-Renderer.prototype.updateCamera = function (dt) {
+// Smoothing factor for `rate` per millisecond — frame-rate independent, so the
+// camera behaves the same at 30fps and 144fps.
+function smooth(dt, rate) { return 1 - Math.exp(-dt * rate); }
+
+Renderer.prototype.updateCamera = function (dt, alpha) {
   var p = this.game.player;
   // offline, piloting a Dominator/Mothership moves the camera onto it
   if (p && p.possessing && !p.possessing.dead) p = p.possessing;
+  var fPos = smooth(dt, 0.0173), fFov = smooth(dt, 0.0031), fSpec = smooth(dt, 0.0063);
   if (p && !p.dead) {
-    var tx = p.x, ty = p.y;
+    // Follow the *interpolated* position. Tracking p.x directly makes the camera
+    // step at the 25Hz sim rate while everything else renders interpolated —
+    // which reads as the player tank jittering in place.
+    var ip = ipos(p, alpha || 0);
+    var tx = ip.x, ty = ip.y;
     // Predator's right-click pushes the camera up to 1500 units toward the cursor
     if (p.def.flags.zoomAbility && p.input.altFire) {
-      var d = Math.hypot(p.mouse.x - p.x, p.mouse.y - p.y);
+      var d = Math.hypot(p.mouse.x - tx, p.mouse.y - ty);
       var k = Math.min(1500, d) / (d || 1);
-      tx += (p.mouse.x - p.x) * k; ty += (p.mouse.y - p.y) * k;
+      tx += (p.mouse.x - tx) * k; ty += (p.mouse.y - ty) * k;
     }
-    this.cam.x = lerp(this.cam.x, tx, 0.25);
-    this.cam.y = lerp(this.cam.y, ty, 0.25);
-    this.cam.fov = lerp(this.cam.fov, p.fov, 0.05);
+    this.cam.x = lerp(this.cam.x, tx, fPos);
+    this.cam.y = lerp(this.cam.y, ty, fPos);
+    this.cam.fov = lerp(this.cam.fov, p.fov, fFov);
   } else if (p) {
-    this.cam.fov = lerp(this.cam.fov, 0.4, 0.05);
+    this.cam.fov = lerp(this.cam.fov, 0.4, fFov);
     var k2 = this.game.spectate;
-    if (k2 && !k2.dead) { this.cam.x = lerp(this.cam.x, k2.x, 0.1); this.cam.y = lerp(this.cam.y, k2.y, 0.1); }
+    if (k2 && !k2.dead) {
+      var is = ipos(k2, alpha || 0);
+      this.cam.x = lerp(this.cam.x, is.x, fSpec); this.cam.y = lerp(this.cam.y, is.y, fSpec);
+    }
   }
 };
 
@@ -97,8 +111,9 @@ Renderer.prototype.drawGrid = function () {
   c.lineWidth = 1;
   c.beginPath();
   var ox = (w / 2 - this.cam.x * k) % step, oy = (h / 2 - this.cam.y * k) % step;
-  for (var x = ox; x < w; x += step) { c.moveTo(x | 0, 0); c.lineTo(x | 0, h); }
-  for (var y = oy; y < h; y += step) { c.moveTo(0, y | 0); c.lineTo(w, y | 0); }
+  // no pixel snapping: crisp lines against a sub-pixel camera crawl visibly
+  for (var x = ox; x < w; x += step) { c.moveTo(x, 0); c.lineTo(x, h); }
+  for (var y = oy; y < h; y += step) { c.moveTo(0, y); c.lineTo(w, y); }
   c.stroke();
   c.restore();
 };
@@ -150,23 +165,26 @@ Renderer.prototype.drawBarrel = function (e, b, ex, ey, ea, scale, colorFill, co
   c.restore();
 };
 
-Renderer.prototype.drawTurret = function (t, ex, ey, scale) {
+// Mount off the parent's *interpolated* pose. t.x/t.y are the last tick's values,
+// so using them makes the turret lag the smoothly-drawn body and jitter while moving.
+Renderer.prototype.drawTurret = function (t, px, py, pa, ps, scale) {
   var c = this.ctx, k = this.scaling();
-  var base = t.parent.size * TURRET.base * k;
-  var sp = this.toScreen(t.x, t.y);
-  // barrel
-  var b = t.barrel.def;
-  var len = t.parent.size * TURRET.barrelLen * k;
-  var w = t.parent.size * TURRET.barrelWidth * k / 2;
+  var mount = (t.arc ? pa : 0) + t.base;
+  var sp = this.toScreen(px + (t.arc ? Math.cos(mount) * ps * TURRET.dist : 0),
+                         py + (t.arc ? Math.sin(mount) * ps * TURRET.dist : 0));
+  var base = ps * TURRET.base * k;
+  var len = ps * TURRET.barrelLen * k;
+  var w = ps * TURRET.barrelWidth * k / 2;
+  var lw = Math.max(1, 6 * k * (ps / 50));
   c.save();
   c.translate(sp.x, sp.y);
   c.rotate(t.angle);
   c.beginPath(); c.rect(0, -w, len * (1 - t.barrel.recoilAnim * 0.12), w * 2); c.closePath();
-  this.fillStroke(C.barrel, C.barrelS, Math.max(1, 6 * this.scaling() * (t.parent.size / 50)));
+  this.fillStroke(C.barrel, C.barrelS, lw);
   c.restore();
   // mount
   polyPath(c, sp.x, sp.y, base, 1, 0);
-  this.fillStroke(C.barrel, C.barrelS, Math.max(1, 6 * this.scaling() * (t.parent.size / 50)));
+  this.fillStroke(C.barrel, C.barrelS, lw);
 };
 
 // --- entities -----------------------------------------------------------
@@ -250,7 +268,7 @@ Renderer.prototype.drawEntity = function (e, t) {
   this.fillStroke(fill, stroke, lw);
 
   // turrets on top
-  if (e.turrets) for (var ti = 0; ti < e.turrets.length; ti++) this.drawTurret(e.turrets[ti], p.x, p.y, scale);
+  if (e.turrets) for (var ti = 0; ti < e.turrets.length; ti++) this.drawTurret(e.turrets[ti], p.x, p.y, p.a, p.s, scale);
 
   // spawn protection blink
   if (isTank && e.damageReduction === 0 && !e.godMode) {
@@ -301,9 +319,17 @@ Renderer.prototype.drawName = function (e, t) {
   c.font = 'bold ' + size + 'px Ubuntu, Verdana, sans-serif';
   c.textAlign = 'center';
   c.lineWidth = size * 0.22; c.strokeStyle = '#000';
-  c.strokeText(e.name, sp.x, sp.y - r - size * 0.55);
+  var ny = sp.y - r - size * 0.55;
+  c.strokeText(e.name, sp.x, ny);
   c.fillStyle = '#FFF';
-  c.fillText(e.name, sp.x, sp.y - r - size * 0.55);
+  c.fillText(e.name, sp.x, ny);
+  if (e.score) {
+    var ss = size * 0.62;
+    c.font = 'bold ' + ss + 'px Ubuntu, Verdana, sans-serif';
+    c.lineWidth = ss * 0.22;
+    c.strokeText(abbrev(e.score), sp.x, ny + ss * 1.1);
+    c.fillText(abbrev(e.score), sp.x, ny + ss * 1.1);
+  }
   c.restore();
 };
 
@@ -534,40 +560,105 @@ Renderer.prototype.drawStats = function () {
   c.restore();
 };
 
-Renderer.prototype.upgradeRects = function () {
+// mix a hex colour toward white by t (0..1)
+function tint(hex, t) {
+  var n = parseInt(hex.slice(1), 16), r = n >> 16, g = (n >> 8) & 255, b = n & 255;
+  return 'rgb(' + Math.round(r + (255 - r) * t) + ',' + Math.round(g + (255 - g) * t) + ',' + Math.round(b + (255 - b) * t) + ')';
+}
+
+// The upgrade panel: a grey card-tray in the top-left with a collapse button,
+// title and an Ignore button, mirroring the real client's layout.
+Renderer.prototype.upgradeLayout = function () {
   var p = this.game.player;
-  if (!p || !p.pendingUpgrades.length) return [];
-  var out = [], size = 108, gap = 8;
-  for (var i = 0; i < p.pendingUpgrades.length; i++) {
-    out.push({ id: p.pendingUpgrades[i], x: 20 + (i % 4) * (size + gap), y: 20 + Math.floor(i / 4) * (size + gap), w: size, h: size, idx: i });
+  if (!p || p.dead || !p.pendingUpgrades.length) { this.upgradeSig = ''; return null; }
+  var sig = p.pendingUpgrades.join(',');
+  if (sig !== this.upgradeSig) { this.upgradeSig = sig; this.upgradeHidden = false; }
+  if (this.upgradeHidden) return null;
+
+  var n = p.pendingUpgrades.length, cols = Math.min(2, n), rows = Math.ceil(n / cols);
+  var size = 116, gap = 12, pad = 14, close = 58, head = close + 20;
+  var gridW = cols * size + (cols - 1) * gap;
+  var panel = { x: 16, y: 10, w: gridW + pad * 2 + 56, h: pad + head + rows * (size + gap) + 46 };
+  var gx = panel.x + (panel.w - gridW) / 2, gy = panel.y + pad + head;
+  var cards = [];
+  for (var i = 0; i < n; i++) {
+    cards.push({
+      id: p.pendingUpgrades[i], idx: i, w: size, h: size,
+      x: gx + (i % cols) * (size + gap), y: gy + Math.floor(i / cols) * (size + gap)
+    });
   }
-  return out;
+  return {
+    panel: panel, cards: cards,
+    close: { x: panel.x + pad, y: panel.y + pad, w: close, h: close },
+    ignore: { x: panel.x + panel.w / 2 - 48, y: gy + rows * (size + gap) - gap + 12, w: 96, h: 34 }
+  };
+};
+
+Renderer.prototype.upgradeRects = function () {
+  var l = this.upgradeLayout();
+  return l ? l.cards : [];
+};
+
+// grey pill used by the collapse and Ignore buttons
+Renderer.prototype.uiButton = function (r, rad) {
+  var c = this.ctx, g = c.createLinearGradient(0, r.y, 0, r.y + r.h);
+  g.addColorStop(0, '#C6C6C6'); g.addColorStop(1, '#9E9E9E');
+  c.beginPath(); c.roundRect(r.x, r.y, r.w, r.h, rad);
+  c.fillStyle = g; c.fill();
+  c.lineWidth = 3; c.strokeStyle = '#6B6B6B'; c.stroke();
 };
 
 Renderer.prototype.drawUpgrades = function () {
-  var rects = this.upgradeRects(), c = this.ctx;
-  if (!rects.length) return;
+  var l = this.upgradeLayout(), c = this.ctx;
+  if (!l) return;
+  var rot = performance.now() / 3000;             // slow clockwise spin
   c.save();
-  for (var i = 0; i < rects.length; i++) {
-    var r = rects[i], def = TANK_DEFS[r.id];
-    c.fillStyle = CARD_COLORS[r.idx % CARD_COLORS.length];
-    c.fillRect(r.x, r.y, r.w, r.h);
-    c.lineWidth = 3; c.strokeStyle = '#000'; c.globalAlpha = 0.5; c.strokeRect(r.x, r.y, r.w, r.h); c.globalAlpha = 1;
-    this.drawTankIcon(def, r.x + r.w / 2, r.y + r.h / 2 - 6, r.w * 0.30);
-    c.font = 'bold 12px Ubuntu, Verdana, sans-serif'; c.textAlign = 'center'; c.textBaseline = 'alphabetic';
-    c.lineWidth = 3; c.strokeStyle = '#000';
-    c.strokeText(def.name, r.x + r.w / 2, r.y + r.h - 8);
-    c.fillStyle = '#FFF'; c.fillText(def.name, r.x + r.w / 2, r.y + r.h - 8);
-    c.font = 'bold 10px Ubuntu'; c.fillStyle = 'rgba(255,255,255,0.8)';
-    c.fillText('[' + (r.idx + 1) + ']', r.x + 12, r.y + 14);
+  c.beginPath(); c.roundRect(l.panel.x, l.panel.y, l.panel.w, l.panel.h, 6);
+  c.fillStyle = 'rgba(205,205,205,0.92)'; c.fill();
+
+  this.uiButton(l.close, 8);
+  // arrow-leaving-a-bracket glyph
+  var b = l.close, cx = b.x + b.w / 2, cy = b.y + b.h / 2;
+  c.lineWidth = 5; c.strokeStyle = '#3A3A3A'; c.lineCap = 'round'; c.lineJoin = 'round';
+  c.beginPath();
+  c.moveTo(cx - 2, cy - 15); c.lineTo(cx - 15, cy - 15); c.lineTo(cx - 15, cy + 15); c.lineTo(cx - 2, cy + 15);
+  c.stroke();
+  c.beginPath(); c.moveTo(cx - 6, cy); c.lineTo(cx + 15, cy); c.stroke();
+  c.beginPath(); c.moveTo(cx + 7, cy - 9); c.lineTo(cx + 16, cy); c.lineTo(cx + 7, cy + 9); c.stroke();
+  c.lineCap = 'butt';
+
+  c.textAlign = 'center'; c.textBaseline = 'middle';
+  c.font = 'bold 30px Ubuntu, Verdana, sans-serif';
+  c.lineWidth = 5; c.lineJoin = 'round'; c.strokeStyle = '#5E5E5E';
+  c.strokeText('Upgrades', l.panel.x + l.panel.w / 2 + 14, b.y + b.h / 2);
+  c.fillStyle = '#8C8C8C'; c.fillText('Upgrades', l.panel.x + l.panel.w / 2 + 14, b.y + b.h / 2);
+
+  for (var i = 0; i < l.cards.length; i++) {
+    var r = l.cards[i], def = TANK_DEFS[r.id], base = CARD_COLORS[r.idx % CARD_COLORS.length];
+    var grad = c.createLinearGradient(0, r.y, 0, r.y + r.h);
+    grad.addColorStop(0, tint(base, 0.62)); grad.addColorStop(1, tint(base, 0.22));
+    c.beginPath(); c.roundRect(r.x, r.y, r.w, r.h, 6);
+    c.fillStyle = grad; c.fill();
+    c.lineWidth = 4; c.strokeStyle = '#6B6B6B'; c.stroke();
+    this.drawTankIcon(def, r.x + r.w / 2, r.y + r.h / 2 - 4, r.w * 0.26, rot);
+    c.font = 'bold 14px Ubuntu, Verdana, sans-serif';
+    c.lineWidth = 4; c.strokeStyle = '#000';
+    c.strokeText(def.name, r.x + r.w / 2, r.y + r.h - 14);
+    c.fillStyle = '#FFF'; c.fillText(def.name, r.x + r.w / 2, r.y + r.h - 14);
   }
+
+  this.uiButton(l.ignore, 5);
+  c.font = 'bold 16px Ubuntu, Verdana, sans-serif';
+  c.lineWidth = 4; c.strokeStyle = '#000';
+  c.strokeText('Ignore', l.ignore.x + l.ignore.w / 2, l.ignore.y + l.ignore.h / 2);
+  c.fillStyle = '#FFF'; c.fillText('Ignore', l.ignore.x + l.ignore.w / 2, l.ignore.y + l.ignore.h / 2);
   c.restore();
 };
 
 // Small schematic of a tank: body + barrels, used on cards and the class tree.
-Renderer.prototype.drawTankIcon = function (def, x, y, r) {
+Renderer.prototype.drawTankIcon = function (def, x, y, r, rot) {
   var c = this.ctx, scale = r / 50;
-  c.save(); c.translate(x, y);
+  c.save(); c.translate(x, y); if (rot) c.rotate(rot);
   var guards = ADDONS[def.postAddon] && ADDONS[def.postAddon].guards;
   if (guards) for (var gi = 0; gi < guards.length; gi++) {
     polyPath(c, 0, 0, r * guards[gi].ratio, guards[gi].sides, guards[gi].offset || 0);
@@ -591,38 +682,74 @@ Renderer.prototype.drawTankIcon = function (def, x, y, r) {
   c.restore();
 };
 
-// Y overlay: concentric rings, tier 2 inner -> tier 4 outer.
-Renderer.prototype.drawClassTree = function () {
-  var p = this.game.player, c = this.ctx;
-  if (!p) return;
-  var cx = this.canvas.width / 2, cy = this.canvas.height / 2;
-  var rot = this.game.tick * 0.002;
-  c.save();
-  c.fillStyle = 'rgba(0,0,0,0.45)'; c.fillRect(0, 0, this.canvas.width, this.canvas.height);
-  var tiers = [[], [], []];
-  TANK_DEFS.forEach(function (d) {
-    if (!d || d.flags.devOnly || d.levelRequirement === 0) return;
-    if (d.levelRequirement === 15) tiers[0].push(d);
-    else if (d.levelRequirement === 30) tiers[1].push(d);
-    else tiers[2].push(d);
-  });
-  var base = Math.min(cx, cy);
-  var radii = [base * 0.28, base * 0.55, base * 0.85];
-  for (var t = 0; t < 3; t++) {
-    var ring = tiers[t], R = radii[t];
-    for (var i = 0; i < ring.length; i++) {
-      var a = rot + (i / ring.length) * Math.PI * 2;
-      var x = cx + Math.cos(a) * R, y = cy + Math.sin(a) * R;
-      var reachable = p.level >= ring[i].levelRequirement;
-      c.globalAlpha = reachable ? 1 : 0.28;
-      this.drawTankIcon(ring[i], x, y, base * 0.028);
-      c.globalAlpha = reachable ? 0.9 : 0.25;
-      c.font = 'bold 10px Ubuntu'; c.textAlign = 'center';
-      c.fillStyle = '#FFF'; c.fillText(ring[i].name, x, y + base * 0.055);
-    }
+// Y overlay: the class-tree wheel. A sunburst of TANK_DEFS' upgrade graph —
+// ring comes from levelRequirement (15/30/45), not depth, so a class that skips
+// a tier (Smasher off Tank, Sprayer off Machine Gun) leaves the gap the real
+// wheel shows. Angular span is the node's leaf count.
+var TREE_COLORS = ['#AEE89A', '#F49B9B', '#F2DE98', '#A8E6E6', '#C4A8F0', '#A8B4F0'];
+var TREE_RADII = [0.249, 0.504, 0.796, 0.99];   // hub edge, then each ring's outer edge
+var TREE_INTRO = 380;                            // ms: grow + swing into place
+
+function buildClassTree(id, depth) {
+  var d = TANK_DEFS[id];
+  if (!d || d.flags.devOnly) return null;
+  var kids = [];
+  if (depth < 3) for (var i = 0; i < d.upgrades.length; i++) {
+    var k = buildClassTree(d.upgrades[i], depth + 1);
+    if (k) kids.push(k);
   }
-  c.globalAlpha = 1;
-  this.drawTankIcon(p.def, cx, cy, base * 0.05);
+  var w = 0;
+  for (i = 0; i < kids.length; i++) w += kids[i].weight;
+  return { def: d, ring: Math.round(d.levelRequirement / 15) - 1, kids: kids, weight: w || 1 };
+}
+
+Renderer.prototype.drawTreeSector = function (n, cx, cy, R, a0, a1, ci) {
+  var c = this.ctx;
+  var r0 = R * TREE_RADII[n.ring], r1 = R * TREE_RADII[n.ring + 1];
+  c.beginPath();
+  c.arc(cx, cy, r0, a0, a1);
+  c.arc(cx, cy, r1, a1, a0, true);
+  c.closePath();
+  c.fillStyle = TREE_COLORS[ci]; c.fill();
+  c.lineWidth = Math.max(1, R * 0.008); c.lineJoin = 'round'; c.strokeStyle = '#5F5F5F'; c.stroke();
+  var mid = (a0 + a1) / 2, rm = (r0 + r1) / 2;
+  c.save();
+  c.translate(cx + Math.cos(mid) * rm, cy + Math.sin(mid) * rm);
+  c.rotate(mid);                                 // barrels point radially outward
+  this.drawTankIcon(n.def, 0, 0, Math.min(R * 0.048, (r1 - r0) * 0.30, (a1 - a0) * rm * 0.32));
+  c.restore();
+};
+
+Renderer.prototype.drawClassTree = function () {
+  var p = this.game.player, c = this.ctx, self = this;
+  if (!p) return;
+  if (!this.tree) this.tree = buildClassTree(0, 0);
+
+  var now = performance.now();
+  var e = Math.min(1, (now - this.treeT0) / TREE_INTRO);
+  e = 1 - Math.pow(1 - e, 3);
+  var cx = this.canvas.width / 2, cy = this.canvas.height / 2;
+  var R = Math.min(cx, cy) * 0.86 * (0.3 + 0.7 * e);
+  // both clockwise: the intro swings in from behind, then the wheel keeps turning
+  var rot = now * 0.0001 - (1 - e) * 0.75;
+
+  c.save();
+  c.globalAlpha = e;
+  (function walk(n, a0, a1, ci) {
+    for (var i = 0, a = a0; i < n.kids.length; i++) {
+      var k = n.kids[i], span = (a1 - a0) * k.weight / n.weight, kci = (ci + i + 1) % TREE_COLORS.length;
+      self.drawTreeSector(k, cx, cy, R, a, a + span, kci);
+      walk(k, a, a + span, kci);
+      a += span;
+    }
+  })(this.tree, rot - Math.PI / 2, rot - Math.PI / 2 + Math.PI * 2, 0);
+
+  // The hub is a washed-out porthole, not a card: your own tank is already
+  // rendered at screen centre, so it shows through instead of being redrawn.
+  var hub = R * TREE_RADII[0];
+  c.lineWidth = Math.max(1, R * 0.008); c.strokeStyle = '#5F5F5F';
+  c.beginPath(); c.arc(cx, cy, hub, 0, Math.PI * 2); c.fillStyle = 'rgba(255,255,255,0.22)'; c.fill(); c.stroke();
+  c.beginPath(); c.arc(cx, cy, hub * 0.84, 0, Math.PI * 2); c.fillStyle = 'rgba(255,255,255,0.12)'; c.fill(); c.stroke();
   c.restore();
 };
 
@@ -704,6 +831,7 @@ Renderer.prototype.render = function (alpha) {
   this.drawStats();
   this.drawUpgrades();
   this.drawNotifications();
-  if (this.showClassTree) this.drawClassTree();
+  if (this.showClassTree) { if (!this.treeT0) this.treeT0 = performance.now(); this.drawClassTree(); }
+  else this.treeT0 = 0;
   this.drawDeathScreen();
 };

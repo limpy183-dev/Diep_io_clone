@@ -12,18 +12,20 @@ const vm = require('node:vm');
 const { WebSocketServer } = require('ws');
 
 const P = require('./js/protocol.js');
-const { OP, SV, IN, ETYPES, Buf, MAX_PACKET, packAngle, turretCount } = P;
+const { OP, SV, IN, ETYPES, Buf, MAX_PACKET, CHATKIND, packAngle, turretCount } = P;
 
 // ---- load the simulation ------------------------------------------------
 // Same trick the tests use: the engine is plain browser script with no browser
 // globals, so one shared context is all it needs. No bundler, no duplication.
 const sim = vm.createContext({ console, Math, JSON, Map, Set, Infinity, NaN });
-for (const f of ['js/tankdefs.js', 'js/tankdefs-extra.js', 'js/data.js', 'js/engine.js', 'js/modes.js'])
+for (const f of ['js/tankdefs.js', 'js/tankdefs-extra.js', 'js/data.js', 'js/engine.js', 'js/modes.js', 'js/commands.js'])
   vm.runInContext(fs.readFileSync(path.join(__dirname, f), 'utf8'), sim, { filename: f });
 
 const { Game, GAMEMODES, TANK_DEFS, ADDONS, MSPT, MAX_LEVEL } = sim;
+// The command table runs against the sim's own globals, so it comes from there too.
+const { COMMANDS, runCommand, chatLines, sanitizeName, sanitizeChat } = sim;
 
-const PORT = Number(process.argv[2]) || 8137;
+const PORT = Number(process.argv[2]) || Number(process.env.PORT) || 8137;
 const CLOSE_AFTER = Number(process.argv[3]) || 0;   // seconds until the server retires itself
 const TICK_MS = MSPT;
 const MAX_PLAYERS_PER_ARENA = 50;
@@ -55,7 +57,8 @@ function getArena(modeKey) {
   if (a && !a.game.closing) return a;
   a = {
     mode: modeKey,
-    game: new Game(modeKey, null, { headless: true }),
+    // Multiplayer arenas are humans only. /bots can still add them on purpose.
+    game: new Game(modeKey, null, { headless: true, botCount: 0 }),
     clients: new Set(),
     timer: null,
     idle: 0,
@@ -153,7 +156,18 @@ function entityFlags(e) {
   return f;
 }
 
-function writeCreate(b, e) {
+// Every human spawns blue server-side, so colour is a per-viewer decision:
+// in FFA you are blue and everyone else is red, exactly as offline. Team modes
+// paint their own colours and are left alone.
+function viewFill(e, client) {
+  if (e.fill !== sim.C.blue) return null;              // team-painted, shape, boss: as-is
+  let root = e;
+  while (root.owner) root = root.owner;                // bullets/drones follow their tank
+  if (client.tank && root === client.tank) return null;
+  return [sim.C.red, sim.C.redS];
+}
+
+function writeCreate(b, e, client) {
   b.u32(e.id);
   b.u8(Math.max(0, ETYPES.indexOf(e.type)));
   b.u8(e.sides);
@@ -162,7 +176,8 @@ function writeCreate(b, e) {
   b.i16(Math.round(e.x)); b.i16(Math.round(e.y));
   b.u8(packAngle(e.angle));
   b.u16(Math.min(65535, Math.round(e.size * 4)));
-  const fill = hex(e.fill), stroke = hex(e.stroke);
+  const swap = viewFill(e, client);
+  const fill = hex(swap ? swap[0] : e.fill), stroke = hex(swap ? swap[1] : e.stroke);
   b.u8(fill[0]); b.u8(fill[1]); b.u8(fill[2]);
   b.u8(stroke[0]); b.u8(stroke[1]); b.u8(stroke[2]);
   b.u8(healthByte(e));
@@ -172,7 +187,7 @@ function writeCreate(b, e) {
   // their barrels from the same BOSSES table.
   if (isTank) { b.u8(e.type === 'boss' ? (e.bossIndex | 0) : (e.tankId === undefined ? 0 : e.tankId)); b.u8(Math.min(255, e.level || 1)); }
   if (e.sides === 2) b.u16(Math.min(65535, Math.round(e.width * 4)));
-  if (e.name) b.str(e.name);
+  if (e.name) { b.str(e.name); b.u32(Math.max(0, e.score | 0)); }
   writeTurrets(b, e);
 }
 
@@ -185,6 +200,7 @@ function writeUpdate(b, e) {
   b.u8(Math.round((e.opacity === undefined ? 1 : e.opacity) * 255));
   b.u8(entityFlags(e));
   if (e.type === 'tank' || e.type === 'boss') b.u8(Math.min(255, e.level || 1));
+  if (e.name) b.u32(Math.max(0, e.score | 0));
   writeTurrets(b, e);
 }
 
@@ -263,7 +279,13 @@ function sendUpdate(client, arena) {
     lb = g.leaderboard.slice(0, 10).sort((p, q) => q.score - p.score);
   }
   b.u8(lb.length);
-  for (const p of lb) { b.str(p.name); b.u32(Math.max(0, Math.round(p.score))); b.u8(p.tankId); b.u32(p.id); const c = hex(p.fill); b.u8(c[0]); b.u8(c[1]); b.u8(c[2]); }
+  for (const p of lb) {
+    b.str(p.name); b.u32(Math.max(0, Math.round(p.score))); b.u8(p.tankId); b.u32(p.id);
+    // Same rule as the world: your row is blue, the rest are red.
+    const own = t && p.id === t.id;
+    const c = hex(p.fill === sim.C.blue && !own ? sim.C.red : p.fill);
+    b.u8(c[0]); b.u8(c[1]); b.u8(c[2]);
+  }
   const leader = g.leader;
   b.u8(leader ? 1 : 0);
   if (leader) { b.i16(Math.round(leader.x)); b.i16(Math.round(leader.y)); b.u32(leader.id); }
@@ -271,7 +293,7 @@ function sendUpdate(client, arena) {
   b.u16(deletes.length);
   for (const id of deletes) b.u32(id);
   b.u16(creates.length);
-  for (const e of creates) writeCreate(b, e);
+  for (const e of creates) writeCreate(b, e, client);
   b.u16(updates.length);
   for (const e of updates) writeUpdate(b, e);
 
@@ -323,6 +345,61 @@ function sendMapState(client, g) {
   send(client, b.bytes());
 }
 
+// ---- chat ---------------------------------------------------------------
+// kind indexes CHATKIND: 0 player, 1 system, 2 whisper, 3 notice.
+function sendChat(client, kind, who, text, fill) {
+  const c = hex(fill || '#FFFFFF');
+  for (const line of chatLines(text)) {
+    const b = new Buf(600);
+    b.u8(SV.CHAT); b.u8(kind); b.str(who || ''); b.str(line);
+    b.u8(c[0]); b.u8(c[1]); b.u8(c[2]);
+    send(client, b.bytes());
+  }
+}
+
+function chatAll(arena, kind, who, text, fill, from) {
+  for (const c of arena.clients) if (c.alive)
+    sendChat(c, kind, who, text, fill === sim.C.blue && c.tank !== from ? sim.C.red : fill);
+}
+
+// Commands run against the arena's own game, so a cheat is applied by the
+// authority rather than trusted from a client. `sandbox` is the cheat gate.
+function commandCtx(client, arena) {
+  const g = arena.game, t = client.tank;
+  return {
+    game: g, tank: t, online: true,
+    name: (t && t.name) || 'an unnamed tank',
+    sandbox: !!g.mode.sandbox,
+    say: (text) => sendChat(client, 1, null, text, '#FFDE43'),
+    broadcast: (text) => chatAll(arena, 1, null, text, '#85E8A0'),
+    whisper: (name, text) => {
+      if (!text) return 'Say what?';
+      const to = [...arena.clients].find((c) => c.alive && c.tank && c.tank.name.toLowerCase() === String(name).toLowerCase())
+        || [...arena.clients].find((c) => c.alive && c.tank && c.tank.name.toLowerCase().startsWith(String(name).toLowerCase()));
+      if (!to) return 'Nobody here is called "' + name + '".';
+      sendChat(to, 2, ctxName(client) + ' -> you', text, '#F177DD');
+      sendChat(client, 2, 'you -> ' + ctxName(to), text, '#F177DD');
+    }
+  };
+}
+function ctxName(client) { return (client.tank && client.tank.name) || 'an unnamed tank'; }
+
+function handleChat(client, raw) {
+  const arena = client.arena;
+  const now = Date.now();
+  if (now - (client.lastChat || 0) < 400) return;      // one line every 400ms
+  client.lastChat = now;
+  const text = sanitizeChat(raw);
+  if (!text) return;
+  if (text[0] === '/') {
+    console.log(`[cmd] ${ctxName(client)}: ${text}`);
+    runCommand(commandCtx(client, arena), text);
+    return;
+  }
+  console.log(`[chat] ${ctxName(client)}: ${text}`);
+  chatAll(arena, 0, ctxName(client), text, client.tank.fill, client.tank);
+}
+
 function sendNotify(client, text) {
   const b = new Buf(300);
   b.u8(SV.NOTIFY); b.str(text);
@@ -351,9 +428,8 @@ function tickArena(a) {
   const g = a.game;
   try { g.step(); } catch (err) { console.error('[sim]', err); return; }
 
-  // Thin the bots out as real players arrive; attrition does the rest.
-  const humans = a.clients.size;
-  g.botCount = Math.max(4, (g.mode.sandbox ? 8 : 28) - humans);
+  // Humans only unless someone asked for bots with /bots.
+  g.botCount = g.botOverride === undefined ? 0 : g.botOverride;
 
   // Arena-wide notifications go to everyone exactly once. Mark them all before
   // the client loop, or only the first client would see them.
@@ -408,9 +484,13 @@ wss.on('connection', (ws, req) => {
 
   ws.on('close', () => {
     client.alive = false;
+    const who = ctxName(client);
     if (client.tank && !client.tank.dead) client.tank.kill(null);
     if (client.tank) client.tank.client = null;
-    if (client.arena) { client.arena.clients.delete(client); }
+    if (client.arena) {
+      client.arena.clients.delete(client);
+      chatAll(client.arena, 3, null, `${who} left`, '#85E8A0');
+    }
   });
   ws.on('error', () => { client.alive = false; });
 });
@@ -429,6 +509,8 @@ function handle(client, b) {
     arena.idle = 0;
     spawn(client, name);
     console.log(`[join] ${name} -> ${arena.mode} (${arena.clients.size} players)`);
+    chatAll(arena, 3, null, `${name || 'an unnamed tank'} joined the arena`, '#85E8A0');
+    sendChat(client, 1, null, `Welcome to ${arena.game.mode.name}. Press T or Enter to chat, /help for commands.`, '#FFDE43');
     return;
   }
 
@@ -493,6 +575,10 @@ function handle(client, b) {
       else if (which === 1) t.autoSpin = !t.autoSpin;
       break;
     }
+    case OP.CHAT: {
+      handleChat(client, b.rstr());
+      break;
+    }
   }
 }
 
@@ -501,9 +587,7 @@ function clampCoord(v, g) {
   return Math.max(-lim, Math.min(lim, v));
 }
 
-function sanitize(name) {
-  return String(name || '').replace(/[\x00-\x1f\x7f]/g, '').trim().slice(0, 16);
-}
+const sanitize = sanitizeName;   // one name rule, shared with /nick
 
 function spawn(client, name, old) {
   const g = client.arena.game;

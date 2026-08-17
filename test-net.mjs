@@ -30,11 +30,16 @@ function makeClient(name, mode, port) {
     send(bytes) { if (this.readyState === 1) this._real.send(bytes); }
     close() { this._real.close(); }
   };
-  for (const f of ['js/tankdefs.js', 'js/tankdefs-extra.js', 'js/data.js', 'js/protocol.js', 'js/engine.js', 'js/modes.js', 'js/net.js'])
+  // Stand-in for the DOM chat overlay: the decoder only needs somewhere to put
+  // a line, and the test needs to read what arrived.
+  ctx.CHAT = { fps: 0, lines: [], push(kind, who, text, color) { this.lines.push({ kind, who, text, color }); } };
+  for (const f of ['js/tankdefs.js', 'js/tankdefs-extra.js', 'js/data.js', 'js/protocol.js', 'js/engine.js', 'js/modes.js', 'js/commands.js', 'js/net.js'])
     vm.runInContext(readFileSync(new URL(f, import.meta.url), 'utf8'), ctx, { filename: f });
 
   ctx.__name = name; ctx.__mode = mode; ctx.__port = port || PORT;
-  return vm.runInContext(`new NetGame('ws://localhost:'+__port, __name, __mode, {})`, ctx);
+  const g = vm.runInContext(`new NetGame('ws://localhost:'+__port, __name, __mode, {})`, ctx);
+  g.chat = ctx.CHAT.lines;
+  return g;
 }
 
 const waitFor = async (fn, ms = 6000, what = 'condition') => {
@@ -145,6 +150,50 @@ try {
   assert.ok(daveSeenByCarol.def && daveSeenByCarol.barrels.length > 0, 'remote player has barrels');
   test('remote player renders with barrels rebuilt from the tank table');
   const b = d;
+
+  console.log('\nChat and commands');
+  const said = (cl, re) => cl.chat.filter((m) => re.test(m.text));
+  const chatty = async (cl, text) => { cl.sendChat(text); await sleep(500); };   // 400ms server limit
+
+  await chatty(c, 'hello dave');
+  assert.ok(said(d, /hello dave/).length, 'message reached the other client');
+  assert.equal(said(d, /hello dave/)[0].who, 'Carol');
+  assert.equal(said(d, /hello dave/)[0].kind, 'player');
+  test('a chat line reaches every client in the arena, named and coloured');
+
+  await chatty(c, '/roll 6');
+  assert.ok(said(d, /Carol rolls \d+ out of 6/).length, 'command output broadcast');
+  test('/roll broadcasts its result to the arena');
+
+  await chatty(c, '/w Dave psst');
+  const whispers = said(d, /psst/);
+  assert.ok(whispers.length === 1 && whispers[0].kind === 'whisper', 'one private line, tagged as a whisper');
+  assert.match(whispers[0].who, /Carol/, 'the recipient is told who sent it');
+  test('/w delivers a private line to one player');
+
+  await chatty(a, '/god');
+  assert.ok(said(a, /is a cheat/).length, 'cheat refused outside sandbox');
+  assert.equal(said(a, /God mode ON/).length, 0, 'and definitely not applied');
+  test('cheats are refused in a non-sandbox arena');
+
+  // Sandbox is a small arena full of bots; Carol may well be dead by now, and a
+  // cheat on a corpse is refused by design.
+  if (c.player.dead) { c.respawn(); await waitFor(() => !c.player.dead, 6000, 'Carol respawning'); }
+  await chatty(c, '/god');
+  assert.ok(said(c, /God mode ON/).length, 'cheat applied in sandbox');
+  await chatty(c, '/class booster');
+  await waitFor(() => c.player.def && c.player.def.name === 'Booster', 4000, 'class cheat applying');
+  test('/god and /class apply server-side in a Sandbox arena');
+
+  const before = d.chat.length;
+  for (let i = 0; i < 6; i++) c.sendChat('spam ' + i);
+  await sleep(600);
+  assert.ok(d.chat.length - before <= 2, `rate limited (${d.chat.length - before} lines got through)`);
+  test('chat is rate limited to roughly one line per 400ms');
+
+  await chatty(c, '/nonsense');
+  assert.ok(said(c, /Unknown command/).length);
+  test('an unknown command answers instead of crashing the arena');
 
   console.log('\nView culling');
   const far = a.entities.filter((e) => Math.abs(e.x - a.player.x) > (1920 / a.player.fov) / 1.5 + 400);

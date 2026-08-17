@@ -244,7 +244,10 @@ Barrel.prototype.spawn = function (m, accel, b, d, t, g) {
     x: m.x, y: m.y, angle: ang,
     size: Math.max(2, (d.width / 2) * b.sizeRatio * t.scaleFactor),
     sides: b.sides !== undefined ? b.sides : (b.type === 'drone' || b.type === 'swarm' ? 3 : b.type === 'necrodrone' ? 4 : b.type === 'trap' ? 3 : 1),
-    team: t.team, owner: t,
+    // A turret is not an entity, so its shots must be owned by the tank it is
+    // bolted to — otherwise canInteract() never matches and they hit their own
+    // tank on the way out (and kills go uncredited).
+    team: t.team, owner: t.isTurret ? t.parent : t,
     fill: b.color || t.fill, stroke: b.stroke || t.stroke,
     maxHealth: (1.5 * st[S_PEN] + 2) * b.health,
     damage: (7 + st[S_DAMAGE] * 3) * b.damage,
@@ -260,7 +263,7 @@ Barrel.prototype.spawn = function (m, accel, b, d, t, g) {
     case 'drone': case 'swarm': case 'minion':
       proj.minDmg = 1; proj.maxDmg = 1;
       proj.onlySameOwnerCollision = true;
-      proj.accel = accel / 3;
+      proj.accel = (b.type === 'minion' ? accel / 3 : accel) * 2;
       proj.push = 4;
       proj.controllable = !!d.canControlDrones;
       proj.life = b.lifeLength === -1 ? Infinity : 88 * b.lifeLength;
@@ -272,9 +275,9 @@ Barrel.prototype.spawn = function (m, accel, b, d, t, g) {
       proj.type = 'necro'; proj.sides = 4;
       proj.fill = C.necro; proj.stroke = C.necroS;
       proj.onlySameOwnerCollision = true;
-      proj.accel = accel / 3;
       proj.push = 4;
       proj.controllable = true;
+      proj.accel = accel * 2;
       proj.life = Infinity;
       proj.scoreReward = 10;
       proj.noDmgIndicator = false;
@@ -342,6 +345,7 @@ var MINION_BARREL = {
 // ---------------------------------------------------------------- turret
 function Turret(parent, index, count, arc) {
   this.parent = parent;
+  this.isTurret = true;
   this.index = index;
   this.arc = arc;
   this.base = count === 1 ? 0 : (Math.PI * 2 * index) / count;
@@ -366,13 +370,31 @@ Turret.prototype.tick = function () {
 
   if (this.game.tick % 2 === (this.index % 2)) this.target = this.game.findTarget(this, 1700, true);
   if (this.target && !this.target.dead) {
-    var aim = predictAim(this, this.target, 20 * TURRET_BARREL.bullet.speed + 3 * this.stats[S_BSPEED]);
-    this.angle = aim;
+    var b = TURRET_BARREL.bullet;
+    this.angle = interceptAim(this, this.target, (20 + 3 * this.stats[S_BSPEED]) * b.speed,
+                              TURRET_BARREL.size * this.scaleFactor);
   } else {
     this.angle += PASSIVE_ROTATION;
   }
   this.barrel.tick(!!(this.target && !this.target.dead));
 };
+
+// Aimbot, for turrets only — bots keep the cheap guess below.
+// A bullet's travel over n ticks is exactly S*n + (300 + S)*(1 - 0.9^n): terminal
+// speed S (= its accel, under 10% friction) plus the +30 muzzle kick decaying away.
+// Solve that for the flight time, move the target along by it, repeat.
+function interceptAim(from, t, S, muzzle) {
+  // t.vx is post-friction; the tank actually covers vx/0.9 next tick.
+  var vx = t.vx / 0.9, vy = t.vy / 0.9, head = 300 + S;
+  var tx = t.x, ty = t.y, n = 0;
+  for (var i = 0; i < 4; i++) {
+    var d = Math.max(0, Math.hypot(tx - from.x, ty - from.y) - muzzle);
+    n = d / S;
+    for (var j = 0; j < 3; j++) n = Math.max(0, (d - head * (1 - Math.pow(0.9, n))) / S);
+    tx = t.x + vx * n; ty = t.y + vy * n;
+  }
+  return Math.atan2(ty - from.y, tx - from.x);
+}
 
 // Cheap intercept: offset the aim point by the target's perpendicular drift.
 function predictAim(from, t, speed) {
@@ -380,7 +402,9 @@ function predictAim(from, t, speed) {
   var d = Math.hypot(dx, dy) || 1;
   var base = Math.atan2(dy, dx);
   var perp = -Math.sin(base) * t.vx + Math.cos(base) * t.vy;
-  var lim = 0.9 * speed * 1.6;
+  // The cap has to stay under `speed`. Above it the term below goes imaginary,
+  // gets floored to 1, and the offset explodes into a shot ninety degrees wide.
+  var lim = 0.9 * speed;
   perp = Math.max(-lim, Math.min(lim, perp));
   var direct = Math.sqrt(Math.max(1, speed * speed - perp * perp));
   var off = (perp / direct) * d / 2;
@@ -453,7 +477,9 @@ Tank.prototype.recompute = function () {
   this.absorb = def.absorbtionFactor;
   this.push = def.absorbtionFactor;
   this.fov = 0.55 * def.fieldFactor / Math.pow(1.01, (L - 1) / 2);
-  this.statsAvailable = statCount(L) - st.reduce(function (a, b) { return a + b; }, 0);
+  // bonusPoints is the /points cheat; the floor keeps an over-spent build (also
+  // a cheat) from wrapping to 255 when it goes out on the wire as a u8.
+  this.statsAvailable = Math.max(0, statCount(L) + (this.bonusPoints || 0) - st.reduce(function (a, b) { return a + b; }, 0));
 };
 
 Tank.prototype.addScore = function (n) {
@@ -496,6 +522,9 @@ Tank.prototype.upgradeTo = function (id) {
 // Personal notifications. Global ones live on the game; these belong to one
 // player, so on a server they go to that client alone rather than the arena.
 Tank.prototype.notify = function (text, ticks) {
+  // Offline there is one client and no wire, so the local player's notes are
+  // simply the arena feed — nothing else renders them.
+  if (this.isPlayer && !this.game.headless) return this.game.notify(text, ticks);
   if (!this.notes) this.notes = [];
   this.notes.push({ text: text, ttl: ticks || 100 });
 };
@@ -554,6 +583,7 @@ Tank.prototype.tick = function () {
     this.opacity -= d.invisibilityRate;
     this.opacity = Math.max(0, Math.min(1, this.opacity));
   }
+  if (this.cheatInvis) this.opacity = 0;   // /invis, which no class can undo by firing
 
   this.guardAngle += 1;
   if (this.hurtFlash > 0) this.hurtFlash--;
@@ -566,7 +596,12 @@ Tank.prototype.onKill = function (source) {
   this.killedBy = root && root.name ? root.name : 'an unnamed tank';
   // the death screen watches your killer until it dies too
   this.killerEntity = (root && root !== this && root.type === 'tank') ? root : null;
-  if (root && root.type === 'tank' && root !== this) root.kills++;
+  if (root && root.type === 'tank' && root !== this) {
+    root.kills++;
+    // Personal, not arena-wide: your kills are yours. Deaths are already on the
+    // death screen, so only the killer hears about it.
+    root.notify('You killed ' + (this.name || 'an unnamed tank') + '!', 150);
+  }
   if (this.possessing && typeof release === 'function') release(this.game, this);
   if (this.possessedBy && typeof release === 'function') release(this.game, this.possessedBy);
   var logic = this.game.logic;
@@ -778,60 +813,327 @@ Boss.prototype.onKill = function (source) {
 var BOT_NAMES = ['Zephyr', 'Nova', 'Vex', 'Kilo', 'Onyx', 'Rift', 'Sable', 'Juno', 'Pyre', 'Quill', 'Drift', 'Ember',
   'Halo', 'Lynx', 'Mako', 'Nyx', 'Orbit', 'Prism', 'Quasar', 'Rogue', 'Slate', 'Talon', 'Umbra', 'Vault', 'Wraith'];
 
-// Weighted build orders in wire-index terms, chosen once per bot.
+// Full 8-stat orders. The tail matters: a bot at level 45 holds 33 points and
+// a short list leaves the remainder unspendable forever, so every build ranks
+// all eight. Stats a class cannot take (a Smasher's bullet stats, max 0) are
+// refused by upgradeStat and fall through to the next entry on their own.
+// `ram` marks a body-damage build, which decides the class it upgrades into.
 var BOT_BUILDS = [
-  [S_PEN, S_DAMAGE, S_RELOAD, S_BSPEED, S_HEALTH],
-  [S_BODY, S_HEALTH, S_SPEED, S_REGEN],
-  [S_RELOAD, S_DAMAGE, S_PEN, S_SPEED, S_HEALTH],
-  [S_HEALTH, S_PEN, S_DAMAGE, S_REGEN, S_BODY]
+  { ram: 0, order: [S_PEN, S_DAMAGE, S_RELOAD, S_BSPEED, S_HEALTH, S_SPEED, S_BODY, S_REGEN] },
+  { ram: 1, order: [S_BODY, S_HEALTH, S_SPEED, S_REGEN, S_PEN, S_DAMAGE, S_RELOAD, S_BSPEED] },
+  { ram: 0, order: [S_RELOAD, S_DAMAGE, S_PEN, S_SPEED, S_HEALTH, S_BSPEED, S_REGEN, S_BODY] },
+  { ram: 0, order: [S_HEALTH, S_PEN, S_DAMAGE, S_REGEN, S_BODY, S_RELOAD, S_SPEED, S_BSPEED] }
 ];
 
-function tickBot(t) {
-  var g = t.game;
-  if (g.tick % 5 === t.id % 5) {
-    t.aiTarget = g.findTarget(t, 1400, true);
-    t.aiFarm = t.aiTarget ? null : g.findShape(t, 1600);
+// Difficulty is one flat bag of numbers, so a custom difficulty is nothing more
+// than a lerp between `easy` and `extreme` — see botSkill().
+//   react   ticks between target scans; reaction time, in effect
+//   lead    0..1 share of the full intercept solution folded into the aim
+//   aimErr  radians of drifting aim bias
+//   sight   acquisition radius for tanks
+//   farm    multiplier on sight when looking for shapes to farm
+//   range   preferred distance as a fraction of its own weapon reach — the
+//           knob that turns a Sniper into one instead of a bad Machine Gun
+//   strafe  orbit component; 0 walks straight in and stands there
+//   dodge   weight of the incoming-fire avoidance vector
+//   flee    HP fraction that breaks off a fight; 0 never retreats
+//   threat  weighs danger and woundedness against distance when picking a target
+//   hunt    extra pull toward human players
+//   sense   picks a class that fits its build, and repels drones up close
+//   wall    steers around maze walls
+// Two of these used to run backwards up the ladder, so Extreme lost to Hard in
+// a 1v1: a tight fire arc withheld fire exactly when the strafing was best, and
+// a rising flee threshold made the strongest bots run from fights they were
+// winning. Both are gone — see test-bots.mjs, which now guards the ordering.
+var BOT_SKILL = {
+  easy:     { label: 'Easy',      react: 16, lead: 0,    aimErr: 0.38,  sight: 900,  farm: 0.55, range: 0.3,  strafe: 0,   dodge: 0,   flee: 0,    threat: 0,   hunt: 0,   sense: 0,    wall: 0 },
+  medium:   { label: 'Medium',    react: 9,  lead: 0.35, aimErr: 0.17,  sight: 1300, farm: 0.85, range: 0.4,  strafe: 0.3, dodge: 0.2, flee: 0.18, threat: 0.3, hunt: 0,   sense: 0.4,  wall: 1 },
+  hard:     { label: 'Hard',      react: 5,  lead: 0.65, aimErr: 0.08,  sight: 1650, farm: 1,    range: 0.48, strafe: 0.6, dodge: 0.5, flee: 0.22, threat: 0.7, hunt: 0.3, sense: 0.75, wall: 1 },
+  veryhard: { label: 'Very Hard', react: 3,  lead: 0.85, aimErr: 0.035, sight: 2000, farm: 1.1,  range: 0.56, strafe: 0.8, dodge: 0.8, flee: 0.25, threat: 1,   hunt: 0.6, sense: 0.95, wall: 1 },
+  extreme:  { label: 'Extreme',   react: 2,  lead: 1,    aimErr: 0,     sight: 2500, farm: 1.25, range: 0.64, strafe: 1,   dodge: 1,   flee: 0.28, threat: 1.4, hunt: 1,   sense: 1,    wall: 1 }
+};
+var BOT_DIFFICULTIES = ['easy', 'medium', 'hard', 'veryhard', 'extreme'];
+
+// Fourteen knobs is too many dials for a menu, so the custom screen ships six
+// sliders and each one drags its group from the easy value to the extreme one.
+var BOT_KNOB_GROUPS = [
+  { key: 'aim',   label: 'Aim',        blurb: 'accuracy and how far it leads a moving target', knobs: ['lead', 'aimErr'] },
+  { key: 'react', label: 'Reflexes',   blurb: 'how fast it spots you and how far it sees',     knobs: ['react', 'sight'] },
+  { key: 'dodge', label: 'Dodging',    blurb: 'stepping out of the path of incoming fire',     knobs: ['dodge'] },
+  { key: 'move',  label: 'Footwork',   blurb: 'strafing, spacing, and getting around walls',   knobs: ['strafe', 'range', 'wall'] },
+  { key: 'aggro', label: 'Aggression', blurb: 'target choice, hunting you, retreating hurt',   knobs: ['threat', 'hunt', 'flee'] },
+  { key: 'brain', label: 'Game sense', blurb: 'class choices, farming, drone control',         knobs: ['sense', 'farm'] }
+];
+
+// Accepts a difficulty name, or {aim: 0..10, react: 0..10, ...} from the custom menu.
+function botSkill(d) {
+  if (typeof d === 'string') return BOT_SKILL[d] || BOT_SKILL.medium;
+  if (!d || typeof d !== 'object') return BOT_SKILL.medium;
+  var lo = BOT_SKILL.easy, hi = BOT_SKILL.extreme, s = { label: d.label || 'Custom' };
+  BOT_KNOB_GROUPS.forEach(function (grp) {
+    var f = Math.max(0, Math.min(1, (d[grp.key] === undefined ? 5 : d[grp.key]) / 10));
+    grp.knobs.forEach(function (k) { s[k] = lo[k] + (hi[k] - lo[k]) * f; });
+  });
+  s.react = Math.max(1, Math.round(s.react));
+  return s;
+}
+
+// Things worth stepping out of the way of.
+var BOT_INCOMING = { bullet: 1, trap: 1, drone: 1, necro: 1, swarm: 1, minion: 1, skimmer: 1, rocket: 1, glider: 1, firework: 1 };
+
+// A bullet launches at cruise+30 and is then held at its cruise speed, so it
+// runs fast for the first few ticks and settles. Rather than invert that in
+// closed form — two attempts at which were wrong by 3x in both directions —
+// just step the update the simulation itself runs, and count the ticks.
+// Returns 0 if the bullet expires before it covers `d`.
+function botFlightTicks(t, d) {
+  var b = t.barrels[0];
+  if (!b) return 0;
+  var bd = b.def.bullet;
+  var cruise = (20 + 3 * t.stats[S_BSPEED]) * bd.speed;
+  var life = 75 * (bd.lifeLength === -1 || !bd.lifeLength ? 1 : bd.lifeLength);
+  var v = cruise + 30 - (bd.scatterRate || 0) / 2, x = 0;
+  for (var n = 1; n <= life; n++) {
+    v += cruise * 0.1;                 // maintainVelocity
+    x += v;
+    v -= v * 0.1;                      // friction
+    if (x >= d) return n;
   }
-  var goal = t.aiTarget && !t.aiTarget.dead ? t.aiTarget : (t.aiFarm && !t.aiFarm.dead ? t.aiFarm : null);
-  var i = t.input;
-  i.up = i.down = i.left = i.right = 0;
+  return 0;
+}
+
+// Not how far a bullet *can* go — a basic Tank's carries 1750 units, and a shot
+// with three seconds of hang time hits nothing that moves. This is how far it
+// can go and still arrive while the target is roughly where you aimed: one
+// second of flight. That is the range bots actually fight at.
+function botReach(t) {
+  var b = t.barrels[0];
+  if (!b) return 0;
+  return (20 + 3 * t.stats[S_BSPEED]) * b.def.bullet.speed * 25 + 250;
+}
+
+// Where to point. Drones steer themselves at the mouse every tick, so leading
+// them is not just wasted, it is wrong — they get the target's actual position.
+function botAim(t, goal, sk) {
+  var dx = goal.x - t.x, dy = goal.y - t.y;
+  var to = Math.atan2(dy, dx);
+  if (!sk.lead || t.aiDrone) return to;
+  var n = botFlightTicks(t, Math.hypot(dx, dy));
+  if (!n) return to;
+  // The target moves while the bullet is in the air, which moves the distance,
+  // which moves the flight time. If that second point is out of range the
+  // target is simply outrunning the shot: take the direct shot rather than
+  // walking the barrel out to a spot nothing will ever occupy, which is what a
+  // runaway lead looks like from the other end of it.
+  var n2 = botFlightTicks(t, Math.hypot(dx + goal.vx * n, dy + goal.vy * n));
+  if (!n2) return to;
+  return Math.atan2(dy + goal.vy * n2 * sk.lead, dx + goal.vx * n2 * sk.lead);
+}
+
+// Cached on every class change: both answers are read every tick.
+function botClassify(t) {
+  var d = TANK_DEFS[t.tankId];
+  t.rammer = d.barrels.length === 0;
+  t.aiDrone = d.barrels.some(function (b) {
+    var k = b.bullet.type;
+    return k === 'drone' || k === 'swarm' || k === 'minion' || k === 'necrodrone';
+  });
+}
+
+// Does this class suit the stat build the bot committed to at spawn? A rammer
+// build upgrading into a Sniper wastes both halves of itself.
+function botClassScore(d, build) {
+  if (!d) return -Infinity;
+  var ram = d.barrels.length === 0;
+  if (build.ram) return (ram ? 12 : 0) + d.speed * 2 + d.maxHealth * 0.02;
+  return (ram ? -12 : 6 + Math.min(d.barrels.length, 6)) + d.maxHealth * 0.01;
+}
+
+// One pass answers both questions: who to fight, and what to farm if nobody.
+function botScan(t, sk) {
+  var g = t.game, i, e;
+  var sight2 = sk.sight * sk.sight, fs = sk.sight * sk.farm, farm2 = fs * fs;
+  var bestT = null, bestTS = -Infinity, bestS = null, bestSS = -Infinity;
+  for (i = 0; i < g.entities.length; i++) {
+    e = g.entities[i];
+    if (e === t || e.dead || e.sides === 0 || e.owner) continue;
+    if (e.team !== null && e.team === t.team) continue;
+    var d2 = dist2(t, e);
+    if (e.type === 'shape') {
+      if (d2 > farm2 || (e.kind === 'alpha' && t.level < 25)) continue;
+      var ss = (e.scoreReward || 1) / (400 + Math.sqrt(d2));   // value per unit of walking
+      if (ss > bestSS) { bestSS = ss; bestS = e; }
+      continue;
+    }
+    if (e.type !== 'tank' && e.type !== 'boss') continue;
+    if (d2 > sight2) continue;
+    if (e.opacity <= 0 && !t.seesInvisible) continue;          // a hidden Stalker is not there
+    var gap = (e.level || MAX_LEVEL) - t.level;
+    var ts = -Math.sqrt(d2) / 400
+      - sk.threat * Math.max(0, gap) * 0.22                    // punching up is how bots die
+      + sk.threat * (1 - e.health / e.maxHealth) * 2           // finish what is already hurt
+      + (e.isPlayer ? sk.hunt : 0)
+      + (e.type === 'boss' ? sk.threat - 4 : 0);
+    if (sk.threat && gap > 12 && ts < 0) continue;             // that one is out of our league
+    if (ts > bestTS) { bestTS = ts; bestT = e; }
+  }
+  t.aiTarget = bestT;
+  t.aiFarm = bestS;
+}
+
+// Accumulate a push away from anything already in the air that is going to
+// connect. The broadphase grid is one tick stale here, which at bullet speeds
+// is a rounding error.
+function botDodge(t, sk, mv) {
+  if (!sk.dodge) return;
+  // How far ahead it reads the shot. This has to scale with skill too: a fixed
+  // horizon means a maxed dodge knob only pushes harder on threats it already
+  // saw, which is why the top tiers used to be indistinguishable in a duel.
+  var g = t.game, stamp = g.tick * 65537 + t.id, horizon = 10 + 14 * sk.dodge;
+  g.nearby(t.x, t.y, 300 + 260 * sk.dodge, function (p) {
+    if (p.seenBy === stamp) return;
+    p.seenBy = stamp;
+    if (p.dead || p.owner === t || !BOT_INCOMING[p.type]) return;
+    if (p.team !== null && p.team === t.team) return;
+    var dx = p.x - t.x, dy = p.y - t.y, vx = p.vx, vy = p.vy;
+    var vv = vx * vx + vy * vy;
+    if (vv < 1) return;                                        // parked trap, walk around it instead
+    var tc = -(dx * vx + dy * vy) / vv;                         // ticks to closest approach
+    if (tc < 0 || tc > horizon) return;                         // behind us, or not our problem yet
+    var cx = dx + vx * tc, cy = dy + vy * tc;
+    var miss = Math.hypot(cx, cy);
+    if (miss > t.size + p.size + 20) return;                    // already going wide
+    var w = (1 - tc / horizon) * sk.dodge * 2.2;
+    if (miss < 1) { var s = Math.sqrt(vv); mv.x -= vy / s * w; mv.y += vx / s * w; }  // dead on: sidestep
+    else { mv.x -= cx / miss * w; mv.y -= cy / miss * w; }
+  });
+}
+
+function tickBot(t) {
+  var g = t.game, sk = t.botSkill || g.botSkill || BOT_SKILL.medium, i = t.input, k;
+  if (!t.build || !t.build.order) t.build = pick(BOT_BUILDS);
+  if (t.aiTankId !== t.tankId) { botClassify(t); t.aiTankId = t.tankId; }   // upgrades, /clone, /class
+  if (g.tick % sk.react === t.id % sk.react) botScan(t, sk);
+
+  var tgt = t.aiTarget && !t.aiTarget.dead ? t.aiTarget : null;
+  // Break off while hurt and come back once the regen has done its work. The
+  // gap between the two thresholds stops it flip-flopping on the line, and the
+  // level check stops it fleeing a cripple it was two shots from finishing.
+  if (tgt && sk.flee && (tgt.level || MAX_LEVEL) >= t.level - 4) {
+    if (t.health < t.maxHealth * sk.flee) t.fleeing = true;
+    else if (t.health > t.maxHealth * 0.75) t.fleeing = false;
+  } else t.fleeing = false;
+
+  var goal = tgt || (t.aiFarm && !t.aiFarm.dead ? t.aiFarm : null);
+  var mv = { x: 0, y: 0 }, aim, aimDist = 400, d = 0;
 
   if (goal) {
-    t.mouse.x = goal.x; t.mouse.y = goal.y;
-    var d = Math.hypot(goal.x - t.x, goal.y - t.y);
-    var ideal = t.rammer ? 0 : 450;
-    var away = d < ideal - 80;
-    var ang = Math.atan2(goal.y - t.y, goal.x - t.x) + (away ? Math.PI : 0);
-    if (Math.abs(d - ideal) > 80) {
-      if (Math.cos(ang) > 0.35) i.right = 1; else if (Math.cos(ang) < -0.35) i.left = 1;
-      if (Math.sin(ang) > 0.35) i.down = 1; else if (Math.sin(ang) < -0.35) i.up = 1;
+    var gx = goal.x - t.x, gy = goal.y - t.y;
+    d = Math.hypot(gx, gy) || 1;
+    aimDist = d;
+    var to = Math.atan2(gy, gx);
+    // Spacing costs walking time, so it has to earn itself. A square or a
+    // pentagon dies long before its contact damage matters — close in and farm.
+    // An Alpha Pentagon carries 3000 HP at 5 damage a tick and will outlast
+    // anything hugging it, so it gets kited exactly like a tank does.
+    var slugfest = !tgt && goal.health * goal.damagePerTick > 2000;
+    var ideal = t.rammer ? 0
+      : (tgt || slugfest) ? Math.max(220, Math.min(1100, botReach(t) * sk.range)) * (t.fleeing ? 1.8 : 1)
+      : 260;
+    // Signed, and never zero in the band around `ideal` — the old dead zone is
+    // what left bots standing still at exactly the range they were being shot from.
+    mv.x += Math.cos(to) * Math.max(-1, Math.min(1, (d - ideal) / 160));
+    mv.y += Math.sin(to) * Math.max(-1, Math.min(1, (d - ideal) / 160));
+    if (!t.rammer && sk.strafe) {
+      if (t.strafeDir === undefined || g.tick % 140 === t.id % 140) t.strafeDir = sign();
+      mv.x += -Math.sin(to) * sk.strafe * t.strafeDir;
+      mv.y += Math.cos(to) * sk.strafe * t.strafeDir;
     }
-    i.fire = t.rammer ? 0 : 1;
+    aim = botAim(t, goal, sk);
   } else {
-    // wander toward the shape fields
-    if (g.tick % 90 === t.id % 90 || t.wander === undefined) t.wander = Math.random() * Math.PI * 2;
-    t.mouse.x = t.x + Math.cos(t.wander) * 400; t.mouse.y = t.y + Math.sin(t.wander) * 400;
-    if (Math.cos(t.wander) > 0.35) i.right = 1; else if (Math.cos(t.wander) < -0.35) i.left = 1;
-    if (Math.sin(t.wander) > 0.35) i.down = 1; else if (Math.sin(t.wander) < -0.35) i.up = 1;
-    i.fire = 0;
+    if (t.wander === undefined || g.tick % 90 === t.id % 90) t.wander = Math.random() * Math.PI * 2;
+    mv.x += Math.cos(t.wander); mv.y += Math.sin(t.wander);
+    aim = t.wander;
   }
-  // steer back in-bounds
+
+  // A bias that drifts rather than jitters — a shot pulled to one side reads as
+  // a bad player, per-tick noise reads as a broken one.
+  if (sk.aimErr) {
+    if (t.aimBias === undefined || g.tick % 17 === t.id % 17) t.aimBias = rand(-sk.aimErr, sk.aimErr);
+    aim += t.aimBias;
+  }
+  // Distance matters: drone classes fly their drones to the mouse, not just at it.
+  t.mouse.x = t.x + Math.cos(aim) * aimDist;
+  t.mouse.y = t.y + Math.sin(aim) * aimDist;
+
+  botDodge(t, sk, mv);
+
+  // Maze walls. Pure repulsion, so it rounds corners but will not solve a real
+  // labyrinth — the stuck check below is what covers the rest.
+  // ponytail: no pathfinding, add A* over the wall grid if maze mode ever needs it
+  if (sk.wall && g.walls.length) {
+    for (k = 0; k < g.walls.length; k++) {
+      var w = g.walls[k];
+      var nx = Math.max(w.x - w.size, Math.min(t.x, w.x + w.size));
+      var ny = Math.max(w.y - w.width, Math.min(t.y, w.y + w.width));
+      var wx = t.x - nx, wy = t.y - ny, wd = Math.hypot(wx, wy);
+      if (wd > 190) continue;
+      if (wd < 1) { wx = -Math.cos(t.angle); wy = -Math.sin(t.angle); wd = 1; }
+      var f = (1 - wd / 190) * 2 * sk.wall;
+      mv.x += wx / wd * f; mv.y += wy / wd * f;
+    }
+  }
+
+  // Wedged on a wall, a corner, or a pile of shapes: bail out sideways for a
+  // second. Catches every cause at once, so nothing needs to name them.
+  if (g.tick % 10 === t.id % 10) {
+    if (t.wasMoving && t.stuckX !== undefined && Math.abs(t.x - t.stuckX) + Math.abs(t.y - t.stuckY) < 25) {
+      t.unstick = 22; t.escape = Math.random() * Math.PI * 2;
+    }
+    t.stuckX = t.x; t.stuckY = t.y;
+  }
+  if (t.unstick > 0) { t.unstick--; mv.x = Math.cos(t.escape) * 1.5; mv.y = Math.sin(t.escape) * 1.5; }
+
+  var m = Math.hypot(mv.x, mv.y);
+  i.up = i.down = i.left = i.right = 0;
+  if (m > 0.02) {
+    var ux = mv.x / m, uy = mv.y / m;
+    if (ux > 0.35) i.right = 1; else if (ux < -0.35) i.left = 1;
+    if (uy > 0.35) i.down = 1; else if (uy < -0.35) i.up = 1;
+  }
+  // steer back in-bounds — this one overrules everything above it
   var a = g.arena;
   if (t.x < a.left + 300) { i.right = 1; i.left = 0; }
   if (t.x > a.right - 300) { i.left = 1; i.right = 0; }
   if (t.y < a.top + 300) { i.down = 1; i.up = 0; }
   if (t.y > a.bottom - 300) { i.up = 1; i.down = 0; }
+  t.wasMoving = !!(i.up || i.down || i.left || i.right);
+
+  // Barrels snap to the mouse in the same tick, so there is never a swing to
+  // wait out: anything with a barrel and a target shoots. Rammers hold fire
+  // because they have no barrel to fire.
+  i.fire = (goal && !t.rammer) ? 1 : 0;
+  i.altFire = (t.aiDrone && sk.sense >= 0.7 && tgt && d < 320) ? 1 : 0;   // repel, don't feed them
 
   // spend points and take upgrades
   if (t.statsAvailable > 0) {
-    if (!t.build) t.build = pick(BOT_BUILDS);
-    for (var k = 0; k < t.build.length; k++) if (t.upgradeStat(t.build[k])) break;
-    if (t.statsAvailable > 0 && t.stats.every(function (v, idx) { return v >= t.def.stats[idx].max; })) t.statsAvailable = 0;
+    for (k = 0; k < t.build.order.length; k++) if (t.upgradeStat(t.build.order[k])) break;
   }
   if (t.pendingUpgrades.length) {
-    var choice = pick(t.pendingUpgrades);
+    var choice;
+    if (Math.random() < sk.sense) {
+      // Everything close to the best, not the strict best: the score is a rough
+      // proxy, and 28 bots all converging on one class reads as broken. The
+      // margin is under the rammer bonus, so a body build still goes body.
+      var best = -Infinity, pool = [], sc = [];
+      for (k = 0; k < t.pendingUpgrades.length; k++) {
+        sc[k] = botClassScore(TANK_DEFS[t.pendingUpgrades[k]], t.build);
+        if (sc[k] > best) best = sc[k];
+      }
+      for (k = 0; k < t.pendingUpgrades.length; k++) if (sc[k] >= best - 2) pool.push(t.pendingUpgrades[k]);
+      choice = pick(pool);
+    } else choice = pick(t.pendingUpgrades);
     t.upgradeTo(choice);
-    t.rammer = TANK_DEFS[t.tankId].barrels.length === 0;
   }
 }
 
@@ -868,7 +1170,8 @@ function Game(modeKey, playerName, opts) {
   for (var i = 0; i < this.wantedShapes; i++) this.spawnShape();
 
   if (!this.headless) this.player = this.spawnTank({ name: playerName, isPlayer: true });
-  this.botCount = opts.botCount !== undefined ? opts.botCount : (this.mode.sandbox ? 4 : 28);
+  this.setDifficulty(opts.difficulty || 'medium');
+  this.botCount = opts.botCount !== undefined ? opts.botCount : (this.mode.sandbox ? 64 : 88);
   for (var b = 0; b < this.botCount; b++) this.spawnBot();
 }
 
@@ -883,7 +1186,8 @@ Game.prototype.teamOf = function () {
   return this.teams.reduce(function (a, b) { return counts[a] <= counts[b] ? a : b; });
 };
 
-Game.prototype.spawnPoint = function (team) {
+// anywhere: skip the outer-ring rule, so bots scatter over the whole map.
+Game.prototype.spawnPoint = function (team, anywhere) {
   var a = this.arena;
   if (team) {
     var base = this.bases.filter(function (b) { return b.team === team; })[0];
@@ -891,7 +1195,7 @@ Game.prototype.spawnPoint = function (team) {
   }
   for (var i = 0; i < 20; i++) {
     var x = rand(a.left, a.right), y = rand(a.top, a.bottom);
-    if (Math.max(Math.abs(x), Math.abs(y)) < a.right / 2) continue;
+    if (!anywhere && Math.max(Math.abs(x), Math.abs(y)) < a.right / 2) continue;
     if (this.inWall(x, y, 60)) continue;
     return { x: x, y: y };
   }
@@ -900,7 +1204,7 @@ Game.prototype.spawnPoint = function (team) {
 
 Game.prototype.spawnTank = function (o) {
   var team = o.team !== undefined ? o.team : this.teamOf();
-  var p = this.spawnPoint(team);
+  var p = this.spawnPoint(team, o.bot);
   var t = new Tank(this, { x: p.x, y: p.y, name: o.name, isPlayer: o.isPlayer, bot: o.bot, team: team, score: o.score || 0 });
   this.paintTeam(t);
   return this.add(t);
@@ -916,7 +1220,15 @@ Game.prototype.spawnBot = function () {
   var t = this.spawnTank({ name: pick(BOT_NAMES) + (Math.random() < 0.4 ? ' ' + ((Math.random() * 99) | 0) : ''), bot: true });
   t.autoFire = false;
   t.build = pick(BOT_BUILDS);
+  botClassify(t);
   return t;
+};
+
+// Takes a difficulty name or a custom {aim, react, dodge, move, aggro, brain} bag.
+Game.prototype.setDifficulty = function (d) {
+  this.difficulty = d || 'medium';
+  this.botSkill = botSkill(this.difficulty);
+  return this.botSkill;
 };
 
 Game.prototype.spawnShape = function () {
@@ -1029,18 +1341,6 @@ Game.prototype.findTarget = function (from, range, preferTanks, ownerAnchor) {
   return best;
 };
 
-Game.prototype.findShape = function (from, range) {
-  var best = null, bestD = range * range;
-  for (var i = 0; i < this.entities.length; i++) {
-    var e = this.entities[i];
-    if (e.type !== 'shape' || e.dead) continue;
-    if (e.kind === 'alpha' && from.level < 25) continue;
-    var d = dist2(from, e);
-    if (d < bestD) { bestD = d; best = e; }
-  }
-  return best;
-};
-
 // Orphaned projectiles outlive their owner and can kill them posthumously.
 Game.prototype.orphan = function (tank) {
   for (var i = 0; i < this.entities.length; i++) {
@@ -1065,6 +1365,18 @@ Game.prototype.rebuildGrid = function () {
       var cell = this.grid.get(k);
       if (!cell) this.grid.set(k, [e]); else cell.push(e);
     }
+  }
+};
+
+// Walk the cells covering a circle. Entities spanning several cells arrive more
+// than once — callers that count things dedupe with a stamp.
+Game.prototype.nearby = function (x, y, r, cb) {
+  var x0 = Math.floor((x - r) / HASH_CELL), x1 = Math.floor((x + r) / HASH_CELL);
+  var y0 = Math.floor((y - r) / HASH_CELL), y1 = Math.floor((y + r) / HASH_CELL);
+  for (var gx = x0; gx <= x1; gx++) for (var gy = y0; gy <= y1; gy++) {
+    var cell = this.grid.get(gx * 46337 + gy);
+    if (!cell) continue;
+    for (var i = 0; i < cell.length; i++) cb(cell[i]);
   }
 };
 
@@ -1317,5 +1629,6 @@ Game.prototype.respawnPlayer = function (name, old) {
 
 if (typeof module !== 'undefined') module.exports = {
   Game: Game, Tank: Tank, Entity: Entity, Shape: Shape, Barrel: Barrel,
-  handleCollision: handleCollision, collides: collides, predictAim: predictAim
+  handleCollision: handleCollision, collides: collides, predictAim: predictAim, interceptAim: interceptAim,
+  BOT_SKILL: BOT_SKILL, BOT_DIFFICULTIES: BOT_DIFFICULTIES, BOT_KNOB_GROUPS: BOT_KNOB_GROUPS, botSkill: botSkill
 };

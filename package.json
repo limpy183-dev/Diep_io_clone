@@ -5,7 +5,7 @@
   "private": true,
   "scripts": {
     "start": "node server.js",
-    "test": "node test.mjs && node test-net.mjs",
+    "test": "node test.mjs && node test-net.mjs && node test-wheel.mjs && node test-bots.mjs",
     "test:sim": "node test.mjs",
     "test:net": "node test-net.mjs"
   },
