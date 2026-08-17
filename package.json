@@ -1,0 +1,15 @@
+{
+  "name": "tank-arena",
+  "version": "1.0.0",
+  "description": "Browser tank-arena game with an authoritative multiplayer server",
+  "private": true,
+  "scripts": {
+    "start": "node server.js",
+    "test": "node test.mjs && node test-net.mjs",
+    "test:sim": "node test.mjs",
+    "test:net": "node test-net.mjs"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "tank-arena",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "server.js",
+        "8137"
+      ],
+      "port": 8137
+    }
+  ]
+}

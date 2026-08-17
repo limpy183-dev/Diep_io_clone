@@ -1,0 +1,1321 @@
+// engine.js — fixed 25Hz simulation. Everything gameplay lives here; render.js
+// only reads. Runs unmodified in Node (see test.mjs).
+
+// ---------------------------------------------------------------- helpers
+function rand(a, b) { return a + Math.random() * (b - a); }
+function pick(arr) { return arr[(Math.random() * arr.length) | 0]; }
+function sign() { return Math.random() < 0.5 ? -1 : 1; }
+function angleDiff(a, b) { var d = (b - a) % (Math.PI * 2); if (d > Math.PI) d -= Math.PI * 2; if (d < -Math.PI) d += Math.PI * 2; return d; }
+function dist2(a, b) { var dx = a.x - b.x, dy = a.y - b.y; return dx * dx + dy * dy; }
+
+var NEXT_ID = 1;
+
+// ---------------------------------------------------------------- entity
+// One class, tagged by `type`. A hierarchy here buys nothing: every entity
+// shares position/physics/health and differs only in its tick().
+function Entity(game, o) {
+  this.id = NEXT_ID++;
+  this.game = game;
+  this.type = o.type;
+  this.x = o.x || 0; this.y = o.y || 0;
+  this.vx = 0; this.vy = 0;
+  this.angle = o.angle || 0;
+  this.size = o.size || 10;
+  this.width = o.width || 0;       // rectangles only
+  this.sides = o.sides === undefined ? 1 : o.sides;
+  this.team = o.team === undefined ? null : o.team;
+  this.owner = o.owner || null;    // root tank for projectiles
+  this.fill = o.fill || C.blue;
+  this.stroke = o.stroke || C.blueS;
+  this.opacity = 1;
+
+  this.maxHealth = o.maxHealth || 1;
+  this.health = this.maxHealth;
+  this.damagePerTick = o.damage || 0;
+  this.damageReduction = 1;
+  this.minDmg = o.minDmg === undefined ? 1 : o.minDmg;
+  this.maxDmg = o.maxDmg === undefined ? 4 : o.maxDmg;
+  this.absorb = o.absorb === undefined ? 1 : o.absorb;
+  this.push = o.push === undefined ? 1 : o.push;
+  this.scoreReward = o.score || 0;
+
+  this.dead = false;
+  this.deathFrame = 0;
+  this.lastDamage = -9999;
+  this.hurtFlash = 0;
+  this.life = o.life || Infinity;   // ticks remaining
+  this.age = 0;
+
+  this.noOwnTeamCollision = false;
+  this.onlySameOwnerCollision = false;
+  this.canEscapeArena = false;
+  this.canMoveThroughWalls = false;
+  this.isSolidWall = false;
+  this.hiddenHealthbar = false;
+  this.noDmgIndicator = false;
+
+  // render interpolation
+  this.px = this.x; this.py = this.y; this.pa = this.angle; this.psize = this.size;
+}
+
+Entity.prototype.addVelocity = function (a, m) { this.vx += Math.cos(a) * m; this.vy += Math.sin(a) * m; };
+// Terminal speed under 10% friction is 10x the per-tick acceleration, which is
+// what every "maintain speed X" in the game actually means.
+Entity.prototype.maintainVelocity = function (a, maxSpeed) { this.addVelocity(a, maxSpeed * 0.1); };
+
+Entity.prototype.applyPhysics = function () {
+  var sp = Math.hypot(this.vx, this.vy);
+  if (sp < 0.01) { this.vx = 0; this.vy = 0; sp = 0; }
+  if (this.dead) { this.vx /= 2; this.vy /= 2; }
+  this.x += this.vx; this.y += this.vy;
+  this.vx -= this.vx * 0.1; this.vy -= this.vy * 0.1;   // friction: -10% of current velocity
+
+  if (!this.canEscapeArena) {
+    var a = this.game.arena, p = ARENA_PADDING;
+    if (this.x < a.left - p) this.x = a.left - p;
+    if (this.x > a.right + p) this.x = a.right + p;
+    if (this.y < a.top - p) this.y = a.top - p;
+    if (this.y > a.bottom + p) this.y = a.bottom + p;
+  }
+};
+
+Entity.prototype.applyDamage = function (dmg, source) {
+  if (this.damageReduction === 0) return;
+  this.health -= dmg;
+  this.lastDamage = this.game.tick;
+  if (!this.noDmgIndicator) this.hurtFlash = 4;
+  if (this.opacity < 1 && this.invisible) this.opacity = Math.min(1, this.opacity + 0.2);
+  // The no-overkill scaling is meant to land the loser exactly on 0, but floats
+  // can leave it at +1e-16 and alive. Snap it.
+  if (this.health <= 1e-9) { this.health = 0; this.kill(source); }
+};
+
+Entity.prototype.kill = function (source) {
+  if (this.dead) return;
+  this.dead = true;
+  this.deathFrame = 5;
+  this.health = 0;
+  this.opacity = 1 - 1 / 6;
+  if (this.scoreReward && source) {
+    var root = source; while (root.owner) root = root.owner;
+    if (root.type === 'tank' && !root.dead) root.addScore(this.scoreReward * this.game.mode.xp);
+  }
+  if (this.onKill) this.onKill(source);
+};
+
+// ---------------------------------------------------------------- damage
+// No "damage number minus HP". Both sides deal damage simultaneously through a
+// pair of multipliers, and neither can overkill.
+function handleCollision(a, b) {
+  if (a.team !== null && a.team === b.team) return;
+  if (a.health <= 0 || b.health <= 0) return;
+  if (a.damageReduction === 0 && b.damageReduction === 0) return;
+  if ((a.damagePerTick === 0 && a.push === 0) || (b.damagePerTick === 0 && b.push === 0)) return;
+
+  var common = Math.max(a.minDmg, b.minDmg) * Math.min(a.maxDmg, b.maxDmg);
+  var dAB = a.damagePerTick * common * b.damageReduction;
+  var dBA = b.damagePerTick * common * a.damageReduction;
+
+  var ratio = Math.max(dBA > 0 ? 1 - a.health / dBA : -Infinity, dAB > 0 ? 1 - b.health / dAB : -Infinity);
+  var scale = Math.min(1, 1 - ratio);
+  if (dAB > 0) b.applyDamage(dAB * scale, a);
+  if (dBA > 0) a.applyDamage(dBA * scale, b);
+}
+
+function applyKnockback(self, other) {
+  var mag = self.absorb * other.push;
+  if (mag === 0) return;
+  var ang = (self.x === other.x && self.y === other.y)
+    ? Math.random() * Math.PI * 2
+    : Math.atan2(self.y - other.y, self.x - other.x);
+
+  if (other.sides === 2) {                    // rectangles: snap to nearest axis
+    if (self.canMoveThroughWalls) return;
+    var c = Math.cos(ang) / other.size, s = Math.sin(ang) / other.width;
+    ang = Math.abs(c) > Math.abs(s) ? (c > 0 ? 0 : Math.PI) : (s > 0 ? Math.PI / 2 : -Math.PI / 2);
+  }
+  if (other.isSolidWall) {
+    if (self.owner && other.team !== null && self.team !== other.team) { self.kill(other); return; }
+    mag /= 0.3;
+    if (self.type === 'tank') { self.vx *= 0.3; self.vy *= 0.3; }
+  }
+  self.addVelocity(ang, mag);
+}
+
+function collides(a, b) {
+  if (a.sides === 0 || b.sides === 0) return false;
+  if (a.dead || b.dead) return false;
+  if (a.sides === 2 && b.sides === 2) return false;           // rect vs rect is disabled
+  if (a.sides === 2 || b.sides === 2) {
+    var r = a.sides === 2 ? a : b, c = a.sides === 2 ? b : a;
+    var dx = Math.abs(c.x - r.x), dy = Math.abs(c.y - r.y);
+    var cx = Math.min(dx, r.size), cy = Math.min(dy, r.width);
+    return (dx - cx) * (dx - cx) + (dy - cy) * (dy - cy) <= c.size * c.size;
+  }
+  var rr = a.size + b.size;
+  return dist2(a, b) <= rr * rr;
+}
+
+function canInteract(a, b) {
+  if (a.owner === b || b.owner === a) return false;
+  if (a.owner && a.owner === b.owner) {
+    // your own drones bump each other; your own bullets pass through each other
+    if (!(a.onlySameOwnerCollision && b.onlySameOwnerCollision)) return false;
+  }
+  if (a.team !== null && a.team === b.team) {
+    if (a.noOwnTeamCollision || b.noOwnTeamCollision) return false;
+    if (a.onlySameOwnerCollision || b.onlySameOwnerCollision) return a.owner === b.owner;
+  }
+  return true;
+}
+
+// ---------------------------------------------------------------- barrels
+function Barrel(parent, def, index) {
+  this.parent = parent;
+  this.def = def;
+  this.index = index;
+  this.cycle = 0;
+  this.children = [];        // live drones/minions from this barrel
+  this.recoilAnim = 0;       // 0..1 visual pull-back
+}
+
+Barrel.prototype.period = function () {
+  return Math.max(1, this.parent.reloadTime * this.def.reload);
+};
+
+Barrel.prototype.tick = function (shooting) {
+  var d = this.def;
+  this.recoilAnim *= 0.8;
+  if (d.droneCount) {
+    this.children = this.children.filter(function (c) { return !c.dead; });
+    if (this.children.length >= this.maxDrones()) { this.cycle = this.period(); return; }
+  }
+  var p = this.period();
+  if (this.cycle < p) this.cycle += 1;
+  if (this.cycle >= p && (shooting || d.forceFire)) { this.shoot(); this.cycle = 0; }
+};
+
+Barrel.prototype.maxDrones = function () {
+  var t = this.parent;
+  // Necromancer's Reload stat is relabelled Drone Count: 11 + points per barrel.
+  if (this.def.bullet.type === 'necrodrone') return 11 + t.stats[S_RELOAD];
+  return Math.min(this.def.droneCount, 1e6);
+};
+
+// mouth position in world space
+Barrel.prototype.mouth = function () {
+  var t = this.parent, k = t.scaleFactor, a = t.angle + this.def.angle;
+  var len = this.def.size * k, off = this.def.offset * k;
+  return { x: t.x + Math.cos(a) * len - Math.sin(a) * off,
+           y: t.y + Math.sin(a) * len + Math.cos(a) * off, a: a };
+};
+
+// Who absorbs a barrel's recoil. A turret has no body of its own, so it pushes
+// the tank it is bolted to; a missile pushes *itself*, which is exactly how the
+// Rocketeer and Glider propel themselves. Everything else pushes itself.
+function recoilTarget(parent) {
+  if (typeof parent.addVelocity === 'function') return parent;
+  return parent.parent && typeof parent.parent.addVelocity === 'function' ? parent.parent : null;
+}
+
+Barrel.prototype.shoot = function () {
+  var t = this.parent, g = t.game, d = this.def, b = d.bullet;
+  var m = this.mouth();
+  this.recoilAnim = 1;
+  var st = t.stats;
+  var accel = (20 + 3 * st[S_BSPEED]) * b.speed;
+  var last = null;
+  // Shotgun-family barrels put a whole volley out on one reload.
+  var pellets = d.pellets || 1;
+  for (var shot = 0; shot < pellets; shot++) last = this.spawn(m, accel, b, d, t, g);
+
+  // One recoil impulse per trigger pull, not per pellet.
+  var target = recoilTarget(t);
+  if (target) target.addVelocity(m.a + Math.PI, d.recoil * 2);
+  return last;
+};
+
+Barrel.prototype.spawn = function (m, accel, b, d, t, g) {
+  var st = t.stats;
+  var scatter = (Math.PI / 180) * b.scatterRate * (Math.random() - 0.5) * 10;
+  var ang = m.a + scatter;
+  var proj = new Entity(g, {
+    type: b.type === 'necrodrone' ? 'necro' : b.type,
+    x: m.x, y: m.y, angle: ang,
+    size: Math.max(2, (d.width / 2) * b.sizeRatio * t.scaleFactor),
+    sides: b.sides !== undefined ? b.sides : (b.type === 'drone' || b.type === 'swarm' ? 3 : b.type === 'necrodrone' ? 4 : b.type === 'trap' ? 3 : 1),
+    team: t.team, owner: t,
+    fill: b.color || t.fill, stroke: b.stroke || t.stroke,
+    maxHealth: (1.5 * st[S_PEN] + 2) * b.health,
+    damage: (7 + st[S_DAMAGE] * 3) * b.damage,
+    absorb: b.absorbtionFactor,
+    push: (7 / 3 + st[S_DAMAGE]) * b.damage * b.absorbtionFactor
+  });
+  proj.barrel = this;
+  proj.accel = accel;
+  proj.noDmgIndicator = true;
+  proj.hiddenHealthbar = true;
+
+  switch (b.type) {
+    case 'drone': case 'swarm': case 'minion':
+      proj.minDmg = 1; proj.maxDmg = 1;
+      proj.onlySameOwnerCollision = true;
+      proj.accel = accel / 3;
+      proj.push = 4;
+      proj.controllable = !!d.canControlDrones;
+      proj.life = b.lifeLength === -1 ? Infinity : 88 * b.lifeLength;
+      proj.noDmgIndicator = false;
+      if (b.type === 'minion') { proj.sides = 1; proj.barrels = [new Barrel(proj, MINION_BARREL, 0)]; proj.statsOwner = t; }
+      break;
+    case 'necrodrone':
+      proj.minDmg = 1; proj.maxDmg = 1;
+      proj.type = 'necro'; proj.sides = 4;
+      proj.fill = C.necro; proj.stroke = C.necroS;
+      proj.onlySameOwnerCollision = true;
+      proj.accel = accel / 3;
+      proj.push = 4;
+      proj.controllable = true;
+      proj.life = Infinity;
+      proj.scoreReward = 10;
+      proj.noDmgIndicator = false;
+      break;
+    case 'trap':
+      proj.minDmg = 0.25; proj.maxDmg = 1;
+      proj.noOwnTeamCollision = true;
+      proj.isStar = true;
+      proj.life = 75 * b.lifeLength;
+      break;
+    case 'skimmer': case 'rocket': case 'glider':
+      proj.minDmg = 0.25; proj.maxDmg = 1;
+      proj.noOwnTeamCollision = true;
+      proj.canEscapeArena = false;
+      proj.life = MISSILE_LIFE[b.type] || 75 * b.lifeLength;
+      proj.barrels = MISSILE_BARRELS[b.type].map(function (bd, i) { return new Barrel(proj, bd, i); });
+      proj.statsOwner = t;
+      proj.spin = b.type === 'skimmer' ? 0.1 : 0;
+      proj.hiddenHealthbar = false;
+      break;
+    case 'firework':
+      // A hexagonal shell carrying its own shard barrels, fired all at once on burst.
+      proj.minDmg = 0.25; proj.maxDmg = 1;
+      proj.noOwnTeamCollision = true;
+      proj.canEscapeArena = true;
+      proj.sides = 6;
+      proj.life = FIREWORK.life;
+      proj.barrels = FIREWORK_BARRELS.map(function (bd, i) { return new Barrel(proj, bd, i); });
+      proj.statsOwner = t;
+      proj.hiddenHealthbar = false;
+      proj.noDmgIndicator = false;
+      break;
+    default: // bullet
+      proj.minDmg = 0.25; proj.maxDmg = 1;
+      proj.noOwnTeamCollision = true;
+      proj.canEscapeArena = true;
+      proj.life = 75 * b.lifeLength;
+  }
+
+  proj.addVelocity(ang, accel + 30 - Math.random() * b.scatterRate);
+  if (b.type === 'trap') proj.accel = 0;            // traps coast to a stop and stay put
+  g.add(proj);
+  if (d.droneCount) this.children.push(proj);
+  return proj;
+};
+
+// Fire every shard barrel at once, then the shell is spent.
+function burstFirework(p) {
+  if (p.burst || !p.barrels) return;
+  p.burst = true;
+  var owner = p.statsOwner || p.owner;
+  p.stats = owner ? owner.stats : [0, 0, 0, 0, 0, 0, 0, 0];
+  p.reloadTime = owner ? owner.reloadTime : 15;
+  p.scaleFactor = 1;
+  for (var i = 0; i < p.barrels.length; i++) p.barrels[i].shoot();
+  p.kill(null);
+}
+
+var MINION_BARREL = {
+  angle: 0, offset: 0, size: 55, width: 42, delay: 0, reload: 2, recoil: 0,
+  isTrapezoid: false, trapezoidDirection: 0, addon: null,
+  bullet: { type: 'bullet', sizeRatio: 1, health: 0.7, damage: 0.5, speed: 0.9, scatterRate: 1, lifeLength: 1, absorbtionFactor: 1 }
+};
+
+// ---------------------------------------------------------------- turret
+function Turret(parent, index, count, arc) {
+  this.parent = parent;
+  this.index = index;
+  this.arc = arc;
+  this.base = count === 1 ? 0 : (Math.PI * 2 * index) / count;
+  this.angle = 0;
+  this.target = null;
+  this.barrel = new Barrel(this, TURRET_BARREL, 0);
+  this.stats = parent.stats;
+  this.reloadTime = parent.reloadTime;
+  this.scaleFactor = parent.scaleFactor;
+  this.game = parent.game;
+  this.team = parent.team;
+  this.fill = parent.fill; this.stroke = parent.stroke;
+  this.x = parent.x; this.y = parent.y;
+}
+Turret.prototype.tick = function () {
+  var p = this.parent, r = p.size;
+  this.stats = p.stats; this.reloadTime = p.reloadTime; this.scaleFactor = p.scaleFactor;
+  this.team = p.team; this.fill = p.fill; this.stroke = p.stroke;
+  var mount = p.angle * (this.arc ? 1 : 0) + this.base;
+  this.x = p.x + (this.arc ? Math.cos(mount) * r * TURRET.dist : 0);
+  this.y = p.y + (this.arc ? Math.sin(mount) * r * TURRET.dist : 0);
+
+  if (this.game.tick % 2 === (this.index % 2)) this.target = this.game.findTarget(this, 1700, true);
+  if (this.target && !this.target.dead) {
+    var aim = predictAim(this, this.target, 20 * TURRET_BARREL.bullet.speed + 3 * this.stats[S_BSPEED]);
+    this.angle = aim;
+  } else {
+    this.angle += PASSIVE_ROTATION;
+  }
+  this.barrel.tick(!!(this.target && !this.target.dead));
+};
+
+// Cheap intercept: offset the aim point by the target's perpendicular drift.
+function predictAim(from, t, speed) {
+  var dx = t.x - from.x, dy = t.y - from.y;
+  var d = Math.hypot(dx, dy) || 1;
+  var base = Math.atan2(dy, dx);
+  var perp = -Math.sin(base) * t.vx + Math.cos(base) * t.vy;
+  var lim = 0.9 * speed * 1.6;
+  perp = Math.max(-lim, Math.min(lim, perp));
+  var direct = Math.sqrt(Math.max(1, speed * speed - perp * perp));
+  var off = (perp / direct) * d / 2;
+  return Math.atan2(dy + Math.cos(base) * off, dx - Math.sin(base) * off);
+}
+
+// ---------------------------------------------------------------- tank
+function Tank(game, o) {
+  Entity.call(this, game, { type: 'tank', x: o.x, y: o.y, team: o.team, sides: 1, size: 50 });
+  this.name = o.name || '';
+  this.isPlayer = !!o.isPlayer;
+  this.bot = !!o.bot;
+  this.score = o.score || 0;
+  this.level = levelFromScore(this.score);
+  this.stats = [0, 0, 0, 0, 0, 0, 0, 0];
+  this.queued = [];
+  this.tankId = 0;
+  this.pendingUpgrades = [];
+  this.upgradesTaken = [];
+  this.input = { up: 0, down: 0, left: 0, right: 0, fire: 0, altFire: 0 };
+  this.mouse = { x: o.x + 100, y: o.y };
+  this.autoFire = false;
+  this.autoSpin = false;
+  this.spinAngle = 0;
+  this.godMode = false;
+  this.kills = 0;
+  this.spawnTick = game.tick;
+  this.protectedUntil = game.tick + SPAWN_PROTECT_TICKS;
+  this.minDmg = 1; this.maxDmg = 6;
+  this.guardAngle = 0;
+  this.zoomOffset = 0;
+  this.setTank(o.tankId || 0);
+  this.recompute();
+  this.health = this.maxHealth;
+}
+Tank.prototype = Object.create(Entity.prototype);
+Tank.prototype.constructor = Tank;
+
+Tank.prototype.setTank = function (id) {
+  var def = TANK_DEFS[id];
+  if (!def) return;
+  this.tankId = id;
+  this.def = def;
+  this.sides = def.sides;
+  this.baseSize = def.baseSizeOverride || (def.sides === 4 ? 32.5 * ROOT2 : def.sides === 16 ? 25 * ROOT2 : 50);
+  this.barrels = def.barrels.map(function (b, i) { return new Barrel(this, b, i); }, this);
+  this.invisible = !!def.flags.invisibility;
+  if (!this.invisible) this.opacity = 1;
+  this.recompute();                       // must precede period(), which reads reloadTime
+  this.turrets = [];
+  var post = ADDONS[def.postAddon];
+  if (post && post.turrets) {
+    for (var i = 0; i < post.turrets; i++) this.turrets.push(new Turret(this, i, post.turrets, !!post.arc));
+  }
+  // delay staggers the firing phase: delay 0 fires immediately, 0.5 half a cycle later
+  this.barrels.forEach(function (b) { b.cycle = b.period() * (1 - (b.def.delay || 0)); });
+};
+
+Tank.prototype.recompute = function () {
+  var def = this.def, st = this.stats, L = this.level;
+  this.scaleFactor = Math.pow(1.01, L - 1);
+  this.size = this.baseSize * this.scaleFactor;
+  var mh = def.maxHealth + 2 * (L - 1) + st[S_HEALTH] * 20;
+  if (this.maxHealth) this.health = Math.min(this.health * (mh / this.maxHealth), mh);
+  this.maxHealth = mh;
+  this.regenPerTick = (mh * 4 * st[S_REGEN] + mh) / 25000;
+  this.movementSpeed = def.speed * 2.55 * Math.pow(1.07, st[S_SPEED]) / Math.pow(1.015, L - 1);
+  this.reloadTime = 15 * Math.pow(0.914, st[S_RELOAD]);
+  this.damagePerTick = 5 + st[S_BODY] + (def.bodyDamage || 0);
+  this.absorb = def.absorbtionFactor;
+  this.push = def.absorbtionFactor;
+  this.fov = 0.55 * def.fieldFactor / Math.pow(1.01, (L - 1) / 2);
+  this.statsAvailable = statCount(L) - st.reduce(function (a, b) { return a + b; }, 0);
+};
+
+Tank.prototype.addScore = function (n) {
+  if (this.dead) return;
+  this.score += n;
+  var nl = levelFromScore(this.score);
+  if (nl !== this.level) { this.level = nl; this.recompute(); this.checkUpgrades(); }
+  else this.recompute();
+  this.flushQueue();
+};
+
+Tank.prototype.checkUpgrades = function () {
+  var ups = this.def.upgrades || [];
+  var avail = ups.filter(function (id) {
+    var d = TANK_DEFS[id];
+    return d && !d.flags.devOnly && this.level >= d.levelRequirement;
+  }, this);
+  this.pendingUpgrades = avail;
+};
+
+Tank.prototype.upgradeTo = function (id) {
+  if (this.pendingUpgrades.indexOf(id) === -1) return false;   // server-side gate
+  var d = TANK_DEFS[id];
+  if (!d || this.level < d.levelRequirement) return false;
+  var wasSmasher = this.def.stats[S_DAMAGE].max === 0;
+  this.setTank(id);
+  // Smasher branch refunds points spent on bullet stats.
+  if (d.stats[S_DAMAGE].max === 0 && !wasSmasher) {
+    this.stats[S_DAMAGE] = 0; this.stats[S_PEN] = 0; this.stats[S_BSPEED] = 0; this.stats[S_RELOAD] = 0;
+  }
+  for (var i = 0; i < 8; i++) this.stats[i] = Math.min(this.stats[i], d.stats[i].max);
+  this.upgradesTaken.push(id);
+  this.pendingUpgrades = [];
+  this.recompute();
+  this.checkUpgrades();
+  this.notify(d.upgradeMessage || ('You are now a ' + d.name), 90);
+  return true;
+};
+
+// Personal notifications. Global ones live on the game; these belong to one
+// player, so on a server they go to that client alone rather than the arena.
+Tank.prototype.notify = function (text, ticks) {
+  if (!this.notes) this.notes = [];
+  this.notes.push({ text: text, ttl: ticks || 100 });
+};
+
+Tank.prototype.upgradeStat = function (wire) {
+  if (this.statsAvailable <= 0) return false;
+  if (this.stats[wire] >= this.def.stats[wire].max) return false;
+  this.stats[wire]++;
+  this.recompute();
+  return true;
+};
+Tank.prototype.flushQueue = function () {
+  while (this.queued.length && this.statsAvailable > 0) {
+    var w = this.queued[0];
+    if (!this.upgradeStat(w)) { this.queued.shift(); continue; }
+    this.queued.shift();
+  }
+};
+
+Tank.prototype.tick = function () {
+  var g = this.game;
+  if (this.parked) return;              // its pilot is driving something else
+
+  if (g.tick < this.protectedUntil && !this.moved && !this.shot) this.damageReduction = 0;
+  else { this.damageReduction = 1; this.protectedUntil = 0; }
+  if (this.godMode) { this.damageReduction = 0; this.absorb = 0; }
+
+  var i = this.input;
+  var mx = (i.right - i.left), my = (i.down - i.up);
+  if (this.immobile) { mx = 0; my = 0; }   // Dominators are bolted down
+  if (mx || my) {
+    var m = Math.hypot(mx, my);
+    this.addVelocity(Math.atan2(my / m, mx / m), this.movementSpeed);
+    this.moved = true;
+  }
+
+  if (this.autoSpin) { this.spinAngle += 0.06; this.angle = this.spinAngle; }
+  else this.angle = Math.atan2(this.mouse.y - this.y, this.mouse.x - this.x);
+
+  var shooting = !!(i.fire || this.autoFire);
+  if (shooting) this.shot = true;
+  for (var b = 0; b < this.barrels.length; b++) this.barrels[b].tick(shooting);
+  for (var t = 0; t < this.turrets.length; t++) this.turrets[t].tick();
+
+  // regen
+  if (this.health < this.maxHealth) {
+    this.health = Math.min(this.maxHealth, this.health + this.regenPerTick);
+    if (g.tick - this.lastDamage >= HYPER_REGEN_DELAY) this.health = Math.min(this.maxHealth, this.health + this.maxHealth / 250);
+  }
+
+  // invisibility
+  if (this.invisible) {
+    var d = this.def;
+    if (shooting) this.opacity += d.visibilityRateShooting;
+    if (mx || my) this.opacity += d.visibilityRateMoving;
+    this.opacity -= d.invisibilityRate;
+    this.opacity = Math.max(0, Math.min(1, this.opacity));
+  }
+
+  this.guardAngle += 1;
+  if (this.hurtFlash > 0) this.hurtFlash--;
+  if (this.notes) for (var n = this.notes.length - 1; n >= 0; n--) if (--this.notes[n].ttl <= 0) this.notes.splice(n, 1);
+  if (this.selfDestruct && this.level >= 6) this.applyDamage(2 + this.maxHealth / 500, null);
+};
+
+Tank.prototype.onKill = function (source) {
+  var root = source; while (root && root.owner) root = root.owner;
+  this.killedBy = root && root.name ? root.name : 'an unnamed tank';
+  // the death screen watches your killer until it dies too
+  this.killerEntity = (root && root !== this && root.type === 'tank') ? root : null;
+  if (root && root.type === 'tank' && root !== this) root.kills++;
+  if (this.possessing && typeof release === 'function') release(this.game, this);
+  if (this.possessedBy && typeof release === 'function') release(this.game, this.possessedBy);
+  var logic = this.game.logic;
+  if (logic && logic.onTankDeath) logic.onTankDeath(this.game, this, source);
+  this.game.orphan(this);
+  if (this.isPlayer) {
+    this.game.spectate = this.killerEntity;   // offline: render.updateCamera follows it
+    this.game.onPlayerDeath(this);
+  }
+};
+
+// ---------------------------------------------------------------- shapes
+function Shape(game, kind, x, y) {
+  var s = SHAPES[kind];
+  var shiny = Math.random() < SHINY_CHANCE;
+  Entity.call(this, game, {
+    type: 'shape', x: x, y: y, sides: s.sides, size: s.size,
+    fill: shiny ? C.shiny : s.fill, stroke: shiny ? C.shinyS : s.stroke,
+    maxHealth: s.health * (shiny ? 10 : 1), damage: s.damage,
+    score: s.score * (shiny ? 100 : 1), absorb: s.absorb, push: s.push
+  });
+  this.kind = kind;
+  this.shiny = shiny;
+  this.minDmg = 1; this.maxDmg = 4;
+  this.angle = Math.random() * Math.PI * 2;
+  var half = kind === 'pentagon' || kind === 'alpha' ? 0.5 : 1;
+  this.rot = sign() * SHAPE_ROTATION * half;
+  this.orbitRate = sign() * SHAPE_ORBIT * half;
+  this.orbitAngle = Math.random() * Math.PI * 2;
+  this.vel = SHAPE_VELOCITY * half;
+  this.isCrasher = kind === 'crasherS' || kind === 'crasherL';
+  if (this.isCrasher) { this.canMoveThroughWalls = true; this.speed = s.speed; this.target = null; }
+}
+Shape.prototype = Object.create(Entity.prototype);
+Shape.prototype.constructor = Shape;
+
+Shape.prototype.tick = function () {
+  var g = this.game;
+  if (this.hurtFlash > 0) this.hurtFlash--;
+  if (this.health < this.maxHealth && g.tick - this.lastDamage >= HYPER_REGEN_DELAY)
+    this.health = Math.min(this.maxHealth, this.health + this.maxHealth / 250);
+
+  if (this.isCrasher) {
+    if (g.tick % 25 === this.id % 25) this.target = g.findTarget(this, 2000, false);
+    if (this.target && !this.target.dead) {
+      this.angle = Math.atan2(this.target.y - this.y, this.target.x - this.x);
+      this.maintainVelocity(this.angle, this.speed);
+    } else {
+      this.angle += this.rot;
+      this.maintainVelocity(this.orbitAngle, this.speed / 2);
+      this.orbitAngle += this.orbitRate;
+    }
+    return;
+  }
+
+  this.angle += this.rot;
+  // steer away from the arena edge
+  var a = g.arena, near = 0;
+  if (this.x < a.left + 400) near = 0; else if (this.x > a.right - 400) near = Math.PI;
+  else if (this.y < a.top + 400) near = Math.PI / 2; else if (this.y > a.bottom - 400) near = -Math.PI / 2;
+  else near = null;
+  if (near !== null) {
+    this.turning = TURN_TIMEOUT;
+    this.orbitAngle += angleDiff(this.orbitAngle, near) * 0.05;
+    this.orbitAngle += this.orbitRate * 11;
+  } else {
+    this.orbitAngle += this.orbitRate;
+  }
+  this.maintainVelocity(this.orbitAngle, this.vel);
+};
+
+// ---------------------------------------------------------------- projectiles
+function tickProjectile(p) {
+  var g = p.game;
+  p.age++;
+  if (p.age >= p.life) {
+    if (p.type === 'firework') burstFirework(p); else p.kill(null);
+    return;
+  }
+  if (p.hurtFlash > 0) p.hurtFlash--;
+
+  var owner = p.owner;
+  switch (p.type) {
+    case 'trap':
+      p.angle += 0.02;
+      break;
+
+    case 'drone': case 'necro': case 'swarm': case 'minion': {
+      if (!owner || owner.dead) { p.kill(null); return; }
+      var tx, ty, speed = p.accel;
+      if (p.controllable && owner.input.fire) { tx = owner.mouse.x; ty = owner.mouse.y; }
+      else if (p.controllable && owner.input.altFire) { tx = p.x * 2 - owner.mouse.x; ty = p.y * 2 - owner.mouse.y; }
+      else {
+        if (g.tick % 2 === p.id % 2) p.dTarget = g.findTarget(p, 900, true, owner);
+        if (p.dTarget && !p.dTarget.dead) { tx = p.dTarget.x; ty = p.dTarget.y; }
+        else {
+          // idle orbit around the owner
+          var d = Math.hypot(p.x - owner.x, p.y - owner.y);
+          if (d < 400) {
+            p.orbit = (p.orbit || Math.atan2(p.y - owner.y, p.x - owner.x)) + 0.01 + 0.012 * (d / 400);
+            tx = owner.x + Math.cos(p.orbit) * owner.size * 1.2 * 3;
+            ty = owner.y + Math.sin(p.orbit) * owner.size * 1.2 * 3;
+            speed = p.accel / 6 + p.accel / 2;
+          } else { tx = owner.x; ty = owner.y; speed = p.accel / 3 * 2; }
+        }
+      }
+      var ang = Math.atan2(ty - p.y, tx - p.x);
+      p.angle = ang;
+      p.maintainVelocity(ang, speed);
+      if (p.type === 'minion' && p.barrels) {
+        p.scaleFactor = 1; p.stats = (p.statsOwner || owner).stats; p.reloadTime = (p.statsOwner || owner).reloadTime;
+        var mt = p.dTarget && !p.dTarget.dead;
+        p.barrels[0].tick(mt || !!owner.input.fire);
+      }
+      break;
+    }
+
+    case 'skimmer': case 'rocket': case 'glider': {
+      if (!owner || owner.dead) { p.kill(null); return; }
+      p.stats = (p.statsOwner || owner).stats;
+      p.reloadTime = (p.statsOwner || owner).reloadTime;
+      p.scaleFactor = 1;
+      if (p.spin) p.angle += owner.input.altFire ? -p.spin : p.spin;
+      // Rocketeer and Glider are driven purely by their own barrels' recoil.
+      for (var i = 0; i < p.barrels.length; i++) p.barrels[i].tick(true);
+      break;
+    }
+
+    case 'firework': {
+      if (p.heading === undefined) p.heading = p.angle;
+      p.angle += 0.06;                              // visual spin only
+      p.maintainVelocity(p.heading, p.accel);       // flight path must not spin with it
+      // right-click detonates it early
+      if (owner && owner.input && owner.input.altFire) burstFirework(p);
+      break;
+    }
+
+    default: // bullet
+      p.maintainVelocity(p.angle, p.accel);
+  }
+}
+
+// ---------------------------------------------------------------- boss
+function Boss(game, spec) {
+  var tankLike = spec.tankId !== undefined;
+  Entity.call(this, game, {
+    type: 'boss', x: rand(game.arena.left * 0.6, game.arena.right * 0.6), y: rand(game.arena.top * 0.6, game.arena.bottom * 0.6),
+    sides: spec.sides, size: spec.sides === 1 ? spec.size : spec.size * Math.SQRT1_2,
+    fill: spec.fill, stroke: spec.stroke, team: null,
+    maxHealth: BOSS_HEALTH, damage: BOSS_DAMAGE, score: BOSS_SCORE, absorb: 0.05, push: 12
+  });
+  this.spec = spec;
+  this.bossIndex = BOSSES.indexOf(spec);   // clients rebuild barrels from the same table
+  this.name = spec.name;
+  this.minDmg = 1; this.maxDmg = 6;
+  this.scaleFactor = spec.sides === 1 ? spec.size / 50 : 1;
+  this.stats = [0, 4, 4, 4, 4, 0, 0, 0];
+  this.reloadTime = 15 * Math.pow(0.914, 4);
+  this.movementSpeed = spec.speed;
+  var defs = tankLike ? TANK_DEFS[spec.tankId].barrels : spec.barrels;
+  var self = this;
+  this.barrels = defs.map(function (b, i) {
+    var copy = JSON.parse(JSON.stringify(b));
+    if (tankLike) {
+      copy.bullet.color = C.fallen; copy.bullet.stroke = C.fallenS;
+      if (spec.droneOverride && copy.droneCount) copy.droneCount = spec.droneOverride;
+      copy.bullet.health *= 3; copy.bullet.damage *= 1.5;
+    }
+    return new Barrel(self, copy, i);
+  });
+  this.turrets = [];
+  if (spec.turrets) for (var i = 0; i < spec.turrets; i++) this.turrets.push(new Turret(this, i, spec.turrets, true));
+  this.input = { fire: 1, altFire: 0 };
+  this.mouse = { x: this.x, y: this.y };
+  this.target = null;
+}
+Boss.prototype = Object.create(Entity.prototype);
+Boss.prototype.constructor = Boss;
+
+Boss.prototype.tick = function () {
+  var g = this.game, s = this.spec;
+  if (this.hurtFlash > 0) this.hurtFlash--;
+  if (g.tick % 2 === 0 && s.viewRange !== 0) this.target = g.findTarget(this, 3000, true);
+  if (this.target && !this.target.dead) {
+    var aim = predictAim(this, this.target, 20 + 3 * this.stats[S_BSPEED]);
+    if (!s.spin) this.angle = aim;
+    this.mouse.x = this.target.x; this.mouse.y = this.target.y;
+    var mv = Math.atan2(this.target.y - this.y, this.target.x - this.x);
+    this.maintainVelocity(mv, this.movementSpeed);
+    if (s.faceVelocity) this.angle = mv;
+  } else {
+    this.angle += PASSIVE_ROTATION;
+    this.mouse.x = this.x + Math.cos(this.angle) * 500;
+    this.mouse.y = this.y + Math.sin(this.angle) * 500;
+  }
+  if (s.spin) this.angle += PASSIVE_ROTATION * 2;
+  for (var i = 0; i < this.barrels.length; i++) this.barrels[i].tick(true);
+  for (var t = 0; t < this.turrets.length; t++) this.turrets[t].tick();
+  if (this.health < this.maxHealth && g.tick - this.lastDamage >= HYPER_REGEN_DELAY)
+    this.health = Math.min(this.maxHealth, this.health + this.maxHealth / 250);
+};
+Boss.prototype.onKill = function (source) {
+  var root = source; while (root && root.owner) root = root.owner;
+  this.game.notify('The ' + this.name + ' has been defeated by ' + ((root && root.name) || 'an unnamed tank') + '!', 150);
+  this.game.boss = null;
+};
+
+// ---------------------------------------------------------------- bot AI
+var BOT_NAMES = ['Zephyr', 'Nova', 'Vex', 'Kilo', 'Onyx', 'Rift', 'Sable', 'Juno', 'Pyre', 'Quill', 'Drift', 'Ember',
+  'Halo', 'Lynx', 'Mako', 'Nyx', 'Orbit', 'Prism', 'Quasar', 'Rogue', 'Slate', 'Talon', 'Umbra', 'Vault', 'Wraith'];
+
+// Weighted build orders in wire-index terms, chosen once per bot.
+var BOT_BUILDS = [
+  [S_PEN, S_DAMAGE, S_RELOAD, S_BSPEED, S_HEALTH],
+  [S_BODY, S_HEALTH, S_SPEED, S_REGEN],
+  [S_RELOAD, S_DAMAGE, S_PEN, S_SPEED, S_HEALTH],
+  [S_HEALTH, S_PEN, S_DAMAGE, S_REGEN, S_BODY]
+];
+
+function tickBot(t) {
+  var g = t.game;
+  if (g.tick % 5 === t.id % 5) {
+    t.aiTarget = g.findTarget(t, 1400, true);
+    t.aiFarm = t.aiTarget ? null : g.findShape(t, 1600);
+  }
+  var goal = t.aiTarget && !t.aiTarget.dead ? t.aiTarget : (t.aiFarm && !t.aiFarm.dead ? t.aiFarm : null);
+  var i = t.input;
+  i.up = i.down = i.left = i.right = 0;
+
+  if (goal) {
+    t.mouse.x = goal.x; t.mouse.y = goal.y;
+    var d = Math.hypot(goal.x - t.x, goal.y - t.y);
+    var ideal = t.rammer ? 0 : 450;
+    var away = d < ideal - 80;
+    var ang = Math.atan2(goal.y - t.y, goal.x - t.x) + (away ? Math.PI : 0);
+    if (Math.abs(d - ideal) > 80) {
+      if (Math.cos(ang) > 0.35) i.right = 1; else if (Math.cos(ang) < -0.35) i.left = 1;
+      if (Math.sin(ang) > 0.35) i.down = 1; else if (Math.sin(ang) < -0.35) i.up = 1;
+    }
+    i.fire = t.rammer ? 0 : 1;
+  } else {
+    // wander toward the shape fields
+    if (g.tick % 90 === t.id % 90 || t.wander === undefined) t.wander = Math.random() * Math.PI * 2;
+    t.mouse.x = t.x + Math.cos(t.wander) * 400; t.mouse.y = t.y + Math.sin(t.wander) * 400;
+    if (Math.cos(t.wander) > 0.35) i.right = 1; else if (Math.cos(t.wander) < -0.35) i.left = 1;
+    if (Math.sin(t.wander) > 0.35) i.down = 1; else if (Math.sin(t.wander) < -0.35) i.up = 1;
+    i.fire = 0;
+  }
+  // steer back in-bounds
+  var a = g.arena;
+  if (t.x < a.left + 300) { i.right = 1; i.left = 0; }
+  if (t.x > a.right - 300) { i.left = 1; i.right = 0; }
+  if (t.y < a.top + 300) { i.down = 1; i.up = 0; }
+  if (t.y > a.bottom - 300) { i.up = 1; i.down = 0; }
+
+  // spend points and take upgrades
+  if (t.statsAvailable > 0) {
+    if (!t.build) t.build = pick(BOT_BUILDS);
+    for (var k = 0; k < t.build.length; k++) if (t.upgradeStat(t.build[k])) break;
+    if (t.statsAvailable > 0 && t.stats.every(function (v, idx) { return v >= t.def.stats[idx].max; })) t.statsAvailable = 0;
+  }
+  if (t.pendingUpgrades.length) {
+    var choice = pick(t.pendingUpgrades);
+    t.upgradeTo(choice);
+    t.rammer = TANK_DEFS[t.tankId].barrels.length === 0;
+  }
+}
+
+// ---------------------------------------------------------------- game
+function Game(modeKey, playerName, opts) {
+  opts = opts || {};
+  this.headless = !!opts.headless;      // server: no local player, clients bring their own
+  this.modeKey = modeKey;
+  this.mode = GAMEMODES[modeKey] || GAMEMODES.ffa;
+  this.tick = 0;
+  this.entities = [];
+  this.grid = new Map();
+  this.notifications = [];
+  this.boss = null;
+  this.bossTimer = this.mode.sandbox ? 60 * 60 * TPS : BOSS_INTERVAL;
+  this.leaderboard = [];
+  this.walls = [];
+  this.bases = [];
+
+  var h = this.mode.size / 2;
+  this.arena = { left: -h, right: h, top: -h, bottom: h, size: this.mode.size };
+  this.teams = this.mode.teams;
+
+  if (this.mode.maze) this.generateMaze();
+  if (this.mode.bases) this.generateBases();
+
+  // Objective modes (Domination, Tag, Mothership, Breakout, CTF) plug in here.
+  this.logic = (this.mode.logic && typeof MODE_LOGIC !== 'undefined') ? MODE_LOGIC[this.mode.logic] : null;
+  this.roundEndsAt = 0;
+  this.mapDirty = true;
+  if (this.logic && this.logic.init) this.logic.init(this);
+
+  this.wantedShapes = this.mode.sandbox ? 120 : 1000;
+  for (var i = 0; i < this.wantedShapes; i++) this.spawnShape();
+
+  if (!this.headless) this.player = this.spawnTank({ name: playerName, isPlayer: true });
+  this.botCount = opts.botCount !== undefined ? opts.botCount : (this.mode.sandbox ? 4 : 28);
+  for (var b = 0; b < this.botCount; b++) this.spawnBot();
+}
+
+Game.prototype.add = function (e) { this.entities.push(e); return e; };
+Game.prototype.notify = function (text, ticks) { this.notifications.push({ text: text, ttl: ticks || 100 }); };
+
+Game.prototype.teamOf = function () {
+  if (!this.teams) return null;
+  var counts = {}, self = this;
+  this.teams.forEach(function (t) { counts[t] = 0; });
+  this.entities.forEach(function (e) { if (e.type === 'tank' && !e.dead && counts[e.team] !== undefined) counts[e.team]++; });
+  return this.teams.reduce(function (a, b) { return counts[a] <= counts[b] ? a : b; });
+};
+
+Game.prototype.spawnPoint = function (team) {
+  var a = this.arena;
+  if (team) {
+    var base = this.bases.filter(function (b) { return b.team === team; })[0];
+    if (base) return { x: base.x + rand(-base.size * 0.7, base.size * 0.7), y: base.y + rand(-base.width * 0.7, base.width * 0.7) };
+  }
+  for (var i = 0; i < 20; i++) {
+    var x = rand(a.left, a.right), y = rand(a.top, a.bottom);
+    if (Math.max(Math.abs(x), Math.abs(y)) < a.right / 2) continue;
+    if (this.inWall(x, y, 60)) continue;
+    return { x: x, y: y };
+  }
+  return { x: rand(a.left, a.right), y: rand(a.top, a.bottom) };
+};
+
+Game.prototype.spawnTank = function (o) {
+  var team = o.team !== undefined ? o.team : this.teamOf();
+  var p = this.spawnPoint(team);
+  var t = new Tank(this, { x: p.x, y: p.y, name: o.name, isPlayer: o.isPlayer, bot: o.bot, team: team, score: o.score || 0 });
+  this.paintTeam(t);
+  return this.add(t);
+};
+
+Game.prototype.paintTeam = function (t) {
+  if (t.team && TEAM_COLORS[t.team]) { t.fill = TEAM_COLORS[t.team][0]; t.stroke = TEAM_COLORS[t.team][1]; }
+  else if (t.isPlayer) { t.fill = C.blue; t.stroke = C.blueS; }        // in FFA you are always blue
+  else { t.fill = C.red; t.stroke = C.redS; }                          // and everyone else is red
+};
+
+Game.prototype.spawnBot = function () {
+  var t = this.spawnTank({ name: pick(BOT_NAMES) + (Math.random() < 0.4 ? ' ' + ((Math.random() * 99) | 0) : ''), bot: true });
+  t.autoFire = false;
+  t.build = pick(BOT_BUILDS);
+  return t;
+};
+
+Game.prototype.spawnShape = function () {
+  var a = this.arena;
+  for (var i = 0; i < 20; i++) {
+    var x = rand(a.left, a.right), y = rand(a.top, a.bottom);
+    if (this.inWall(x, y, 80)) continue;
+    if (this.nearTank(x, y, 1000)) continue;
+    return this.add(new Shape(this, this.shapeKindAt(x, y), x, y));
+  }
+  return null;
+};
+
+// Which shape belongs at a position. The zone rings are what make the Pentagon
+// Nest and the Crasher belt exist at all.
+Game.prototype.shapeKindAt = function (x, y) {
+  var a = this.arena, m = Math.max(Math.abs(x), Math.abs(y)), r;
+  if (m < a.right / 10) {                                  // Pentagon Nest
+    // Hexagon HP/XP (1500/1500) are confirmed; its spawn rate never was. It sits
+    // between Pentagon and Alpha in strength, so it nests with them.
+    r = Math.random();
+    return r < 0.05 ? 'alpha' : r < 0.15 ? 'hexagon' : 'pentagon';   // TODO: 10% unverified
+  }
+  if (m < a.right / 5) return Math.random() < 0.2 ? 'crasherL' : 'crasherS';   // Crasher ring
+  r = Math.random();                                       // fields of shapes
+  return r < 0.04 ? 'pentagon' : r < 0.20 ? 'triangle' : 'square';
+};
+
+Game.prototype.nearTank = function (x, y, r) {
+  var r2 = r * r;
+  for (var i = 0; i < this.entities.length; i++) {
+    var e = this.entities[i];
+    if (e.type !== 'tank' && e.type !== 'boss') continue;
+    var dx = e.x - x, dy = e.y - y;
+    if (dx * dx + dy * dy < r2) return true;
+  }
+  return false;
+};
+
+Game.prototype.inWall = function (x, y, pad) {
+  for (var i = 0; i < this.walls.length; i++) {
+    var w = this.walls[i];
+    if (Math.abs(x - w.x) < w.size + pad && Math.abs(y - w.y) < w.width + pad) return true;
+  }
+  return false;
+};
+
+Game.prototype.generateMaze = function () {
+  var a = this.arena, step = 500;
+  for (var x = a.left + step; x < a.right - step; x += step) {
+    for (var y = a.top + step; y < a.bottom - step; y += step) {
+      if (Math.random() > 0.16) continue;
+      if (Math.max(Math.abs(x), Math.abs(y)) < a.right / 8) continue;   // keep the nest open
+      var wx = Math.round(x / GRID) * GRID, wy = Math.round(y / GRID) * GRID;
+      var long = Math.random() < 0.5;
+      var w = new Entity(this, {
+        type: 'wall', x: wx, y: wy, sides: 2,
+        size: long ? 375 : 125, width: long ? 125 : 375,
+        fill: C.box, stroke: C.boxS, maxHealth: Infinity, team: null
+      });
+      w.isSolidWall = true; w.damageReduction = 0; w.push = 1; w.absorb = 0;
+      w.hiddenHealthbar = true;
+      this.walls.push(w); this.add(w);
+    }
+  }
+};
+
+Game.prototype.generateBases = function () {
+  var a = this.arena, self = this, n = this.teams.length;
+  var layouts = n === 2
+    ? [{ x: a.left + 1400, y: 0, size: 1400, width: a.bottom }, { x: a.right - 1400, y: 0, size: 1400, width: a.bottom }]
+    : [{ x: a.left + 1800, y: a.top + 1800, size: 1800, width: 1800 }, { x: a.left + 1800, y: a.bottom - 1800, size: 1800, width: 1800 },
+       { x: a.right - 1800, y: a.top + 1800, size: 1800, width: 1800 }, { x: a.right - 1800, y: a.bottom - 1800, size: 1800, width: 1800 }];
+  this.teams.forEach(function (team, i) {
+    var l = layouts[i];
+    var b = new Entity(self, { type: 'base', x: l.x, y: l.y, sides: 2, size: l.size, width: l.width, team: team, fill: TEAM_COLORS[team][0], stroke: TEAM_COLORS[team][1], maxHealth: Infinity });
+    b.damageReduction = 0; b.push = 0; b.absorb = 0; b.hiddenHealthbar = true; b.isBase = true;
+    self.bases.push(b); self.add(b);
+    // invisible drone spawner parented to the base
+    var sp = new Entity(self, { type: 'basespawner', x: l.x, y: l.y, sides: 0, team: team, maxHealth: Infinity, fill: TEAM_COLORS[team][0], stroke: TEAM_COLORS[team][1] });
+    sp.damageReduction = 0; sp.push = 0; sp.absorb = 0; sp.hiddenHealthbar = true;
+    sp.scaleFactor = 1; sp.stats = [0, 0, 4, 0, 0, 0, 0, 0]; sp.reloadTime = 15;
+    sp.barrels = [new Barrel(sp, BASE_DRONE_BARREL, 0)];
+    sp.angle = 0;
+    sp.input = { fire: 0, altFire: 0 }; sp.mouse = { x: l.x, y: l.y };
+    self.add(sp);
+  });
+};
+
+// ---------------------------------------------------------------- queries
+Game.prototype.findTarget = function (from, range, preferTanks, ownerAnchor) {
+  var best = null, bestD = range * range, anchor = ownerAnchor || from;
+  var anchorR2 = range * range;
+  for (var i = 0; i < this.entities.length; i++) {
+    var e = this.entities[i];
+    if (e === from || e.dead || e.sides === 0) continue;
+    if (e.type === 'base' || e.type === 'wall' || e.type === 'basespawner') continue;
+    if (e.owner) continue;                                    // don't chase someone's bullets
+    if (e.team !== null && e.team === from.team) continue;
+    if (from.isCloser && e.isCloser) continue;                 // closers ignore each other
+    if (from.team === null && e.type === 'shape') continue;    // AI turrets ignore shapes when teamless
+    if (preferTanks && e.type === 'shape') continue;
+    // invisible tanks are unseeable — except to Arena Closers
+    if (e.opacity !== undefined && e.opacity <= 0 && !from.seesInvisible) continue;
+    var d = dist2(from, e);
+    if (d > bestD) continue;
+    if (ownerAnchor && dist2(anchor, e) > anchorR2) continue;
+    bestD = d; best = e;
+  }
+  return best;
+};
+
+Game.prototype.findShape = function (from, range) {
+  var best = null, bestD = range * range;
+  for (var i = 0; i < this.entities.length; i++) {
+    var e = this.entities[i];
+    if (e.type !== 'shape' || e.dead) continue;
+    if (e.kind === 'alpha' && from.level < 25) continue;
+    var d = dist2(from, e);
+    if (d < bestD) { bestD = d; best = e; }
+  }
+  return best;
+};
+
+// Orphaned projectiles outlive their owner and can kill them posthumously.
+Game.prototype.orphan = function (tank) {
+  for (var i = 0; i < this.entities.length; i++) {
+    var e = this.entities[i];
+    if (e.owner !== tank) continue;
+    if (e.type === 'drone' || e.type === 'necro' || e.type === 'minion' || e.type === 'swarm') { e.kill(null); continue; }
+    e.owner = null; e.team = null;
+  }
+};
+
+// ---------------------------------------------------------------- broadphase
+Game.prototype.rebuildGrid = function () {
+  this.grid.clear();
+  for (var i = 0; i < this.entities.length; i++) {
+    var e = this.entities[i];
+    if (e.sides === 0 || e.dead) continue;
+    var r = e.sides === 2 ? Math.max(e.size, e.width) : e.size;
+    var x0 = Math.floor((e.x - r) / HASH_CELL), x1 = Math.floor((e.x + r) / HASH_CELL);
+    var y0 = Math.floor((e.y - r) / HASH_CELL), y1 = Math.floor((e.y + r) / HASH_CELL);
+    for (var gx = x0; gx <= x1; gx++) for (var gy = y0; gy <= y1; gy++) {
+      var k = gx * 46337 + gy;
+      var cell = this.grid.get(k);
+      if (!cell) this.grid.set(k, [e]); else cell.push(e);
+    }
+  }
+};
+
+Game.prototype.collisionPass = function () {
+  var seen = new Set();
+  var self = this;
+  this.grid.forEach(function (cell) {
+    for (var i = 0; i < cell.length; i++) for (var j = i + 1; j < cell.length; j++) {
+      var a = cell[i], b = cell[j];
+      if (a.id > b.id) { var t = a; a = b; b = t; }
+      var key = a.id * 1e7 + b.id;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      if (!canInteract(a, b)) continue;
+      if (!collides(a, b)) continue;
+
+      // Necromancer capture: touching a Square converts it.
+      if (self.tryClaim(a, b) || self.tryClaim(b, a)) continue;
+
+      if (b.isBase) { self.baseContact(a, b); continue; }
+      if (a.isBase) { self.baseContact(b, a); continue; }
+
+      applyKnockback(a, b);
+      applyKnockback(b, a);
+      handleCollision(a, b);
+    }
+  });
+};
+
+Game.prototype.tryClaim = function (claimer, shape) {
+  if (shape.type !== 'shape' || shape.kind !== 'square' || shape.dead) return false;
+  var owner = null;
+  if (claimer.type === 'tank' && claimer.def && claimer.def.flags.canClaimSquares) owner = claimer;
+  else if (claimer.type === 'necro' && claimer.owner && !claimer.owner.dead) owner = claimer.owner;
+  if (!owner) return false;
+  var barrel = owner.barrels.filter(function (b) { return b.def.bullet.type === 'necrodrone'; })
+    .sort(function (a, b) { return a.children.length - b.children.length; })[0];
+  if (!barrel) return false;
+  barrel.children = barrel.children.filter(function (c) { return !c.dead; });
+  if (barrel.children.length >= barrel.maxDrones()) return false;
+
+  var st = owner.stats, bd = barrel.def.bullet;
+  shape.type = 'necro';
+  shape.team = owner.team; shape.owner = owner; shape.barrel = barrel;
+  shape.controllable = true;
+  shape.onlySameOwnerCollision = true;
+  shape.minDmg = 1; shape.maxDmg = 1;
+  shape.fill = shape.shiny ? C.shiny : C.necro; shape.stroke = shape.shiny ? C.shinyS : C.necroS;
+  shape.maxHealth = (1.5 * st[S_PEN] + 2) * bd.health;
+  shape.health = shape.maxHealth;
+  shape.damagePerTick = (7 + st[S_DAMAGE] * 3) * bd.damage;
+  shape.push = 4;
+  shape.accel = ((20 + 3 * st[S_BSPEED]) * bd.speed) / 3;
+  shape.life = Infinity; shape.age = 0;
+  shape.scoreReward = shape.shiny ? 1000 : 10;
+  barrel.children.push(shape);
+  return true;
+};
+
+// Enemy tanks take fatal damage inside a base; enemy projectiles dissolve at the edge.
+Game.prototype.baseContact = function (e, base) {
+  if (base.team === null) return;                 // unclaimed Breakout tile: inert
+  if (e.team === base.team) return;
+  // Tiles block enemy fire from outside but let enemy tanks walk in.
+  if (base.isTile) { if (e.owner !== undefined && e.type !== 'tank' && e.type !== 'boss') e.kill(base); return; }
+  if (e.type === 'tank' || e.type === 'boss') {
+    e.applyDamage(e.maxHealth / 12, base);
+    var ang = Math.atan2(e.y - base.y, e.x - base.x);
+    e.addVelocity(ang, 8);
+  } else if (e.owner !== null || e.type === 'bullet' || e.type === 'trap' || e.type === 'drone') {
+    e.kill(base);
+  }
+};
+
+// ---------------------------------------------------------------- main tick
+Game.prototype.step = function () {
+  this.tick++;
+  var i, e;
+
+  for (i = 0; i < this.entities.length; i++) {
+    e = this.entities[i];
+    e.px = e.x; e.py = e.y; e.pa = e.angle; e.psize = e.size;
+    if (e.dead) continue;
+    switch (e.type) {
+      case 'tank':
+        if (e.isCloser) tickCloser(e);
+        else if (e.bot && !e.parked && !e.immobile) tickBot(e);
+        e.tick(); break;
+      case 'boss': e.tick(); break;
+      case 'shape': e.tick(); break;
+      case 'wall': case 'base': case 'tile': case 'flag': break;
+      case 'basespawner': e.barrels[0].tick(true); break;
+      default: tickProjectile(e);
+    }
+  }
+  if (this.logic && this.logic.tick) this.logic.tick(this);
+
+  this.rebuildGrid();
+  this.collisionPass();
+
+  for (i = 0; i < this.entities.length; i++) {
+    e = this.entities[i];
+    if (e.type === 'wall' || e.type === 'base' || e.type === 'basespawner' || e.type === 'tile' || e.type === 'flag') continue;
+    e.applyPhysics();
+  }
+
+  // round reset, once the win banner has had its time on screen
+  if (this.roundEndsAt && this.tick >= this.roundEndsAt) {
+    this.roundEndsAt = 0;
+    if (this.logic && this.logic.reset) this.logic.reset(this);
+    for (var r = 0; r < this.entities.length; r++) {
+      var t = this.entities[r];
+      if (t.type === 'tank' && !t.dead && (t.bot || t.isPlayer) && !t.immobile && !t.isMothership) t.kill(null);
+    }
+    this.notify('New round!', 60);
+  }
+
+  // deletion animation: 5 frames, scale 1.1 and fade 1/6 per frame
+  var alive = [];
+  for (i = 0; i < this.entities.length; i++) {
+    e = this.entities[i];
+    if (!e.dead) { alive.push(e); continue; }
+    e.deathFrame--;
+    e.size *= 1.1;
+    e.opacity = Math.max(0, e.opacity - 1 / 6);
+    if (e.deathFrame > 0) alive.push(e);
+  }
+  this.entities = alive;
+
+  // top up shapes
+  var shapeCount = 0;
+  for (i = 0; i < this.entities.length; i++) if (this.entities[i].type === 'shape') shapeCount++;
+  for (i = shapeCount; i < this.wantedShapes; i++) this.spawnShape();
+
+  // respawn bots
+  var botCount = 0;
+  for (i = 0; i < this.entities.length; i++) { e = this.entities[i]; if (e.type === 'tank' && e.bot && !e.dead) botCount++; }
+  if (botCount < this.botCount && this.tick % 25 === 0) this.spawnBot();
+
+  // boss cycle
+  if (!this.mode.noBoss) {
+    this.bossTimer--;
+    if (this.bossTimer <= 0) {
+      this.bossTimer = BOSS_INTERVAL;
+      if (!this.boss) this.spawnBoss();
+    }
+  }
+
+  if (this.closing) this.checkClosed();
+  if (this.tick % TPS === 0) this.updateLeaderboard();
+  for (i = this.notifications.length - 1; i >= 0; i--) if (--this.notifications[i].ttl <= 0) this.notifications.splice(i, 1);
+};
+
+// ---------------------------------------------------------------- closing
+// Retiring an arena: announce it, ring the map with Arena Closers, stop bots
+// respawning, and let them sweep everything off the board.
+Game.prototype.close = function () {
+  if (this.closing) return;
+  this.closing = true;
+  this.botCount = 0;
+  this.notify('Arena closed: No players can join', 250);
+  var a = this.arena;
+  var count = Math.floor(Math.sqrt(a.size) / 10);          // 14 for a 22300 arena
+  var radius = a.size * Math.SQRT1_2 + 5000;               // ~20770, well outside the field
+  for (var i = 0; i < count; i++) {
+    var ang = (i / count) * Math.PI * 2;
+    this.add(makeArenaCloser(this, Math.cos(ang) * radius, Math.sin(ang) * radius, ang + Math.PI));
+  }
+  return count;
+};
+
+function makeArenaCloser(g, x, y, facing) {
+  var t = new Tank(g, { x: x, y: y, team: null, name: 'Arena Closer', tankId: 16 });
+  t.level = 45;
+  t.stats = [0, 7, 7, 7, 7, 0, 0, 0];                      // maxed bullets: one volley kills
+  t.recompute();                                            // everything below must follow recompute
+  t.isCloser = true;
+  t.seesInvisible = true;                                   // a Stalker cannot hide from these
+  t.canEscapeArena = true;                                  // they start outside the field
+  t.canMoveThroughWalls = true;
+  t.godMode = true;                                         // the engine's own invincibility path
+  t.push = 30;
+  t.damagePerTick = 1e6;                                    // one-shots anything it touches
+  t.movementSpeed = 8;                                      // ~200 units/tick terminal
+  t.scoreReward = 0;
+  t.protectedUntil = 0;
+  t.autoFire = true;
+  t.angle = facing;
+  t.mouse.x = x + Math.cos(facing) * 1000;
+  t.mouse.y = y + Math.sin(facing) * 1000;
+  t.fill = C.neutral; t.stroke = C.neutralS;
+  t.addScore = function () {};                              // never levels, never recomputes
+  return t;
+}
+
+function tickCloser(t) {
+  var g = t.game;
+  if (g.tick % 3 === t.id % 3) t.aiTarget = g.findTarget(t, 1e6, true);
+  var goal = (t.aiTarget && !t.aiTarget.dead) ? t.aiTarget : { x: 0, y: 0 };
+  var i = t.input;
+  i.up = i.down = i.left = i.right = 0;
+  t.mouse.x = goal.x; t.mouse.y = goal.y;
+  var ang = Math.atan2(goal.y - t.y, goal.x - t.x);
+  if (Math.cos(ang) > 0.35) i.right = 1; else if (Math.cos(ang) < -0.35) i.left = 1;
+  if (Math.sin(ang) > 0.35) i.down = 1; else if (Math.sin(ang) < -0.35) i.up = 1;
+  i.fire = 1;
+}
+
+// The arena is CLOSED once nothing but the closers is left standing.
+Game.prototype.checkClosed = function () {
+  if (!this.closing || this.closed) return;
+  for (var i = 0; i < this.entities.length; i++) {
+    var e = this.entities[i];
+    if (e.type === 'tank' && !e.dead && !e.isCloser) return;
+  }
+  this.closed = true;
+  this.notify('Arena CLOSED', 250);
+};
+
+Game.prototype.spawnBoss = function (index) {
+  var spec = index === undefined ? pick(BOSSES) : BOSSES[index];
+  this.boss = this.add(new Boss(this, spec));
+  this.notify('The ' + spec.name + ' has spawned!', 150);
+  return this.boss;
+};
+
+// With fewer than 10 alive this naturally lists only survivors, which is what
+// the closing scoreboard is meant to show.
+Game.prototype.updateLeaderboard = function () {
+  var list = this.entities.filter(function (e) { return e.type === 'tank' && !e.dead && !e.isCloser; });
+  list.sort(function (a, b) { return b.score - a.score; });
+  this.leaderboard = list.slice(0, 10);
+  this.leader = list[0] || null;
+};
+
+Game.prototype.onPlayerDeath = function () { /* wired by main.js */ };
+
+// `old` lets a server respawn one specific client; locally it defaults to the player.
+Game.prototype.respawnPlayer = function (name, old) {
+  if (old === undefined) old = this.player;
+  var lvl = old ? respawnLevel(old.level) : 1;
+  // Tag hands you your killer's colours on respawn.
+  var team = old && old.nextTeam ? old.nextTeam : undefined;
+  var t = this.spawnTank({ name: name || (old && old.name) || '', isPlayer: true, score: LEVEL_SCORE[lvl], team: team });
+  t.checkUpgrades();
+  this.spectate = null;
+  if (!this.headless) this.player = t;
+  return t;
+};
+
+if (typeof module !== 'undefined') module.exports = {
+  Game: Game, Tank: Tank, Entity: Entity, Shape: Shape, Barrel: Barrel,
+  handleCollision: handleCollision, collides: collides, predictAim: predictAim
+};

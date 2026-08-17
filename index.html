@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>Tank Arena</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #CDCDCD;
+               font-family: Ubuntu, Verdana, "Segoe UI", sans-serif; -webkit-user-select: none; user-select: none; }
+  #game { display: block; position: absolute; inset: 0; cursor: crosshair; }
+
+  #menu { position: absolute; inset: 0; display: flex; flex-direction: column;
+          align-items: center; justify-content: center; gap: 14px;
+          background: #CDCDCD; z-index: 10; }
+  #menu h1 { font-size: 68px; color: #fff; letter-spacing: 2px;
+             -webkit-text-stroke: 6px #000; paint-order: stroke fill; margin-bottom: 4px; }
+  #menu .sub { color: #555; font-size: 14px; margin-top: -12px; }
+
+  .row { display: flex; gap: 8px; }
+  input, select, button { font: inherit; font-weight: bold; border: 4px solid rgba(0,0,0,.3);
+                          border-radius: 4px; padding: 10px 14px; outline: none; }
+  input { width: 280px; text-align: center; font-size: 18px; }
+  select { background: #FFE869; cursor: pointer; }
+  button { background: #00B2E1; color: #fff; cursor: pointer; font-size: 20px;
+           text-shadow: 0 2px 0 rgba(0,0,0,.35); width: 180px; }
+  button:hover { filter: brightness(1.08); }
+  button:active { transform: translateY(2px); filter: brightness(.85); }
+  button:disabled { filter: grayscale(.7); cursor: default; transform: none; }
+  button.alt { background: #00E16E; }
+  input.server { width: 240px; font-size: 14px; font-weight: normal; padding: 12px; }
+  #status { color: #B43A3F; font-size: 13px; font-weight: bold; min-height: 18px; }
+
+  .controls { margin-top: 22px; color: #444; font-size: 13px; line-height: 1.8;
+              text-align: center; max-width: 640px; }
+  .controls b { background: rgba(0,0,0,.12); border-radius: 3px; padding: 1px 6px; }
+  #hint { color: #666; font-size: 12px; margin-top: 6px; }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+
+<div id="menu">
+  <h1>TANK ARENA</h1>
+  <p class="sub">shoot polygons &middot; level up &middot; pick a class &middot; survive</p>
+  <input id="name" maxlength="16" placeholder="Enter your name" autocomplete="off">
+  <div class="row">
+    <select id="mode"></select>
+    <button id="play">Play Offline</button>
+  </div>
+  <div class="row">
+    <input id="server" class="server" placeholder="ws://localhost:8137" autocomplete="off">
+    <button id="playOnline" class="alt">Play Online</button>
+  </div>
+  <p id="status"></p>
+  <div class="controls">
+    <b>WASD</b> move &middot; <b>Mouse</b> aim &middot; <b>Click</b>/<b>Space</b> fire &middot;
+    <b>Right-click</b>/<b>Shift</b> repel drones, zoom<br>
+    <b>E</b> auto-fire &middot; <b>C</b> auto-spin &middot; <b>1</b>–<b>8</b> upgrade stat &middot;
+    <b>U</b>+n queue &middot; <b>M</b>+n fill &middot; <b>Y</b> class tree &middot; <b>O</b> self-destruct<br>
+    <b>H</b> pilot a Dominator / Mothership &middot; <b>Esc</b> back to menu<br>
+    Sandbox only: <b>K</b> level up &middot; <b>\</b> cycle class &middot; <b>;</b> god mode
+  </div>
+  <p id="hint"></p>
+</div>
+
+<script src="js/tankdefs.js"></script>
+<script src="js/tankdefs-extra.js"></script>
+<script src="js/data.js"></script>
+<script src="js/protocol.js"></script>
+<script src="js/engine.js"></script>
+<script src="js/modes.js"></script>
+<script src="js/net.js"></script>
+<script src="js/render.js"></script>
+<script src="js/main.js"></script>
+</body>
+</html>
