@@ -44,6 +44,10 @@ function num(v, d) { var n = parseFloat(v); return isFinite(n) ? n : d; }
 function clampN(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 function onOff(a, cur) { return a === 'on' ? true : a === 'off' ? false : !cur; }
 
+// The one cheat gate. A Sandbox is always open; any other arena is opened by
+// /cheats on, which sets the flag on the authoritative Game.
+function cheatsOK(g) { return !!(g && (g.mode.sandbox || g.cheatsOn)); }
+
 // Class lookup: exact id, exact name, prefix, then squashed substring, so
 // "/class ovl", "/class overlord" and "/class 12" all land.
 function findDef(q) {
@@ -84,7 +88,10 @@ function applyMul(t) {
   var m = t.mul;
   if (!m) return;
   if (m.speed) t.movementSpeed *= m.speed;
-  if (m.size) t.size *= m.size;
+  // scaleFactor is what barrels, turrets and fresh bullets are drawn and sized
+  // from, so growing only .size gave a big body with a stock cannon.
+  if (m.size) { t.size *= m.size; t.scaleFactor *= m.size; }
+  if (m.firerate) t.reloadTime /= m.firerate;
   if (m.fov) t.fov *= m.fov;
   if (m.damage) t.damagePerTick *= m.damage;
   if (m.health) { t.maxHealth *= m.health; t.health = Math.min(t.health, t.maxHealth); }
@@ -247,10 +254,16 @@ cmd('help h commands', {
   }
 });
 cmd('cheats', {
-  cat: 'info', local: true, args: '', help: 'List the cheat commands.',
-  run: function (ctx) {
+  cat: 'info', args: '[on|off]', help: 'List the cheat commands, or turn them on for this arena.',
+  run: function (ctx, a) {
+    if (a.length) {
+      if (ctx.game.mode.sandbox) return 'This is a Sandbox — cheats are always on here.';
+      ctx.game.cheatsOn = onOff(a[0], ctx.game.cheatsOn);
+      ctx.broadcast(ctx.name + ' turned cheats ' + (ctx.game.cheatsOn ? 'ON for this arena' : 'OFF'));
+      return;
+    }
     return 'CHEATS: ' + helpList('cheat') +
-      '\n' + (ctx.sandbox ? 'Cheats are enabled here.' : 'Cheats need offline play or an online Sandbox arena.');
+      '\n' + (ctx.sandbox ? 'Cheats are enabled here.' : 'Cheats are off — /cheats on turns them on for this arena.');
   }
 });
 cmd('keys controls', {
@@ -496,6 +509,29 @@ cmd('fov zoom', {
     return 'FOV x' + m;
   }
 });
+cmd('firerate rof', {
+  cat: 'cheat', cheat: true, needsTank: true, args: '<multiplier>', help: 'Multiply how fast you shoot.',
+  run: function (ctx, a) {
+    var m = clampN(num(a[0], 1), 0.01, 100);
+    setMul(ctx.tank, 'firerate', m);
+    return 'Fire rate x' + m + ' (a shot every ' + (Math.round(ctx.tank.reloadTime * 10) / 10) + ' ticks).';
+  }
+});
+cmd('bulletsize ammo', {
+  cat: 'cheat', cheat: true, needsTank: true, args: '<multiplier>', help: 'Multiply the size of everything you fire. Bigger shots hit more.',
+  run: function (ctx, a) {
+    ctx.tank.bulletSize = clampN(num(a[0], 1), 0.1, 50);
+    return 'Bullet size x' + ctx.tank.bulletSize + ' — already-fired shots keep the old size.';
+  }
+});
+cmd('rainbow chroma', {
+  cat: 'cheat', cheat: true, needsTank: true, args: '[on|off]', help: 'Cycle your tank and your shots through every colour.',
+  run: function (ctx, a) {
+    var t = ctx.tank;
+    t.rainbow = onOff(a[0], t.rainbow);
+    return 'Rainbow ' + (t.rainbow ? 'ON' : 'OFF');
+  }
+});
 cmd('bodydamage ram', {
   cat: 'cheat', cheat: true, needsTank: true, args: '<multiplier>', help: 'Multiply your body damage.',
   run: function (ctx, a) {
@@ -583,6 +619,42 @@ cmd('bots', {
     ctx.game.botOverride = n;
     ctx.game.botCount = n;
     return 'Bot count pinned at ' + n + '.';
+  }
+});
+cmd('botspawn addbots', {
+  cat: 'cheat', cheat: true, args: '[n] [random]',
+  help: 'Spawn bots right now, one-off. "random" scatters them over the whole map. /bots sets the sustained count instead.',
+  run: function (ctx, a) {
+    var n = clampN(Math.round(num(a[0], 1)), 1, 60), g = ctx.game;
+    var scatter = a.filter(function (s) { return /^rand/i.test(s); }).length > 0;
+    // Half of an even share each, kept apart by re-rolling the spot. Asking for
+    // the full share is perfect packing, which rejection sampling never finds,
+    // so every bot would burn its 30 tries and land wherever it last looked.
+    var gap = g.arena.size / (2 * Math.sqrt(n + 1)), placed = [];
+    for (var i = 0; i < n; i++) {
+      var b = g.spawnBot(), p = null, tries;
+      if (scatter) {
+        for (tries = 0; tries < 30; tries++) {
+          p = g.spawnPoint(null, true);
+          if (!placed.filter(function (q) { return dist2(q, p) < gap * gap; }).length) break;
+        }
+        placed.push(p);
+      } else if (ctx.tank) p = nearPoint(ctx.tank, 900);
+      if (p) { b.x = b.px = p.x; b.y = b.py = p.y; }
+    }
+    return n + (n === 1 ? ' bot' : ' bots') + (scatter ? ' scattered over the map' : ' spawned') +
+      (g.botCount ? '.' : ' — respawn is off, so that is all you get.');
+  }
+});
+cmd('botrespawn', {
+  cat: 'cheat', cheat: true, args: '[on|off]', help: 'Whether a killed bot gets replaced. Off leaves the ones already out there alone.',
+  run: function (ctx, a) {
+    var g = ctx.game, on = onOff(a[0], g.botCount > 0);
+    var alive = g.entities.filter(function (e) { return e.type === 'tank' && e.bot && !e.dead; }).length;
+    if (on && !alive) return 'No bots out there to hold on to — /botspawn <n> or /bots <n> first.';
+    g.botCount = g.botOverride = on ? alive : 0;   // the server re-reads botOverride every tick
+    return 'Bot respawn ' + (on ? 'ON — holding at ' + alive + '.'
+      : 'OFF — the ' + alive + ' still out there are the last of them.');
   }
 });
 cmd('difficulty diff', {
@@ -749,5 +821,5 @@ function botReplyLine(g) {
 if (typeof module !== 'undefined') module.exports = {
   COMMANDS: COMMANDS, runCommand: runCommand, chatLines: chatLines,
   sanitizeName: sanitizeName, sanitizeChat: sanitizeChat, CHAT_MAX: CHAT_MAX,
-  botReplyLine: botReplyLine
+  botReplyLine: botReplyLine, cheatsOK: cheatsOK
 };

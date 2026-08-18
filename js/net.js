@@ -232,6 +232,7 @@ function applyFlags(e, ef) {
   e.dead = !!(ef & 8);
   e.warning = !!(ef & 16);
   e.team = (ef & 32) ? null : 'owned';
+  e.rainbow = !!(ef & 64);          // /rainbow, cycled in the renderer
 }
 
 NetGame.prototype.create = function (b) {
@@ -255,8 +256,10 @@ NetGame.prototype.create = function (b) {
   if (isTank) {
     var idOrBoss = b.ru8();
     e.level = b.ru8();
+    var scale = b.ru16() / 1024;
     if (e.type === 'boss') this.attachBoss(e, idOrBoss);
     else this.attachTank(e, idOrBoss);
+    e.scaleFactor = scale;            // attach* seeds it; the server has the last word
   } else {
     e.scaleFactor = 1;
   }
@@ -315,7 +318,9 @@ NetGame.prototype.update = function (b) {
   var size = b.ru16() / 4, health = b.ru8() / 255, opacity = b.ru8() / 255, ef = b.ru8();
   var isTank = e ? (e.type === 'tank' || e.type === 'boss') : false;
   var level = null;
-  if (e && isTank) level = b.ru8();
+  var scale = null;
+  var idOrBoss = null;
+  if (e && isTank) { idOrBoss = b.ru8(); level = b.ru8(); scale = b.ru16() / 1024; }
   if (e && e.name) e.score = b.ru32();
   if (!e) return;                       // unknown id: turret angles can't be sized, bail
 
@@ -323,10 +328,15 @@ NetGame.prototype.update = function (b) {
   e.x = x; e.y = y; e.angle = ang; e.size = size;
   e.health = health; e.opacity = opacity;
   applyFlags(e, ef);
-  if (level !== null && level !== e.level) {
-    e.level = level;
-    e.scaleFactor = Math.pow(1.01, level - 1);
+  if (level !== null) e.level = level;
+  // A class change (upgrade, /class) keeps the same entity id, so rebuild the
+  // barrels, body shape and turrets here — before the turret angles are read,
+  // since their count comes from the new class.
+  if (idOrBoss !== null && e.type === 'tank' && idOrBoss !== e.tankId) {
+    this.attachTank(e, idOrBoss);
+    e.sides = e.def.sides;
   }
+  if (scale !== null) e.scaleFactor = scale;
   this.readTurretAngles(b, e);
 };
 

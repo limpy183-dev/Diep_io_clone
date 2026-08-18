@@ -237,12 +237,14 @@ Barrel.prototype.shoot = function () {
 
 Barrel.prototype.spawn = function (m, accel, b, d, t, g) {
   var st = t.stats;
+  // /bulletsize lives on the tank, so a turret asks the tank it is bolted to.
+  var bsize = ((t.isTurret && t.parent ? t.parent : t).bulletSize) || 1;
   var scatter = (Math.PI / 180) * b.scatterRate * (Math.random() - 0.5) * 10;
   var ang = m.a + scatter;
   var proj = new Entity(g, {
     type: b.type === 'necrodrone' ? 'necro' : b.type,
     x: m.x, y: m.y, angle: ang,
-    size: Math.max(2, (d.width / 2) * b.sizeRatio * t.scaleFactor),
+    size: Math.max(2, (d.width / 2) * b.sizeRatio * t.scaleFactor * bsize),
     sides: b.sides !== undefined ? b.sides : (b.type === 'drone' || b.type === 'swarm' ? 3 : b.type === 'necrodrone' ? 4 : b.type === 'trap' ? 3 : 1),
     // A turret is not an entity, so its shots must be owned by the tank it is
     // bolted to — otherwise canInteract() never matches and they hit their own
@@ -902,6 +904,45 @@ function botFlightTicks(t, d) {
   return 0;
 }
 
+// Roughly what this tank puts out per tick. Only ever used as a ratio between
+// candidate targets, so the collision multipliers that scale every one of them
+// equally are left out.
+function botDps(t) {
+  if (!t.barrels.length) return Math.max(1, t.damagePerTick);      // rammers hit with the body
+  var dps = 0, dmg = 7 + t.stats[S_DAMAGE] * 3;
+  for (var i = 0; i < t.barrels.length; i++) {
+    var b = t.barrels[i];
+    dps += dmg * b.def.bullet.damage * (b.def.pellets || 1) / b.period();
+  }
+  return Math.max(0.02, dps);          // floor only guards the divide
+}
+
+// Killing a tank awards no score in this game — Tank's constructor never passes
+// one, so scoreReward is 0 and a kill pays nothing but the counter. Shapes are
+// the entire economy. That makes a fight a pure cost: it takes time, and losing
+// it resets you to respawnLevel. So a sharp bot fights when the fight is already
+// on it, when it is winning cheaply, when a human is in front of it, or when it
+// has nothing left to level for — and otherwise walks away and farms, which is
+// the only thing that ever makes it big.
+function botShouldFight(t, tgt, sk) {
+  // Taking fire, and it is actually costing something. Without the health test
+  // a single stray pellet in a crowded arena reads as "I am in a fight", every
+  // bot answers, and nobody ever gets back to farming — which is how the top
+  // tiers ended up with a lower median level than Medium.
+  if (t.game.tick - t.lastDamage < 50 && t.health < t.maxHealth * 0.85) return true;
+  if (t.level >= MAX_LEVEL - 2) return true;                       // nothing left to farm for
+  // Health counts for more than levels here on purpose: something on its last
+  // sliver is worth finishing even when it out-ranks you, and at 6 a two-level
+  // gap was cancelling a 95% health advantage.
+  var mine = t.level + t.health / t.maxHealth * 10;
+  var theirs = (tgt.level || MAX_LEVEL) + tgt.health / tgt.maxHealth * 10;
+  if (mine - theirs > 5) return true;                              // winning it cheaply
+  if (tgt.isPlayer && sk.hunt >= 0.5 && mine > theirs - 8) return true;
+  // How far it will cross to pick a fight, shrinking as it gets smarter: a dumb
+  // bot charges anything it can see, a sharp one only what is already on it.
+  return dist2(t, tgt) < Math.pow(botReach(t) * (2.2 - 1.4 * sk.sense), 2);
+}
+
 // Not how far a bullet *can* go — a basic Tank's carries 1750 units, and a shot
 // with three seconds of hang time hits nothing that moves. This is how far it
 // can go and still arrive while the target is roughly where you aimed: one
@@ -953,6 +994,7 @@ function botClassScore(d, build) {
 function botScan(t, sk) {
   var g = t.game, i, e;
   var sight2 = sk.sight * sk.sight, fs = sk.sight * sk.farm, farm2 = fs * fs;
+  var dps = botDps(t), speed = Math.max(1, t.movementSpeed * 10);   // terminal speed under 10% friction
   var bestT = null, bestTS = -Infinity, bestS = null, bestSS = -Infinity;
   for (i = 0; i < g.entities.length; i++) {
     e = g.entities[i];
@@ -961,7 +1003,19 @@ function botScan(t, sk) {
     var d2 = dist2(t, e);
     if (e.type === 'shape') {
       if (d2 > farm2 || (e.kind === 'alpha' && t.level < 25)) continue;
-      var ss = (e.scoreReward || 1) / (400 + Math.sqrt(d2));   // value per unit of walking
+      if (e.id === t.farmBan) continue;                        // tried it, got nowhere
+      // Measured: a level 30 bot cracks a Hexagon in 235 ticks and a level 15
+      // one never does at all. Half a minute of chewing is the line between a
+      // fat target and a trap, and it moves on its own as damage output grows.
+      if (e.health > dps * 900) continue;
+      // Value per tick, not value per metre. A level 2 bot grinding a 1500 HP
+      // Hexagon earns far less than the same seconds spent on 10 HP Squares,
+      // and pricing the kill time says so. As its damage grows the big shapes
+      // come back on the menu by themselves — no level gates to hand-tune.
+      // Travel counts triple: the walk earns nothing and is the part of farming
+      // that gets you killed, so a Square underfoot beats a Pentagon two screens
+      // away even though the Pentagon pays better per shot.
+      var ss = (e.scoreReward || 1) / (3 * Math.sqrt(d2) / speed + e.health / dps);
       if (ss > bestSS) { bestSS = ss; bestS = e; }
       continue;
     }
@@ -1016,6 +1070,10 @@ function tickBot(t) {
   if (g.tick % sk.react === t.id % sk.react) botScan(t, sk);
 
   var tgt = t.aiTarget && !t.aiTarget.dead ? t.aiTarget : null;
+  var farmable = t.aiFarm && !t.aiFarm.dead ? t.aiFarm : null;
+  // A fight it does not have to take is time it is not spending levelling.
+  if (tgt && farmable && !botShouldFight(t, tgt, sk)) tgt = null;
+
   // Break off while hurt and come back once the regen has done its work. The
   // gap between the two thresholds stops it flip-flopping on the line, and the
   // level check stops it fleeing a cripple it was two shots from finishing.
@@ -1024,7 +1082,21 @@ function tickBot(t) {
     else if (t.health > t.maxHealth * 0.75) t.fleeing = false;
   } else t.fleeing = false;
 
-  var goal = tgt || (t.aiFarm && !t.aiFarm.dead ? t.aiFarm : null);
+  // Whether a given class can actually crack a given shape is a question about
+  // bullet penetration, body damage and regeneration that is not worth
+  // modelling — and getting it wrong strands a bot forever. So just watch the
+  // health bar: eight seconds of fire for less than a quarter of it is not a
+  // long job, it is an impossible one. A level 15 bot cannot kill a Hexagon at
+  // all, and this notices without needing to know why.
+  if (!tgt && farmable) {
+    if (t.farmId !== farmable.id) { t.farmId = farmable.id; t.farmHp = farmable.health; t.farmSince = g.tick; }
+    else if (g.tick - t.farmSince > 200) {
+      if (t.farmHp - farmable.health < farmable.maxHealth * 0.25) { t.farmBan = farmable.id; farmable = null; }
+      else { t.farmHp = farmable.health; t.farmSince = g.tick; }
+    }
+  }
+
+  var goal = tgt || farmable;
   var mv = { x: 0, y: 0 }, aim, aimDist = 400, d = 0;
 
   if (goal) {

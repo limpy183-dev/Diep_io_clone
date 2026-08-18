@@ -10,6 +10,24 @@ for (const f of ['js/tankdefs.js', 'js/tankdefs-extra.js', 'js/data.js', 'js/pro
 
 const { Game, Entity, Shape, BOT_SKILL, BOT_DIFFICULTIES, botSkill } = ctx;
 const { BOT_BUILDS, botClassScore, botReach, botFlightTicks, tickBot, TANK_DEFS, LEVEL_SCORE } = ctx;
+const { botScan, botDps, botShouldFight, SHAPES, BOT_SKILL: SK } = ctx;
+
+// One bot in an empty arena, plus a ring of whatever shapes the caller wants.
+function withShapes(difficulty, level, kinds, radius) {
+  const g = bare(difficulty, { react: 9999 });
+  const t = place(g.spawnBot(), 0, 0);
+  t.build = BOT_BUILDS.filter((b) => !b.ram)[0];   // pin it: a rammer roll has no gun to measure
+  t.addScore(LEVEL_SCORE[level]);
+  for (let i = 0; i < 80; i++) for (const w of t.build.order) if (t.upgradeStat(w)) break;
+  kinds.forEach((k, i) => {
+    const a = (i / kinds.length) * Math.PI * 2;
+    const sh = g.add(new Shape(g, k, Math.cos(a) * radius, Math.sin(a) * radius));
+    sh.shiny = false;
+    sh.scoreReward = SHAPES[k].score;
+    sh.health = sh.maxHealth = SHAPES[k].health;
+  });
+  return { g, t };
+}
 
 let passed = 0;
 function test(name, fn) { fn(); passed++; console.log('  ok  ' + name); }
@@ -206,6 +224,78 @@ test('a bot pinned against a wall shakes itself loose', () => {
   t.aiTarget = place(g.spawnBot(), 900, 0);
   for (let i = 0; i < 30; i++) { g.tick = i; tickBot(t); }   // never moves: looks stuck
   assert.ok(t.unstick > 0, 'should have noticed it was not going anywhere');
+});
+
+console.log('\nFarming');
+test('a small bot will not commit to a shape it cannot chew through', () => {
+  // Reported: low-level bots walked past the Squares to grind 1500 HP Hexagons.
+  // Scoring by value-per-metre made a Hexagon look 150x better than a Square;
+  // pricing the kill time instead makes the size of the thing count against it.
+  const kinds = ['square', 'triangle', 'pentagon', 'hexagon'];
+  const { t: small } = withShapes('extreme', 2, kinds, 600);
+  botScan(small, SK.extreme);
+  assert.ok(small.aiFarm, 'should have found something to farm');
+  assert.notEqual(small.aiFarm.kind, 'hexagon', 'a level 2 bot picked a Hexagon');
+  assert.ok(SHAPES.hexagon.health > botDps(small) * 900, 'and it should be priced out of reach');
+
+  // The gate is capability, not a hardcoded level: it opens as damage grows.
+  const { t: big } = withShapes('extreme', 45, kinds, 600);
+  assert.ok(botDps(big) > botDps(small) * 3, 'a level 45 bot should out-damage a level 2 one');
+});
+
+test('a bot that is getting nowhere gives up and finds something else', () => {
+  // Whether a class can crack a given shape depends on penetration and body
+  // damage in ways not worth modelling — measured, a level 15 bot never kills a
+  // Hexagon at all. So the backstop watches the health bar instead of guessing.
+  const g = new Game('ffa', null, { headless: true, botCount: 0, difficulty: 'extreme' });
+  g.wantedShapes = 0; g.botCount = 0;
+  g.entities = g.entities.filter((e) => e.type !== 'shape');
+  g.mode = Object.assign({}, g.mode, { noBoss: true });
+  const t = place(g.spawnBot(), 0, 0);
+  t.addScore(LEVEL_SCORE[20]);
+  const bad = g.add(new Shape(g, 'pentagon', 400, 0));
+  bad.shiny = false; bad.scoreReward = 130; bad.health = bad.maxHealth = 100;
+  bad.damageReduction = 0;                      // immune: the stream goes nowhere
+  for (let i = 0; i < 400; i++) {
+    g.step();
+    bad.x = 400; bad.y = 0; bad.vx = bad.vy = 0; bad.health = 100;
+  }
+  assert.equal(t.farmBan, bad.id, 'should have written that one off');
+  assert.notEqual(t.aiFarm, bad, 'and stopped aiming at it');
+});
+
+test('takes the fights worth taking, and levels when they are not', () => {
+  // Killing a tank awards no score in this game, so a fight it can walk away
+  // from is time it is not spending getting bigger.
+  const g = bare('extreme', { react: 9999 });
+  const t = place(g.spawnBot(), 0, 0);
+  t.addScore(LEVEL_SCORE[10]);
+  const foe = place(g.spawnBot(), 2000, 0);
+  foe.addScore(LEVEL_SCORE[12]);
+  t.lastDamage = -9999;
+
+  assert.equal(botShouldFight(t, foe, SK.extreme), false, 'should go farm instead');
+
+  // How far it will cross for a fight is the difficulty knob: a dumb bot
+  // charges anything it can see, a sharp one only what is already on it.
+  place(foe, 1200, 0);
+  assert.equal(botShouldFight(t, foe, SK.easy), true, 'easy bots charge from range');
+  assert.equal(botShouldFight(t, foe, SK.extreme), false, 'sharp ones go back to farming');
+
+  place(foe, 300, 0);
+  assert.equal(botShouldFight(t, foe, SK.extreme), true, 'but not when it is already on top of it');
+
+  place(foe, 2000, 0);
+  t.lastDamage = t.game.tick;                   // clipped, but nothing that matters
+  assert.equal(botShouldFight(t, foe, SK.extreme), false, 'a scratch is not a fight');
+
+  t.health = t.maxHealth * 0.7;                 // now it is actually costing something
+  assert.equal(botShouldFight(t, foe, SK.extreme), true, 'fight back when it hurts');
+  t.health = t.maxHealth;
+
+  t.lastDamage = -9999;
+  foe.health = foe.maxHealth * 0.05;            // nearly dead and worth finishing
+  assert.equal(botShouldFight(t, foe, SK.extreme), true, 'take the free one');
 });
 
 console.log('\nRetreat');

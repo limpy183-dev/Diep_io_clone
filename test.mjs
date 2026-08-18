@@ -877,4 +877,90 @@ test('a tank killed by an orphaned bullet is credited to an unnamed tank', () =>
   assert.equal(victim.killedBy, 'an unnamed tank');
 });
 
+// The command table is browser script too, so it drops into the same context.
+vm.runInContext(readFileSync(new URL('js/commands.js', import.meta.url), 'utf8'), ctx, { filename: 'js/commands.js' });
+const { runCommand, cheatsOK } = ctx;
+const cmdCtx = (g) => {
+  const said = [];
+  return { game: g, tank: g.player, online: true, name: 'Me', said,
+    get sandbox() { return cheatsOK(g); },
+    say: (t) => said.push(t), broadcast: (t) => said.push(t) };
+};
+
+console.log('\nChat commands');
+test('cheats are shut in a normal arena until /cheats on opens it', () => {
+  const g = new Game('ffa', 'Me', { botCount: 0 });
+  const c = cmdCtx(g);
+  runCommand(c, '/god');
+  assert.match(c.said.pop(), /is a cheat/);
+  assert.ok(!g.player.godMode);
+  runCommand(c, '/cheats on');
+  runCommand(c, '/god');
+  assert.equal(g.player.godMode, true);
+  runCommand(c, '/cheats off');
+  assert.equal(cheatsOK(g), false);
+});
+test('a Sandbox is always open and will not be shut', () => {
+  const g = new Game('sandbox', 'Me', { botCount: 0 });
+  runCommand(cmdCtx(g), '/cheats off');
+  assert.equal(cheatsOK(g), true);
+});
+test('/size grows the barrels with the body, and survives a recompute', () => {
+  const g = new Game('sandbox', 'Me', { botCount: 0 });
+  const c = cmdCtx(g), t = g.player;
+  const size0 = t.size, scale0 = t.scaleFactor;
+  runCommand(c, '/size 3');
+  assert.equal(t.size, size0 * 3);
+  assert.equal(t.scaleFactor, scale0 * 3);      // barrels and fresh bullets read this
+  runCommand(c, '/level 20');                   // recompute() rebuilds both from scratch
+  assert.ok(Math.abs(t.scaleFactor / Math.pow(1.01, 19) - 3) < 1e-9, 'still x3 after relevelling');
+});
+test('/firerate divides the reload, /bulletsize multiplies what comes out', () => {
+  const g = new Game('sandbox', 'Me', { botCount: 0 });
+  const c = cmdCtx(g), t = g.player;
+  const reload0 = t.reloadTime;
+  runCommand(c, '/firerate 4');
+  assert.ok(Math.abs(t.reloadTime - reload0 / 4) < 1e-9);
+  runCommand(c, '/maxstats');                   // another recompute
+  assert.ok(t.reloadTime < reload0 / 3, 'fire rate outlives a stat change');
+  const shot = () => { t.barrels[0].shoot(); return g.entities[g.entities.length - 1].size; };
+  const plain = shot();
+  runCommand(c, '/bulletsize 5');
+  assert.ok(Math.abs(shot() - plain * 5) < 1e-6, 'shots five times the size');
+});
+test('/botspawn random scatters over the map with a gap between them', () => {
+  const g = new Game('ffa', 'Me', { botCount: 0 });
+  const c = cmdCtx(g);
+  runCommand(c, '/cheats on');
+  runCommand(c, '/botspawn 12 random');
+  const b = g.entities.filter(e => e.type === 'tank' && e.bot && !e.dead);
+  assert.equal(b.length, 12);
+  let closest = Infinity;
+  for (let i = 0; i < b.length; i++) for (let j = i + 1; j < b.length; j++)
+    closest = Math.min(closest, Math.hypot(b[i].x - b[j].x, b[i].y - b[j].y));
+  const gap = g.arena.size / (2 * Math.sqrt(13));
+  assert.ok(closest >= gap * 0.9, 'kept apart: closest pair ' + Math.round(closest) + ' vs gap ' + Math.round(gap));
+  const span = Math.max(...b.map(e => e.x)) - Math.min(...b.map(e => e.x));
+  assert.ok(span > g.arena.size * 0.5, 'spread wide, not clustered: ' + Math.round(span));
+});
+test('/botspawn is one-off, /botrespawn decides whether they come back', () => {
+  const g = new Game('ffa', 'Me', { botCount: 0 });
+  const c = cmdCtx(g);
+  const bots = () => g.entities.filter(e => e.type === 'tank' && e.bot && !e.dead).length;
+  runCommand(c, '/cheats on');
+  runCommand(c, '/botspawn 6');
+  assert.equal(bots(), 6);
+  runCommand(c, '/botrespawn on');
+  assert.equal(g.botCount, 6);
+  assert.equal(g.botOverride, 6);                     // the server re-reads this every tick
+  g.entities.filter(e => e.type === 'tank' && e.bot).slice(0, 3).forEach(e => e.kill(null));
+  for (let i = 0; i < 150; i++) g.step();
+  assert.ok(bots() >= 5, 'topped back up towards 6, got ' + bots());
+  runCommand(c, '/botrespawn off');
+  const left = bots();
+  g.entities.filter(e => e.type === 'tank' && e.bot && !e.dead).slice(0, 2).forEach(e => e.kill(null));
+  for (let i = 0; i < 150; i++) g.step();
+  assert.ok(bots() <= left - 2, 'no replacements, got ' + bots());
+});
+
 console.log(`\n${passed} passed\n`);

@@ -23,11 +23,12 @@ for (const f of ['js/tankdefs.js', 'js/tankdefs-extra.js', 'js/data.js', 'js/eng
 
 const { Game, GAMEMODES, TANK_DEFS, ADDONS, MSPT, MAX_LEVEL } = sim;
 // The command table runs against the sim's own globals, so it comes from there too.
-const { COMMANDS, runCommand, chatLines, sanitizeName, sanitizeChat } = sim;
+const { COMMANDS, runCommand, chatLines, sanitizeName, sanitizeChat, cheatsOK } = sim;
 
 const PORT = Number(process.argv[2]) || Number(process.env.PORT) || 8137;
 const CLOSE_AFTER = Number(process.argv[3]) || 0;   // seconds until the server retires itself
 const TICK_MS = MSPT;
+const CLOSE_LINGER_MS = 5000;      // how long the CLOSED banner sits before the arena retires
 const MAX_PLAYERS_PER_ARENA = 50;
 const MSG_RATE_LIMIT = 120;        // messages per second per client
 
@@ -153,7 +154,14 @@ function entityFlags(e) {
   if (e.dead) f |= 8;
   if (e.warning) f |= 16;                   // Breakout tile about to collapse
   if (e.team === null) f |= 32;             // unclaimed tile / neutral Dominator
+  if (e.rainbow || (e.owner && e.owner.rainbow)) f |= 64;   // /rainbow: the client cycles the hue
   return f;
+}
+
+// scaleFactor drives barrel length and bullet size, and /size moves it off the
+// level curve, so it ships rather than being re-derived from the level.
+function scaleWord(e) {
+  return Math.max(1, Math.min(65535, Math.round((e.scaleFactor || 1) * 1024)));
 }
 
 // Every human spawns blue server-side, so colour is a per-viewer decision:
@@ -185,7 +193,7 @@ function writeCreate(b, e, client) {
   b.u8(entityFlags(e));
   // Bosses carry a boss-table index instead of a tank id; the client rebuilds
   // their barrels from the same BOSSES table.
-  if (isTank) { b.u8(e.type === 'boss' ? (e.bossIndex | 0) : (e.tankId === undefined ? 0 : e.tankId)); b.u8(Math.min(255, e.level || 1)); }
+  if (isTank) { b.u8(e.type === 'boss' ? (e.bossIndex | 0) : (e.tankId === undefined ? 0 : e.tankId)); b.u8(Math.min(255, e.level || 1)); b.u16(scaleWord(e)); }
   if (e.sides === 2) b.u16(Math.min(65535, Math.round(e.width * 4)));
   if (e.name) { b.str(e.name); b.u32(Math.max(0, e.score | 0)); }
   writeTurrets(b, e);
@@ -199,7 +207,10 @@ function writeUpdate(b, e) {
   b.u8(healthByte(e));
   b.u8(Math.round((e.opacity === undefined ? 1 : e.opacity) * 255));
   b.u8(entityFlags(e));
-  if (e.type === 'tank' || e.type === 'boss') b.u8(Math.min(255, e.level || 1));
+  // The class id rides every update, not just the create: upgrading (or /class)
+  // mutates a tank the client has already seen, and without it the old barrels,
+  // body shape and turret count stick around forever.
+  if (e.type === 'tank' || e.type === 'boss') { b.u8(e.type === 'boss' ? (e.bossIndex | 0) : (e.tankId === undefined ? 0 : e.tankId)); b.u8(Math.min(255, e.level || 1)); b.u16(scaleWord(e)); }
   if (e.name) b.u32(Math.max(0, e.score | 0));
   writeTurrets(b, e);
 }
@@ -369,7 +380,7 @@ function commandCtx(client, arena) {
   return {
     game: g, tank: t, online: true,
     name: (t && t.name) || 'an unnamed tank',
-    sandbox: !!g.mode.sandbox,
+    sandbox: cheatsOK(g),
     say: (text) => sendChat(client, 1, null, text, '#FFDE43'),
     broadcast: (text) => chatAll(arena, 1, null, text, '#85E8A0'),
     whisper: (name, text) => {
@@ -447,12 +458,16 @@ function tickArena(a) {
   }
   g.mapDirty = false;
 
-  // Sweep complete: everything but the closers is gone. Move the stragglers off.
+  // Sweep complete: everything but the closers is gone. Let the CLOSED banner
+  // sit for a few seconds, then move the stragglers off and retire the arena —
+  // the next join builds a fresh one (closeArena already unrouted this mode).
   if (g.closed && !a.finished) {
     a.finished = true;
     console.log(`[arena] ${a.mode} CLOSED`);
-    for (const c of a.clients) if (c.alive) evict(c, 'Arena CLOSED — press Play to join a new one');
-    setTimeout(() => dropArena(a, true), 3000);
+    setTimeout(() => {
+      for (const c of a.clients) if (c.alive) evict(c, 'Arena CLOSED — press Play to join a new one');
+      setTimeout(() => dropArena(a, true), 3000);
+    }, CLOSE_LINGER_MS);
   }
 
   if (a.clients.size === 0 && !a.finished) { if (++a.idle > 25 * 60) dropArena(a); }
@@ -532,8 +547,12 @@ function handle(client, b) {
       c.mouse.x = clampCoord(mx, client.arena.game); c.mouse.y = clampCoord(my, client.arena.game);
       t.selfDestruct = !!(bits & IN.SUICIDE);
       // Sandbox-only cheats, enforced here rather than trusted from the client.
-      if (client.arena.game.mode.sandbox) {
-        if (bits & IN.GOD) t.godMode = true; else if (t.godMode) t.godMode = false;
+      if (cheatsOK(client.arena.game)) {
+        // The god bit is a held toggle on the client, so only its rising edge flips
+        // god mode. Reading it as an absolute would stomp /god from chat every tick.
+        const godBit = !!(bits & IN.GOD);
+        if (godBit && !client.godBit) t.godMode = !t.godMode;
+        client.godBit = godBit;
         if (bits & IN.LEVELUP && t.level < MAX_LEVEL) t.addScore(Math.max(5, sim.LEVEL_SCORE[t.level + 1] - t.score + 1));
       }
       break;

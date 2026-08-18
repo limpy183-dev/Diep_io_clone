@@ -3,6 +3,9 @@
 // names, health bars, UI. Names and bars come after ALL entities so nothing
 // occludes them.
 
+// text outline: dark grey, not pure black
+var TEXT_S = '#2E2E2E';
+
 function Renderer(canvas, game) {
   this.canvas = canvas;
   this.ctx = canvas.getContext('2d');
@@ -202,6 +205,14 @@ Renderer.prototype.drawEntity = function (e, t) {
   var lw = Math.max(1, (e.borderWidth || 7.5) * (e.scaleFactor || 1) * k);
 
   var fill = e.fill, stroke = e.stroke;
+  // /rainbow. Offline the flag sits on the tank and its shots point back at it;
+  // online the server has already resolved that into a flag bit per entity.
+  if (e.rainbow || (e.owner && e.owner.rainbow)) {
+    // Time drives the sweep and the id offsets it, so a stream of shots reads
+    // as one gradient sliding down the trail instead of a block of one colour.
+    fill = hueHex((Date.now() / 2600 + (e.id % 64) / 64) % 1);
+    stroke = mixHex(fill, '#000000', 0.25);
+  }
   if (e.hurtFlash > 0) { fill = mixHex(fill, '#FFFFFF', 0.55); stroke = mixHex(stroke, '#FFFFFF', 0.35); }
 
   if (e.type === 'wall' || e.type === 'base' || e.type === 'tile') {
@@ -279,6 +290,15 @@ Renderer.prototype.drawEntity = function (e, t) {
   c.restore();
 };
 
+// hue 0..1 to hex at full saturation, the /rainbow palette
+function hueHex(h) {
+  var ch = function (n) {
+    var k = (n + h * 12) % 12;
+    return Math.round((0.55 - 0.45 * Math.max(-1, Math.min(k - 3, 9 - k, 1))) * 255);
+  };
+  return '#' + ((1 << 24) + (ch(0) << 16) + (ch(8) << 8) + ch(4)).toString(16).slice(1);
+}
+
 function mixHex(a, b, t) {
   var ai = parseInt(a.slice(1), 16), bi = parseInt(b.slice(1), 16);
   var r = Math.round(((ai >> 16) & 255) * (1 - t) + ((bi >> 16) & 255) * t);
@@ -318,7 +338,7 @@ Renderer.prototype.drawName = function (e, t) {
   c.globalAlpha = e.opacity;
   c.font = 'bold ' + size + 'px Ubuntu, Verdana, sans-serif';
   c.textAlign = 'center';
-  c.lineWidth = size * 0.22; c.strokeStyle = '#000';
+  c.lineWidth = size * 0.16; c.strokeStyle = TEXT_S;
   var ny = sp.y - r - size * 0.55;
   c.strokeText(e.name, sp.x, ny);
   c.fillStyle = '#FFF';
@@ -326,7 +346,7 @@ Renderer.prototype.drawName = function (e, t) {
   if (e.score) {
     var ss = size * 0.62;
     c.font = 'bold ' + ss + 'px Ubuntu, Verdana, sans-serif';
-    c.lineWidth = ss * 0.22;
+    c.lineWidth = ss * 0.16;
     c.strokeText(abbrev(e.score), sp.x, ny + ss * 1.1);
     c.fillText(abbrev(e.score), sp.x, ny + ss * 1.1);
   }
@@ -375,7 +395,7 @@ Renderer.prototype.bar = function (x, y, w, h, frac, color, label) {
   if (label) {
     c.font = 'bold ' + (h * 0.72) + 'px Ubuntu, Verdana, sans-serif';
     c.textAlign = 'center'; c.textBaseline = 'middle';
-    c.lineWidth = h * 0.16; c.strokeStyle = '#000';
+    c.lineWidth = h * 0.12; c.strokeStyle = TEXT_S;
     c.strokeText(label, x + w / 2, y + 1);
     c.fillStyle = '#FFF'; c.fillText(label, x + w / 2, y + 1);
   }
@@ -386,8 +406,8 @@ Renderer.prototype.drawScoreboard = function () {
   var g = this.game, c = this.ctx;
   var w = 240, x = this.canvas.width - w - 20, y = 46;
   c.save();
-  c.font = 'bold 24px Ubuntu, Verdana, sans-serif'; c.textAlign = 'center';
-  c.lineWidth = 5; c.strokeStyle = '#000'; c.strokeText('Scoreboard', x + w / 2, y - 12);
+  c.font = 'bold 21px Ubuntu, Verdana, sans-serif'; c.textAlign = 'center';
+  c.lineWidth = 3.5; c.strokeStyle = TEXT_S; c.strokeText('Scoreboard', x + w / 2, y - 12);
   c.fillStyle = '#FFF'; c.fillText('Scoreboard', x + w / 2, y - 12);
   var max = g.leaderboard.length ? g.leaderboard[0].score : 1;
   for (var i = 0; i < g.leaderboard.length; i++) {
@@ -399,9 +419,9 @@ Renderer.prototype.drawScoreboard = function () {
     // each entry's tank rides the tip of its own fill
     var def = t.def || TANK_DEFS[t.tankId];
     if (def) this.drawTankIcon(def, x + bh / 2 + (w - bh) * frac, by, bh * 0.36);
-    c.font = 'bold 14px Ubuntu, Verdana, sans-serif'; c.textAlign = 'center'; c.textBaseline = 'middle';
+    c.font = 'bold 12px Ubuntu, Verdana, sans-serif'; c.textAlign = 'center'; c.textBaseline = 'middle';
     var label = (t.name ? t.name + ' - ' : '') + abbrev(t.score);
-    c.lineWidth = 3.2; c.strokeStyle = '#000'; c.strokeText(label, x + w / 2, by + 1);
+    c.lineWidth = 2.4; c.strokeStyle = TEXT_S; c.strokeText(label, x + w / 2, by + 1);
     c.fillStyle = '#FFF'; c.fillText(label, x + w / 2, by + 1);
   }
   c.restore();
@@ -415,10 +435,10 @@ Renderer.prototype.drawMinimap = function () {
   var count = 0;
   for (var ei = 0; ei < g.entities.length; ei++) if (g.entities[ei].type === 'tank' && !g.entities[ei].dead) count++;
   c.textAlign = 'right'; c.textBaseline = 'alphabetic';
-  c.font = 'bold 22px Ubuntu, Verdana, sans-serif';
-  c.lineWidth = 4.5; c.strokeStyle = '#000';
+  c.font = 'bold 19px Ubuntu, Verdana, sans-serif';
+  c.lineWidth = 3.2; c.strokeStyle = TEXT_S;
   c.strokeText('diep.io', x + s, y - 32); c.fillStyle = '#FFF'; c.fillText('diep.io', x + s, y - 32);
-  c.font = 'bold 15px Ubuntu, Verdana, sans-serif'; c.lineWidth = 3.5;
+  c.font = 'bold 13px Ubuntu, Verdana, sans-serif'; c.lineWidth = 2.6;
   c.strokeText(count + ' players', x + s, y - 12);
   c.fillStyle = '#FFF'; c.fillText(count + ' players', x + s, y - 12);
   c.globalAlpha = 0.75;
@@ -528,8 +548,8 @@ Renderer.prototype.drawStats = function () {
     }
     c.restore();
     // label right-aligned, key number last: "Health Regen [1]"
-    c.font = 'bold 12px Ubuntu, Verdana, sans-serif'; c.textAlign = 'right'; c.textBaseline = 'middle';
-    c.lineWidth = 3; c.strokeStyle = '#000';
+    c.font = 'bold 11px Ubuntu, Verdana, sans-serif'; c.textAlign = 'right'; c.textBaseline = 'middle';
+    c.lineWidth = 2.2; c.strokeStyle = TEXT_S;
     var label = def.name + ' [' + (r.ui + 1) + ']';
     c.strokeText(label, r.x + r.w - 10, r.y + r.h / 2);
     c.fillStyle = '#FFF'; c.fillText(label, r.x + r.w - 10, r.y + r.h / 2);
@@ -552,18 +572,19 @@ Renderer.prototype.drawStats = function () {
     var top = rects[0], txt = 'x' + p.statsAvailable;
     c.save();
     c.translate(top.x + top.w + 34, top.y - 20); c.rotate(-0.3);
-    c.font = 'bold 22px Ubuntu, Verdana, sans-serif'; c.textAlign = 'center'; c.textBaseline = 'middle';
-    c.lineWidth = 5; c.strokeStyle = '#000'; c.strokeText(txt, 0, 0);
+    c.font = 'bold 19px Ubuntu, Verdana, sans-serif'; c.textAlign = 'center'; c.textBaseline = 'middle';
+    c.lineWidth = 3.5; c.strokeStyle = TEXT_S; c.strokeText(txt, 0, 0);
     c.fillStyle = '#FFF'; c.fillText(txt, 0, 0);
     c.restore();
   }
   c.restore();
 };
 
-// mix a hex colour toward white by t (0..1)
+// mix a hex colour toward white by t (0..1), or toward black when t is negative
 function tint(hex, t) {
   var n = parseInt(hex.slice(1), 16), r = n >> 16, g = (n >> 8) & 255, b = n & 255;
-  return 'rgb(' + Math.round(r + (255 - r) * t) + ',' + Math.round(g + (255 - g) * t) + ',' + Math.round(b + (255 - b) * t) + ')';
+  var d = t < 0 ? 0 : 255, a = Math.abs(t);
+  return 'rgb(' + Math.round(r + (d - r) * a) + ',' + Math.round(g + (d - g) * a) + ',' + Math.round(b + (d - b) * a) + ')';
 }
 
 // The upgrade panel: a grey card-tray in the top-left with a collapse button,
@@ -601,11 +622,14 @@ Renderer.prototype.upgradeRects = function () {
 
 // grey pill used by the collapse and Ignore buttons
 Renderer.prototype.uiButton = function (r, rad) {
-  var c = this.ctx, g = c.createLinearGradient(0, r.y, 0, r.y + r.h);
-  g.addColorStop(0, '#C6C6C6'); g.addColorStop(1, '#9E9E9E');
+  var c = this.ctx;
+  c.save();
+  c.beginPath(); c.roundRect(r.x, r.y, r.w, r.h, rad); c.clip();
+  c.fillStyle = '#C2C2C2'; c.fillRect(r.x, r.y, r.w, r.h);
+  c.fillStyle = '#A3A3A3'; c.fillRect(r.x, r.y + r.h * 0.62, r.w, r.h * 0.38);
+  c.restore();
   c.beginPath(); c.roundRect(r.x, r.y, r.w, r.h, rad);
-  c.fillStyle = g; c.fill();
-  c.lineWidth = 3; c.strokeStyle = '#6B6B6B'; c.stroke();
+  c.lineWidth = 2.5; c.strokeStyle = '#6B6B6B'; c.stroke();
 };
 
 Renderer.prototype.drawUpgrades = function () {
@@ -613,9 +637,6 @@ Renderer.prototype.drawUpgrades = function () {
   if (!l) return;
   var rot = performance.now() / 3000;             // slow clockwise spin
   c.save();
-  c.beginPath(); c.roundRect(l.panel.x, l.panel.y, l.panel.w, l.panel.h, 6);
-  c.fillStyle = 'rgba(205,205,205,0.92)'; c.fill();
-
   this.uiButton(l.close, 8);
   // arrow-leaving-a-bracket glyph
   var b = l.close, cx = b.x + b.w / 2, cy = b.y + b.h / 2;
@@ -628,28 +649,31 @@ Renderer.prototype.drawUpgrades = function () {
   c.lineCap = 'butt';
 
   c.textAlign = 'center'; c.textBaseline = 'middle';
-  c.font = 'bold 30px Ubuntu, Verdana, sans-serif';
-  c.lineWidth = 5; c.lineJoin = 'round'; c.strokeStyle = '#5E5E5E';
+  c.font = 'bold 26px Ubuntu, Verdana, sans-serif';
+  c.lineWidth = 3.5; c.lineJoin = 'round'; c.strokeStyle = '#5E5E5E';
   c.strokeText('Upgrades', l.panel.x + l.panel.w / 2 + 14, b.y + b.h / 2);
   c.fillStyle = '#8C8C8C'; c.fillText('Upgrades', l.panel.x + l.panel.w / 2 + 14, b.y + b.h / 2);
 
   for (var i = 0; i < l.cards.length; i++) {
     var r = l.cards[i], def = TANK_DEFS[r.id], base = CARD_COLORS[r.idx % CARD_COLORS.length];
-    var grad = c.createLinearGradient(0, r.y, 0, r.y + r.h);
-    grad.addColorStop(0, tint(base, 0.62)); grad.addColorStop(1, tint(base, 0.22));
+    c.save();
+    c.beginPath(); c.roundRect(r.x, r.y, r.w, r.h, 6); c.clip();
+    c.fillStyle = tint(base, 0.5); c.fillRect(r.x, r.y, r.w, r.h);
+    // flat shadow over the lower part instead of a gradient
+    c.fillStyle = tint(base, -0.12); c.fillRect(r.x, r.y + r.h * 0.56, r.w, r.h * 0.44);
+    c.restore();
     c.beginPath(); c.roundRect(r.x, r.y, r.w, r.h, 6);
-    c.fillStyle = grad; c.fill();
-    c.lineWidth = 4; c.strokeStyle = '#6B6B6B'; c.stroke();
-    this.drawTankIcon(def, r.x + r.w / 2, r.y + r.h / 2 - 4, r.w * 0.26, rot);
-    c.font = 'bold 14px Ubuntu, Verdana, sans-serif';
-    c.lineWidth = 4; c.strokeStyle = '#000';
-    c.strokeText(def.name, r.x + r.w / 2, r.y + r.h - 14);
-    c.fillStyle = '#FFF'; c.fillText(def.name, r.x + r.w / 2, r.y + r.h - 14);
+    c.lineWidth = 3; c.strokeStyle = '#6B6B6B'; c.stroke();
+    this.drawTankIcon(def, r.x + r.w / 2, r.y + r.h * 0.44, r.w * 0.18, rot);
+    c.font = 'bold 12px Ubuntu, Verdana, sans-serif';
+    c.lineWidth = 2.8; c.strokeStyle = TEXT_S;
+    c.strokeText(def.name, r.x + r.w / 2, r.y + r.h - 13);
+    c.fillStyle = '#FFF'; c.fillText(def.name, r.x + r.w / 2, r.y + r.h - 13);
   }
 
   this.uiButton(l.ignore, 5);
-  c.font = 'bold 16px Ubuntu, Verdana, sans-serif';
-  c.lineWidth = 4; c.strokeStyle = '#000';
+  c.font = 'bold 14px Ubuntu, Verdana, sans-serif';
+  c.lineWidth = 2.8; c.strokeStyle = TEXT_S;
   c.strokeText('Ignore', l.ignore.x + l.ignore.w / 2, l.ignore.y + l.ignore.h / 2);
   c.fillStyle = '#FFF'; c.fillText('Ignore', l.ignore.x + l.ignore.w / 2, l.ignore.y + l.ignore.h / 2);
   c.restore();
@@ -762,7 +786,7 @@ Renderer.prototype.drawNotifications = function () {
     var y = 90 + i * 40;
     c.globalAlpha = Math.min(1, n.ttl / 25);
     var w = Math.max(260, c.measureText(n.text).width + 60);
-    c.font = 'bold 18px Ubuntu, Verdana, sans-serif';
+    c.font = 'bold 16px Ubuntu, Verdana, sans-serif';
     w = c.measureText(n.text).width + 44;
     c.fillStyle = 'rgba(0,0,0,0.55)';
     c.fillRect(this.canvas.width / 2 - w / 2, y - 22, w, 34);
@@ -780,21 +804,21 @@ Renderer.prototype.drawDeathScreen = function () {
   c.save();
   c.fillStyle = 'rgba(0,0,0,0.45)'; c.fillRect(0, 0, this.canvas.width, this.canvas.height);
   c.textAlign = 'center';
-  c.font = 'bold 40px Ubuntu, Verdana, sans-serif';
+  c.font = 'bold 35px Ubuntu, Verdana, sans-serif';
   c.fillStyle = '#FFF';
   c.fillText('You were killed by:', cx, cy - 150);
-  c.font = 'bold 52px Ubuntu, Verdana, sans-serif';
+  c.font = 'bold 46px Ubuntu, Verdana, sans-serif';
   c.fillText(p.killedBy || 'an unnamed tank', cx, cy - 95);
   if ((p.killedBy || '') === 'an unnamed tank') {
-    c.font = 'italic 16px Ubuntu, Verdana, sans-serif'; c.fillStyle = '#CCC';
+    c.font = 'italic 14px Ubuntu, Verdana, sans-serif'; c.fillStyle = '#CCC';
     c.fillText('They seem to prefer to keep an air of mystery about them', cx, cy - 66);
   }
   var secs = Math.floor((g.tick - p.spawnTick) / TPS);
   var time = Math.floor(secs / 3600) + 'h ' + Math.floor((secs % 3600) / 60) + 'm ' + (secs % 60) + 's';
   this.drawTankIcon(p.def, cx, cy + 5, 42);
-  c.font = 'bold 20px Ubuntu, Verdana, sans-serif'; c.fillStyle = '#FFF';
+  c.font = 'bold 18px Ubuntu, Verdana, sans-serif'; c.fillStyle = '#FFF';
   c.fillText(p.def.name, cx, cy + 78);
-  c.font = '18px Ubuntu, Verdana, sans-serif';
+  c.font = '16px Ubuntu, Verdana, sans-serif';
   c.fillText('Score: ' + abbrev(p.score) + '     Level: ' + p.level + '     Kills: ' + p.kills, cx, cy + 108);
   c.fillText('Time alive: ' + time, cx, cy + 134);
   // respawn button
@@ -802,7 +826,7 @@ Renderer.prototype.drawDeathScreen = function () {
   this.respawnBtn = { x: bx, y: by, w: bw, h: bh };
   c.fillStyle = C.blue; c.fillRect(bx, by, bw, bh);
   c.fillStyle = C.blueS; c.fillRect(bx, by + bh - 8, bw, 8);
-  c.fillStyle = '#FFF'; c.font = 'bold 24px Ubuntu, Verdana, sans-serif';
+  c.fillStyle = '#FFF'; c.font = 'bold 21px Ubuntu, Verdana, sans-serif';
   c.textBaseline = 'middle';
   c.fillText('Respawn', cx, by + bh / 2 - 2);
   c.restore();

@@ -92,7 +92,7 @@
     var say = function (t) { CHAT.push('system', null, t, null); };
     return {
       game: game, tank: player(), online: online, name: myName(),
-      sandbox: !online || !!(game && game.mode.sandbox),
+      sandbox: !online || cheatsOK(game),
       say: say, broadcast: say
     };
   }
@@ -168,12 +168,12 @@
       case 'y': renderer.showClassTree = true; break;
       case 'h': doPossess(); break;
       case 'o': cheats.suicide = true; if (!online && p) p.selfDestruct = true; break;
-      case 'k': cheats.levelup = true; if (!online && game.mode.sandbox && p) p.addScore(Math.max(5, LEVEL_SCORE[Math.min(MAX_LEVEL, p.level + 1)] - p.score + 1)); break;
+      case 'k': cheats.levelup = true; if (!online && cheatsOK(game) && p) p.addScore(Math.max(5, LEVEL_SCORE[Math.min(MAX_LEVEL, p.level + 1)] - p.score + 1)); break;
       case ';':
         cheats.god = !cheats.god;
-        if (!online && game.mode.sandbox && p) { p.godMode = !p.godMode; game.notify('God mode ' + (p.godMode ? 'ON' : 'OFF'), 50); }
+        if (!online && cheatsOK(game) && p) { p.godMode = !p.godMode; game.notify('God mode ' + (p.godMode ? 'ON' : 'OFF'), 50); }
         break;
-      case '\\': if (!online && game.mode.sandbox && p) cycleTank(p); break;
+      case '\\': if (!online && cheatsOK(game) && p) cycleTank(p); break;
       case 'Escape': leave(); break;
       case ' ': e.preventDefault(); break;
     }
@@ -257,6 +257,8 @@
 
   // ---------------------------------------------------------------- loop
   var acc = 0, last = 0, netAcc = 0;
+  var closedAt = 0;                 // ms stamp of the offline arena closing; 0 = still open
+  var CLOSE_LINGER = 5000;
 
   // The upgrade cards own the top-left corner too; chat sits under them. Card
   // geometry is canvas pixels, the overlay is CSS pixels.
@@ -310,6 +312,14 @@
       acc -= MSPT; steps++;
     }
     if (steps === 5) acc = 0;
+
+    // Closers swept the board: hold the CLOSED banner, then drop back to the
+    // menu, which is what "reset" means offline — the next Play is a new arena.
+    if (game.closed) {
+      if (!closedAt) closedAt = now;
+      else if (now - closedAt > CLOSE_LINGER) { leave(); return; }
+    }
+
     flushQueue();
     var alpha = acc / MSPT;
     renderer.updateCamera(dt, alpha);
@@ -353,7 +363,7 @@
     menu.style.display = 'none';
     CHAT.show();
     if (!online) CHAT.system('Press T or Enter to chat. Type /help for commands, /cheats for the rest.');
-    running = true; last = 0; acc = 0; netAcc = 0;
+    running = true; last = 0; acc = 0; netAcc = 0; closedAt = 0;
     requestAnimationFrame(frame);
   }
 

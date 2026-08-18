@@ -7,7 +7,7 @@ import vm from 'node:vm';
 import assert from 'node:assert/strict';
 import WS from 'ws';
 
-const PORT = 8199;
+const PORT = Number(process.env.PORT) || 8199;
 const near = (a, b, eps, msg) => assert.ok(Math.abs(a - b) <= eps, `${msg}: got ${a}, want ~${b}`);
 let passed = 0;
 const test = (name, ok) => { assert.ok(ok === undefined || ok, name); passed++; console.log('  ok  ' + name); };
@@ -176,6 +176,25 @@ try {
   assert.equal(said(a, /God mode ON/).length, 0, 'and definitely not applied');
   test('cheats are refused in a non-sandbox arena');
 
+  await chatty(a, '/cheats on');
+  await chatty(a, '/god');
+  assert.ok(said(a, /God mode ON/).length, '/cheats on opens a normal arena');
+  test('/cheats on enables cheats in a multiplayer arena');
+
+  const meNow = () => a.entities.find((e) => e.id === a.myId);
+  const scale0 = meNow().scaleFactor, size0 = meNow().size;
+  await chatty(a, '/size 4');
+  await waitFor(() => meNow().size > size0 * 3, 6000, 'the bigger body to arrive');
+  near(meNow().scaleFactor, scale0 * 4, 0.05, 'barrel scale followed the body over the wire');
+  near(meNow().size / meNow().scaleFactor, size0 / scale0, 1, 'body and barrels stay in proportion');
+  test('/size scales the barrels as well as the body, online');
+
+  await chatty(a, '/rainbow on');
+  await waitFor(() => meNow().rainbow, 6000, 'the rainbow flag');
+  test('/rainbow reaches the client as an entity flag');
+  await chatty(a, '/size 1');
+  await chatty(a, '/rainbow off');
+
   // Sandbox is a small arena full of bots; Carol may well be dead by now, and a
   // cheat on a corpse is refused by design.
   if (c.player.dead) { c.respawn(); await waitFor(() => !c.player.dead, 6000, 'Carol respawning'); }
@@ -184,6 +203,27 @@ try {
   await chatty(c, '/class booster');
   await waitFor(() => c.player.def && c.player.def.name === 'Booster', 4000, 'class cheat applying');
   test('/god and /class apply server-side in a Sandbox arena');
+
+  // A class change mutates a tank every client has already seen, so it has to
+  // reach the *entity*, not just the HUD — otherwise you upgrade and keep the
+  // old barrels forever.
+  const carol = () => c.entities.find((e) => e.id === c.myId);
+  await waitFor(() => carol() && carol().def && carol().def.name === 'Booster', 4000, 'the new class on the wire');
+  assert.equal(carol().barrels.length, c.player.def.barrels.length, 'barrels rebuilt for the new class');
+  test('a class change repaints an already-replicated tank');
+
+  // Auto 5 has no barrels and five turrets: the turret angles are the last
+  // field of the record, so a stale count would garble everything after it.
+  await chatty(c, '/class auto 5');
+  await waitFor(() => carol() && carol().def.name === 'Auto 5', 4000, 'a class with a different turret count');
+  assert.equal(carol().turrets.length, 5, 'five auto-turrets rebuilt');
+  assert.equal(carol().barrels.length, 0, 'and no barrels left over from Booster');
+  const cx0 = carol().x;
+  await waitFor(() => {
+    c.sendInput({ right: 1 }, { x: carol().x + 500, y: carol().y }, {});
+    return Math.abs(carol().x - cx0) > 60;
+  }, 8000, 'movement to keep replicating');
+  test('the entity stream stays aligned when the turret count changes');
 
   const before = d.chat.length;
   for (let i = 0; i < 6; i++) c.sendChat('spam ' + i);
