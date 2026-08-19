@@ -53,6 +53,14 @@
     if (online) net.toggle(which);
     else if (which === 0) p.autoFire = !p.autoFire;
     else p.autoSpin = !p.autoSpin;
+    // Online the flip only lands on the next snapshot, so predict it here.
+    var state = which === 0 ? p.autoFire : p.autoSpin;
+    if (online) state = !state;
+    var label = (which === 0 ? 'Auto Fire' : 'Auto Spin') + ': ' + (state ? 'ON' : 'OFF');
+    var list = game.notifications, prefix = label.split(':')[0];
+    for (var n = list.length - 1; n >= 0; n--)
+      if (list[n].text.indexOf(prefix) === 0) list.splice(n, 1);  // one line per toggle, not a stack
+    list.push({ text: label, ttl: 60, color: 'rgba(0,120,220,0.75)' });
   }
   // H: take control of a nearby Dominator or Mothership your team holds, or
   // step back out of the one you are already piloting.
@@ -199,7 +207,11 @@
     game.notify(TANK_DEFS[next].name, 40);
   }
 
-  canvas.addEventListener('mousemove', function (e) { mouse.x = e.clientX; mouse.y = e.clientY; });
+  canvas.addEventListener('mousemove', function (e) {
+    mouse.x = e.clientX; mouse.y = e.clientY;
+    var dpr = canvas.width / window.innerWidth;
+    renderer.mouseX = e.clientX * dpr; renderer.mouseY = e.clientY * dpr;
+  });
   canvas.addEventListener('contextmenu', function (e) { e.preventDefault(); });
   canvas.addEventListener('mousedown', function (e) {
     if (!running) return;
@@ -233,7 +245,7 @@
       if (inside(lay.close) || inside(lay.ignore)) { renderer.upgradeHidden = true; return true; }
       if (inside(lay.panel)) return true;             // panel swallows its own clicks
     }
-    var stats = renderer.statRects();
+    var stats = p.statsAvailable > 0 ? renderer.statRects() : [];   // hover-only panel doesn't eat shots
     for (i = 0; i < stats.length; i++) {
       var s = stats[i];
       if (x >= s.x && x <= s.x + s.w + 6 + s.h * 1.35 && y >= s.y && y <= s.y + s.h) { doStat(s.wire); return true; }
@@ -404,7 +416,7 @@
 
   var sel = 'medium';
   var custom = { aim: 5, react: 5, dodge: 5, move: 5, aggro: 5, brain: 5 };
-  var botCount = 88;
+  var botCount = 128;
 
   function difficultyArg() {
     if (sel !== 'custom') return sel;
@@ -458,7 +470,7 @@
     }), seedBox.firstChild);
 
     BOT_KNOB_GROUPS.forEach(function (grp) { knobBox.appendChild(knob(grp.key, grp.label, grp.blurb, 0, 10, 0.5)); });
-    knobBox.appendChild(knob('botCount', 'Bot count', 'how many of them are out there', 0, 120, 1));
+    knobBox.appendChild(knob('botCount', 'Bot count', 'how many of them are out there', 0, 160, 1));
   }
 
   function knob(key, label, blurb, min, max, step) {

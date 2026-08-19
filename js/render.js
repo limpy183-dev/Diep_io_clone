@@ -18,6 +18,7 @@ function Renderer(canvas, game) {
   this.alpha = 0;
   this.statsT = 0;      // 0 = panel parked off-screen left, 1 = fully in
   this.statsTime = 0;
+  this.mouseX = this.mouseY = -1e9;   // canvas px, fed by main.js; for hover tests
 }
 
 // Canvas dimensions, not window — devicePixelRatio changes the answer.
@@ -500,12 +501,15 @@ Renderer.prototype.drawStatus = function () {
   this.bar(x + 40, y - 30, w - 80, 22, into, C.scoreBar, 'Score: ' + abbrev(p.score));
 };
 
-Renderer.prototype.statRects = function () {
+// t defaults to the live slide position; pass 1 to get the fully-open layout
+// even while the panel is parked (used for the hover hit-box).
+Renderer.prototype.statRects = function (t) {
   var p = this.game.player;
   if (!p) return [];
-  if (this.statsT < 0.01) return [];
+  if (t === undefined) t = this.statsT;
+  if (t < 0.01) return [];
   var out = [], bw = 210, bh = 22, gap = 5;
-  var x = 20 - (1 - this.statsT) * (bw + 80), y0 = this.canvas.height - 42;
+  var x = 20 - (1 - t) * (bw + 80), y0 = this.canvas.height - 42;
   for (var ui = 0; ui < 8; ui++) {
     var wire = uiToWire(ui);
     if (p.def.stats[wire].max === 0) continue;
@@ -516,19 +520,31 @@ Renderer.prototype.statRects = function () {
   return out;
 };
 
+// Hovering where the panel lives pulls it back out, greyed, so you can read
+// your build with no points to spend.
+Renderer.prototype.statsHovered = function () {
+  var r = this.statRects(1);
+  if (!r.length) return false;
+  var top = r[0], bot = r[r.length - 1];
+  // left/bottom run to the window edge, so hugging the corner keeps it open
+  return this.mouseX >= 0 && this.mouseX <= top.x + top.w + 5 + bot.h * 1.28 + 12 &&
+         this.mouseY >= top.y - 12 && this.mouseY <= this.canvas.height;
+};
+
 Renderer.prototype.drawStats = function () {
   var g = this.game, p = g.player, c = this.ctx;
   var now = performance.now(), dt = Math.min(0.1, (now - this.statsTime) / 1000 || 0);
   this.statsTime = now;
-  // slide+fade in only while there are points to spend
-  var target = (p && !p.dead && p.statsAvailable > 0) ? 1 : 0;
+  // slide+fade in while there are points to spend, or on hover (read-only)
+  var target = (p && !p.dead && (p.statsAvailable > 0 || this.statsHovered())) ? 1 : 0;
   this.statsT += (target - this.statsT) * (1 - Math.exp(-dt * 9));
   if (Math.abs(target - this.statsT) < 0.005) this.statsT = target;
   if (!p || p.dead) return;
   var rects = this.statRects();
   if (!rects.length) return;
+  var alpha = this.statsT * (p.statsAvailable > 0 ? 1 : 0.45);   // greyed when nothing to spend
   c.save();
-  c.globalAlpha = this.statsT;
+  c.globalAlpha = alpha;
   for (var i = 0; i < rects.length; i++) {
     var r = rects[i], wire = r.wire, def = p.def.stats[wire];
     var cur = p.stats[wire], max = def.max;
@@ -556,7 +572,7 @@ Renderer.prototype.drawStats = function () {
     // + button is always present in the real client, dimmed when unspendable
     var bx = r.x + r.w + 5, bw2 = r.h * 1.28;
     var live = p.statsAvailable > 0 && cur < max;
-    c.globalAlpha = this.statsT * (live ? 1 : 0.45);
+    c.globalAlpha = alpha * (live ? 1 : 0.45);
     c.beginPath(); c.roundRect(bx, r.y, bw2, r.h, 5);
     c.fillStyle = col; c.fill();
     c.strokeStyle = 'rgba(0,0,0,0.45)'; c.lineWidth = 2; c.stroke();
@@ -565,7 +581,7 @@ Renderer.prototype.drawStats = function () {
     c.fillStyle = '#000';
     c.fillRect(px - arm, py - th / 2, arm * 2, th);
     c.fillRect(px - th / 2, py - arm, th, arm * 2);
-    c.globalAlpha = this.statsT;
+    c.globalAlpha = alpha;
   }
   if (p.statsAvailable > 0 && rects.length) {
     // tilted "xN" sits above the + column, like the real client
@@ -788,7 +804,7 @@ Renderer.prototype.drawNotifications = function () {
     var w = Math.max(260, c.measureText(n.text).width + 60);
     c.font = 'bold 16px Ubuntu, Verdana, sans-serif';
     w = c.measureText(n.text).width + 44;
-    c.fillStyle = 'rgba(0,0,0,0.55)';
+    c.fillStyle = n.color || 'rgba(0,0,0,0.55)';
     c.fillRect(this.canvas.width / 2 - w / 2, y - 22, w, 34);
     c.fillStyle = '#FFF';
     c.textBaseline = 'middle';

@@ -108,6 +108,9 @@ Entity.prototype.kill = function (source) {
 // pair of multipliers, and neither can overkill.
 function handleCollision(a, b) {
   if (a.team !== null && a.team === b.team) return;
+  // FFA leaves team === null, so the check above can't catch these two:
+  if (a.owner && a.owner === b.owner) return;                // one owner's drones bump, never bite
+  if (a.type === 'shape' && b.type === 'shape') return;      // crashers/polygons don't eat each other
   if (a.health <= 0 || b.health <= 0) return;
   if (a.damageReduction === 0 && b.damageReduction === 0) return;
   if ((a.damagePerTick === 0 && a.push === 0) || (b.damagePerTick === 0 && b.push === 0)) return;
@@ -223,7 +226,7 @@ Barrel.prototype.shoot = function () {
   var m = this.mouth();
   this.recoilAnim = 1;
   var st = t.stats;
-  var accel = (20 + 3 * st[S_BSPEED]) * b.speed;
+  var accel = (20 + BSPEED_GAIN * st[S_BSPEED]) * b.speed;
   var last = null;
   // Shotgun-family barrels put a whole volley out on one reload.
   var pellets = d.pellets || 1;
@@ -373,7 +376,7 @@ Turret.prototype.tick = function () {
   if (this.game.tick % 2 === (this.index % 2)) this.target = this.game.findTarget(this, 1700, true);
   if (this.target && !this.target.dead) {
     var b = TURRET_BARREL.bullet;
-    this.angle = interceptAim(this, this.target, (20 + 3 * this.stats[S_BSPEED]) * b.speed,
+    this.angle = interceptAim(this, this.target, (20 + BSPEED_GAIN * this.stats[S_BSPEED]) * b.speed,
                               TURRET_BARREL.size * this.scaleFactor);
   } else {
     this.angle += PASSIVE_ROTATION;
@@ -788,7 +791,7 @@ Boss.prototype.tick = function () {
   if (this.hurtFlash > 0) this.hurtFlash--;
   if (g.tick % 2 === 0 && s.viewRange !== 0) this.target = g.findTarget(this, 3000, true);
   if (this.target && !this.target.dead) {
-    var aim = predictAim(this, this.target, 20 + 3 * this.stats[S_BSPEED]);
+    var aim = predictAim(this, this.target, 20 + BSPEED_GAIN * this.stats[S_BSPEED]);
     if (!s.spin) this.angle = aim;
     this.mouse.x = this.target.x; this.mouse.y = this.target.y;
     var mv = Math.atan2(this.target.y - this.y, this.target.x - this.x);
@@ -892,7 +895,7 @@ function botFlightTicks(t, d) {
   var b = t.barrels[0];
   if (!b) return 0;
   var bd = b.def.bullet;
-  var cruise = (20 + 3 * t.stats[S_BSPEED]) * bd.speed;
+  var cruise = (20 + BSPEED_GAIN * t.stats[S_BSPEED]) * bd.speed;
   var life = 75 * (bd.lifeLength === -1 || !bd.lifeLength ? 1 : bd.lifeLength);
   var v = cruise + 30 - (bd.scatterRate || 0) / 2, x = 0;
   for (var n = 1; n <= life; n++) {
@@ -950,7 +953,7 @@ function botShouldFight(t, tgt, sk) {
 function botReach(t) {
   var b = t.barrels[0];
   if (!b) return 0;
-  return (20 + 3 * t.stats[S_BSPEED]) * b.def.bullet.speed * 25 + 250;
+  return (20 + BSPEED_GAIN * t.stats[S_BSPEED]) * b.def.bullet.speed * 25 + 250;
 }
 
 // Where to point. Drones steer themselves at the mouse every tick, so leading
@@ -1243,7 +1246,7 @@ function Game(modeKey, playerName, opts) {
 
   if (!this.headless) this.player = this.spawnTank({ name: playerName, isPlayer: true });
   this.setDifficulty(opts.difficulty || 'medium');
-  this.botCount = opts.botCount !== undefined ? opts.botCount : (this.mode.sandbox ? 64 : 88);
+  this.botCount = opts.botCount !== undefined ? opts.botCount : (this.mode.sandbox ? 104 : 128);
   for (var b = 0; b < this.botCount; b++) this.spawnBot();
 }
 
@@ -1265,10 +1268,24 @@ Game.prototype.spawnPoint = function (team, anywhere) {
     var base = this.bases.filter(function (b) { return b.team === team; })[0];
     if (base) return { x: base.x + rand(-base.size * 0.7, base.size * 0.7), y: base.y + rand(-base.width * 0.7, base.width * 0.7) };
   }
-  for (var i = 0; i < 20; i++) {
+  // Scattered bots also keep off each other: half of an even share of the map
+  // apiece, re-rolled until it fits. Asking for the full share is perfect
+  // packing, which rejection sampling never finds, so every bot would burn its
+  // tries and land wherever it last looked.
+  var gap = 0;
+  if (anywhere) {
+    var live = 0;
+    for (var j = 0; j < this.entities.length; j++) {
+      var t = this.entities[j];
+      if (t.type === 'tank' && !t.dead) live++;
+    }
+    gap = a.size / (2 * Math.sqrt(live + 1));
+  }
+  for (var i = 0; i < 60; i++) {   // gap rejects ~4 spots in 5, so it needs the tries
     var x = rand(a.left, a.right), y = rand(a.top, a.bottom);
     if (!anywhere && Math.max(Math.abs(x), Math.abs(y)) < a.right / 2) continue;
     if (this.inWall(x, y, 60)) continue;
+    if (gap && this.nearTank(x, y, gap)) continue;
     return { x: x, y: y };
   }
   return { x: rand(a.left, a.right), y: rand(a.top, a.bottom) };
@@ -1501,7 +1518,7 @@ Game.prototype.tryClaim = function (claimer, shape) {
   shape.health = shape.maxHealth;
   shape.damagePerTick = (7 + st[S_DAMAGE] * 3) * bd.damage;
   shape.push = 4;
-  shape.accel = ((20 + 3 * st[S_BSPEED]) * bd.speed) / 3;
+  shape.accel = ((20 + BSPEED_GAIN * st[S_BSPEED]) * bd.speed) / 3;
   shape.life = Infinity; shape.age = 0;
   shape.scoreReward = shape.shiny ? 1000 : 10;
   barrel.children.push(shape);

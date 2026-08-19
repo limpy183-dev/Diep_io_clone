@@ -69,7 +69,7 @@ function tickPlatformAI(g, t, range) {
   if (g.tick % 5 === t.id % 5) t.aiTarget = g.findTarget(t, range, true);
   var tgt = t.aiTarget;
   if (tgt && !tgt.dead) {
-    var aim = predictAim(t, tgt, 20 + 3 * t.stats[S_BSPEED]);
+    var aim = predictAim(t, tgt, 20 + BSPEED_GAIN * t.stats[S_BSPEED]);
     t.mouse.x = t.x + Math.cos(aim) * 500;
     t.mouse.y = t.y + Math.sin(aim) * 500;
     t.input.fire = 1;

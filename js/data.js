@@ -88,9 +88,11 @@ var SHAPES = {
   alpha:    { health: 3000, size: 200 * Math.SQRT1_2, sides: 5, damage: 5, score: 3000, fill: C.pentagon, stroke: C.pentagonS, absorb: 0.05, push: 11 },
   // Hexagon geometry was never published; 1500 HP / 1500 XP is confirmed.
   hexagon:  { health: 1500, size: 130 * Math.SQRT1_2, sides: 6, damage: 4, score: 1500, fill: C.pentagon, stroke: C.pentagonS, absorb: 0.2,  push: 11 }, // TODO: unverified size/damage
-  crasherS: { health: 10,   size: 35 * Math.SQRT1_2,  sides: 3, damage: 2, score: 15,   fill: C.crasher,  stroke: C.crasherS,  absorb: 2,    push: 8,  speed: 13 },
-  crasherL: { health: 30,   size: 55 * Math.SQRT1_2,  sides: 3, damage: 2, score: 25,   fill: C.crasher,  stroke: C.crasherS,  absorb: 0.1,  push: 12, speed: 13.2 }
+  crasherS: { health: 10,   size: 35 * Math.SQRT1_2,  sides: 3, damage: 2, score: 15,   fill: C.crasher,  stroke: C.crasherS,  absorb: 2,    push: 8,  speed: 26 },
+  crasherL: { health: 30,   size: 55 * Math.SQRT1_2,  sides: 3, damage: 2, score: 25,   fill: C.crasher,  stroke: C.crasherS,  absorb: 0.1,  push: 12, speed: 26.4 }
 };
+// bullet-speed stat gain per point (diep uses 3; lower = flatter upgrade curve)
+var BSPEED_GAIN = 1.5;
 var SHAPE_ROTATION = 0.01, SHAPE_ORBIT = 0.005, SHAPE_VELOCITY = 1, TURN_TIMEOUT = 300;
 
 // --- addons ------------------------------------------------------------

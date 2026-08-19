@@ -82,6 +82,22 @@ test('drone vs bullet: both deal full damage', () => {
   near(1000 - bullet.health, 7, 1e-9, 'drone->bullet');
   near(1000 - drone.health, 7, 1e-9, 'bullet->drone');
 });
+test('FFA (team null): own drones and shape-vs-shape deal no damage', () => {
+  const g = new Game('sandbox', 'T');
+  const owner = mk(g, { type: 'tank', damage: 5, maxHealth: 1000, minDmg: 1, maxDmg: 6 });
+  const d1 = mk(g, { type: 'drone', damage: 7, maxHealth: 1000, minDmg: 1, maxDmg: 1, owner: owner });
+  const d2 = mk(g, { type: 'drone', damage: 7, maxHealth: 1000, minDmg: 1, maxDmg: 1, owner: owner });
+  handleCollision(d1, d2);
+  assert.equal(d1.health + d2.health, 2000, 'same-owner drones');
+  const c1 = mk(g, { type: 'shape', damage: 2, maxHealth: 1000, minDmg: 1, maxDmg: 4 });
+  const c2 = mk(g, { type: 'shape', damage: 2, maxHealth: 1000, minDmg: 1, maxDmg: 4 });
+  handleCollision(c1, c2);
+  assert.equal(c1.health + c2.health, 2000, 'crasher vs polygon');
+  // a rival's drone still hurts
+  const rival = mk(g, { type: 'drone', damage: 7, maxHealth: 1000, minDmg: 1, maxDmg: 1, owner: mk(g, { type: 'tank' }) });
+  handleCollision(d1, rival);
+  assert.ok(d1.health < 1000, 'enemy drone still damages');
+});
 test('no overkill: damage scales so the loser lands exactly on 0', () => {
   const g = new Game('sandbox', 'T');
   const strong = mk(g, { type: 'tank', damage: 5, maxHealth: 1000, minDmg: 1, maxDmg: 6 });
@@ -943,6 +959,20 @@ test('/botspawn random scatters over the map with a gap between them', () => {
   const span = Math.max(...b.map(e => e.x)) - Math.min(...b.map(e => e.x));
   assert.ok(span > g.arena.size * 0.5, 'spread wide, not clustered: ' + Math.round(span));
 });
+test('bots spawned at match start are spread over the whole map with gaps', () => {
+  const g = new Game('ffa', 'Me');
+  const b = g.entities.filter(e => e.type === 'tank' && e.bot && !e.dead);
+  assert.equal(b.length, 128, 'default bot count');
+  let closest = Infinity;
+  for (let i = 0; i < b.length; i++) for (let j = i + 1; j < b.length; j++)
+    closest = Math.min(closest, Math.hypot(b[i].x - b[j].x, b[i].y - b[j].y));
+  const gap = g.arena.size / (2 * Math.sqrt(b.length + 1));
+  assert.ok(closest >= gap * 0.9, 'kept apart: closest pair ' + Math.round(closest) + ' vs gap ' + Math.round(gap));
+  for (const axis of ['x', 'y']) {
+    const span = Math.max(...b.map(e => e[axis])) - Math.min(...b.map(e => e[axis]));
+    assert.ok(span > g.arena.size * 0.8, 'spread over ' + axis + ': ' + Math.round(span));
+  }
+});
 test('/botspawn is one-off, /botrespawn decides whether they come back', () => {
   const g = new Game('ffa', 'Me', { botCount: 0 });
   const c = cmdCtx(g);
@@ -961,6 +991,24 @@ test('/botspawn is one-off, /botrespawn decides whether they come back', () => {
   g.entities.filter(e => e.type === 'tank' && e.bot && !e.dead).slice(0, 2).forEach(e => e.kill(null));
   for (let i = 0; i < 150; i++) g.step();
   assert.ok(bots() <= left - 2, 'no replacements, got ' + bots());
+});
+
+test('/botlevel max lifts every bot, and they upgrade themselves from there', () => {
+  const g = new Game('sandbox', 'Me', { botCount: 0 });
+  const c = cmdCtx(g);
+  runCommand(c, '/botspawn 5');
+  const bots = () => g.entities.filter(e => e.type === 'tank' && e.bot && !e.dead);
+  runCommand(c, '/botlevel max');
+  assert.ok(bots().every(e => e.level === ctx.MAX_LEVEL), 'all at max level');
+  assert.ok(bots().every(e => e.health === e.maxHealth), 'health scaled with the new max, not left at 50');
+  runCommand(c, '/botlevel 999');
+  assert.ok(bots().every(e => e.level === ctx.MAX_LEVEL), 'clamped, not wrapped');
+  for (let i = 0; i < 60; i++) g.step();
+  assert.ok(bots().every(e => e.tankId !== 0), 'each one upgraded out of the base tank');
+  assert.ok(bots().every(e => e.statsAvailable === 0), 'and spent its points');
+  runCommand(c, '/killbots');
+  runCommand(c, '/botlevel max');
+  assert.match(c.said.pop(), /No bots/);
 });
 
 console.log(`\n${passed} passed\n`);

@@ -368,7 +368,7 @@ cmd('version about', {
 });
 
 // ================================================================== cheats
-cmd('god invincible', {
+cmd('god invincible godmode', {
   cat: 'cheat', cheat: true, needsTank: true, args: '[on|off]', help: 'Ignore all damage.',
   run: function (ctx, a) {
     ctx.tank.godMode = onOff(a[0], ctx.tank.godMode);
@@ -475,7 +475,7 @@ cmd('points', {
     return ctx.tank.statsAvailable + ' points to spend.';
   }
 });
-cmd('max godmode', {
+cmd('max', {
   cat: 'cheat', cheat: true, needsTank: true, args: '', help: 'Level 45, stats maxed, god mode on.',
   run: function (ctx) {
     setLevel(ctx.tank, MAX_LEVEL);
@@ -615,7 +615,7 @@ cmd('boss', {
 cmd('bots', {
   cat: 'cheat', cheat: true, args: '<n>', help: 'Set how many bots the arena keeps alive.',
   run: function (ctx, a) {
-    var n = clampN(Math.round(num(a[0], 0)), 0, 120);
+    var n = clampN(Math.round(num(a[0], 0)), 0, 160);
     ctx.game.botOverride = n;
     ctx.game.botCount = n;
     return 'Bot count pinned at ' + n + '.';
@@ -627,19 +627,10 @@ cmd('botspawn addbots', {
   run: function (ctx, a) {
     var n = clampN(Math.round(num(a[0], 1)), 1, 60), g = ctx.game;
     var scatter = a.filter(function (s) { return /^rand/i.test(s); }).length > 0;
-    // Half of an even share each, kept apart by re-rolling the spot. Asking for
-    // the full share is perfect packing, which rejection sampling never finds,
-    // so every bot would burn its 30 tries and land wherever it last looked.
-    var gap = g.arena.size / (2 * Math.sqrt(n + 1)), placed = [];
     for (var i = 0; i < n; i++) {
-      var b = g.spawnBot(), p = null, tries;
-      if (scatter) {
-        for (tries = 0; tries < 30; tries++) {
-          p = g.spawnPoint(null, true);
-          if (!placed.filter(function (q) { return dist2(q, p) < gap * gap; }).length) break;
-        }
-        placed.push(p);
-      } else if (ctx.tank) p = nearPoint(ctx.tank, 900);
+      // spawnBot already scatters across the map and keeps its distance; only
+      // the non-scatter case has to drag them over to you.
+      var b = g.spawnBot(), p = scatter || !ctx.tank ? null : nearPoint(ctx.tank, 900);
       if (p) { b.x = b.px = p.x; b.y = b.py = p.y; }
     }
     return n + (n === 1 ? ' bot' : ' bots') + (scatter ? ' scattered over the map' : ' spawned') +
@@ -688,6 +679,20 @@ cmd('clone', {
       b.health = b.maxHealth;
     }
     return n + ' of you. Sorry.';
+  }
+});
+cmd('botlevel levelbots', {
+  cat: 'cheat', cheat: true, args: '<1-45|max>',
+  help: 'Level every bot on the field. They spend the points and pick their classes themselves.',
+  run: function (ctx, a) {
+    if (!a.length) return 'Usage: /botlevel <1-' + MAX_LEVEL + '|max>';
+    var lvl = a[0] === 'max' ? MAX_LEVEL : num(a[0], 1), n = 0;
+    ctx.game.entities.forEach(function (e) {
+      if (e.type === 'tank' && e.bot && !e.dead) { lvl = setLevel(e, lvl); n++; }
+    });
+    // One-off, like /botspawn: bots that spawn later come in at level 1.
+    return n ? n + (n === 1 ? ' bot' : ' bots') + ' set to level ' + lvl + '.'
+      : 'No bots out there — /botspawn <n> or /bots <n> first.';
   }
 });
 cmd('killbots purge', {
