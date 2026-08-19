@@ -11,6 +11,7 @@ for (const f of ['js/tankdefs.js', 'js/tankdefs-extra.js', 'js/data.js', 'js/pro
 const { Game, Entity, Shape, BOT_SKILL, BOT_DIFFICULTIES, botSkill } = ctx;
 const { BOT_BUILDS, botClassScore, botReach, botFlightTicks, tickBot, TANK_DEFS, LEVEL_SCORE } = ctx;
 const { botScan, botDps, botShouldFight, SHAPES, BOT_SKILL: SK } = ctx;
+const { botAimedAt, botShootingAt, botThreatens, botWinOdds, angleDiff, TANK_DEFS: DEFS } = ctx;
 
 // One bot in an empty arena, plus a ring of whatever shapes the caller wants.
 function withShapes(difficulty, level, kinds, radius) {
@@ -34,7 +35,10 @@ function test(name, fn) { fn(); passed++; console.log('  ok  ' + name); }
 
 // An empty arena with one bot in it, so nothing wanders into the measurement.
 function bare(difficulty, skillOverrides) {
-  const g = new Game('sandbox', 'T', { botCount: 0, difficulty });
+  // headless, like every other setup here: it is the flag that stops the arena
+  // spawning a player tank of its own, which otherwise sits at a random spot
+  // inside sight range and occasionally becomes the target being measured.
+  const g = new Game('sandbox', null, { headless: true, botCount: 0, difficulty });
   g.wantedShapes = 0;
   g.entities = g.entities.filter((e) => e.type !== 'shape');
   if (skillOverrides) g.botSkill = Object.assign({}, g.botSkill, skillOverrides);
@@ -233,7 +237,7 @@ test('a small bot will not commit to a shape it cannot chew through', () => {
   // pricing the kill time instead makes the size of the thing count against it.
   const kinds = ['square', 'triangle', 'pentagon', 'hexagon'];
   const { t: small } = withShapes('extreme', 2, kinds, 600);
-  botScan(small, SK.extreme);
+  botScan(small, SK.extreme, true);
   assert.ok(small.aiFarm, 'should have found something to farm');
   assert.notEqual(small.aiFarm.kind, 'hexagon', 'a level 2 bot picked a Hexagon');
   assert.ok(SHAPES.hexagon.health > botDps(small) * 900, 'and it should be priced out of reach');
@@ -296,6 +300,254 @@ test('takes the fights worth taking, and levels when they are not', () => {
   t.lastDamage = -9999;
   foe.health = foe.maxHealth * 0.05;            // nearly dead and worth finishing
   assert.equal(botShouldFight(t, foe, SK.extreme), true, 'take the free one');
+});
+
+test('keeps shooting whoever is on it, even once you out-level it', () => {
+  // Reported: get a few levels above a bot and it stops acknowledging you.
+  // The odds say the fight is not worth taking, which is fine — but declining
+  // used to drop the target outright, and the check that kept it (botThreatens)
+  // is only true while you are holding fire and pointed at it. Release the
+  // trigger for a reload and the bot went back to farming mid-fight.
+  const g = bare('extreme', { react: 1 });
+  const t = place(g.spawnBot(), 0, 0);
+  t.build = BOT_BUILDS.filter((b) => !b.ram)[0];
+  t.addScore(LEVEL_SCORE[10]);
+  const you = place(g.spawnBot(), 500, 0);
+  you.bot = false;                                      // drive it by hand
+  you.isPlayer = true;
+  you.addScore(LEVEL_SCORE[45]);
+  you.stats = [0, 7, 7, 7, 0, 0, 7, 5]; you.recompute();
+  you.angle = Math.PI; you.input.fire = 1;              // pointed at it, shooting
+  const sq = g.add(new Shape(g, 'square', 0, 350));       // and something to run off and farm
+  sq.health = sq.maxHealth = 1e6;                       // that a stray shot cannot delete mid-test
+  assert.ok(botWinOdds(t, you) < 0.3, 'the fight should read as a losing one');
+
+  g.step();
+  // Loose: it is leading its shots, and you are being knocked about by them.
+  const toYou = () => Math.abs(angleDiff(aimAngle(t), Math.atan2(you.y - t.y, you.x - t.x)));
+  assert.ok(toYou() < 0.35, 'should shoot back at you, not at the square');
+  assert.equal(t.input.fire, 1);
+
+  you.input.fire = 0;                                   // reloading: used to be enough to forget you
+  for (let i = 0; i < 30; i++) g.step();
+  assert.ok(toYou() < 0.35, 'still on you between your shots');
+  assert.equal(t.fleeing, true, 'backing off while it does it, not standing in it');
+  assert.ok(t.x < -50, 'and actually retreating, got x=' + t.x.toFixed(0));
+
+  place(you, 6000, 0);                                  // clear of both guns
+  g.step();
+  assert.equal(t.aiEngaged, null, 'then it lets go');
+  assert.notEqual(t.aiTarget, you, 'and goes back to its own business');
+  assert.equal(t.input.fire, 1, 'shooting at something else, not standing there');
+});
+
+test('a stray tank lining up cannot take the fight off the one on you', () => {
+  // Reported: chase a bot for a while and every so often it drops you for a
+  // Square. The fight lived in a single slot, claimed by whoever happened to be
+  // pointed this way when the scan ran — so any third tank could take it, and
+  // the fight it then declined fell straight through to farming.
+  const g = bare('hard', { react: 1 });
+  const t = place(g.spawnBot(), 0, 0);
+  t.build = BOT_BUILDS.filter((b) => !b.ram)[0];
+  t.addScore(LEVEL_SCORE[12]);
+  t.godMode = true;              // which fight it picks, not whether it lives through two of them
+  const you = place(g.spawnBot(), 450, 0);
+  you.bot = false; you.isPlayer = true;
+  you.addScore(LEVEL_SCORE[45]);
+  you.stats = [0, 7, 7, 7, 0, 0, 7, 5]; you.recompute();
+  const stray = place(g.spawnBot(), 0, 1100);           // way off, and also pointed at us
+  stray.bot = false;
+  const sq = g.add(new Shape(g, 'square', 300, -300));
+  sq.health = sq.maxHealth = 1e6;
+  for (let i = 0; i < 30; i++) {
+    for (const o of [you, stray]) { o.mouse.x = t.x; o.mouse.y = t.y; o.input.fire = 1; }
+    g.step();
+  }
+  assert.equal(t.aiEngaged, you, 'the one in front of it, not the one behind');
+  const off = Math.abs(angleDiff(aimAngle(t), Math.atan2(you.y - t.y, you.x - t.x)));
+  assert.ok(off < 0.35, 'gun should still be on you, off by ' + off.toFixed(2));
+});
+
+test('a shot that lands is what makes it a fight, trigger held or not', () => {
+  // The other half of the same bug: whether someone was fighting us was read off
+  // their barrel angle while they held fire, so noticing took a scan tick landing
+  // inside the moment they happened to be shooting. A hit needs no such luck.
+  const g = bare('hard', { react: 1 });
+  const t = place(g.spawnBot(), 0, 0);
+  t.build = BOT_BUILDS.filter((b) => !b.ram)[0];
+  t.addScore(LEVEL_SCORE[12]);
+  const you = place(g.spawnBot(), 600, 0);
+  you.bot = false; you.isPlayer = true;
+  you.addScore(LEVEL_SCORE[45]);
+  you.stats = [0, 7, 7, 7, 0, 0, 7, 5]; you.recompute();
+  you.angle = 0; you.input.fire = 0;                    // facing away, gun quiet
+  const sq = g.add(new Shape(g, 'square', 0, 300));
+  sq.health = sq.maxHealth = 1e6;
+  assert.equal(botThreatens(you, t), false, 'nothing about it reads as a threat');
+
+  t.applyDamage(3, you);                                // but it just put one in us
+  g.tick = 1; tickBot(t);
+  assert.equal(t.aiEngaged, you, 'the hit is what settles it');
+  const off = Math.abs(angleDiff(aimAngle(t), Math.atan2(you.y - t.y, you.x - t.x)));
+  assert.ok(off < 0.35, 'and the gun comes round, off by ' + off.toFixed(2));
+});
+
+test('a bot on its own always has something to shoot at', () => {
+  // Reported: bots far from the player paced back and forth with their guns
+  // silent. With no goal the movement code picks a fresh random heading every
+  // 90 ticks and holds fire, so anything that empties the target list shows up
+  // as a tank that looks broken. Nothing may leave it with an empty list.
+  for (const d of ['medium', 'hard', 'extreme']) {
+    const g = new Game('ffa', null, { headless: true, botCount: 0, difficulty: d });
+    g.botCount = 0;
+    g.mode = Object.assign({}, g.mode, { noBoss: true });
+    const t = g.spawnBot();
+    let blind = 0, quiet = 0, n = 0;
+    for (let i = 0; i < 1500 && !t.dead; i++) {
+      g.step();
+      n++;
+      if (!(t.aiTarget && !t.aiTarget.dead) && !(t.aiFarm && !t.aiFarm.dead)) blind++;
+      if (!t.input.fire) quiet++;
+    }
+    assert.ok(blind / n < 0.10, d + ' had no target for ' + (blind / n * 100).toFixed(0) + '% of ticks');
+    assert.ok(quiet / n < 0.10, d + ' held fire for ' + (quiet / n * 100).toFixed(0) + '% of ticks');
+  }
+});
+
+console.log('\nReading the other tank');
+test('engages on the odds and on whether that tank is even looking', () => {
+  // Reported: bots locked onto anything that entered a radius. Three things
+  // decide it now — who wins the damage race, how far away it is, and whether
+  // that barrel is pointed this way. Something facing elsewhere is scenery.
+  const setup = (dist, angle, firing, theirLevel) => {
+    const g = new Game('ffa', null, { headless: true, botCount: 0, difficulty: 'extreme' });
+    g.botCount = 0;
+    const a = g.spawnBot(), b = g.spawnBot();
+    place(a, 0, 0); place(b, dist, 0);
+    a.addScore(LEVEL_SCORE[20]); b.addScore(LEVEL_SCORE[theirLevel]);
+    a.stats = [4, 4, 4, 4, 4, 4, 4, 5]; a.recompute();
+    b.stats = [4, 4, 4, 4, 4, 4, 4, 5]; b.recompute();
+    a.lastDamage = -9999;
+    b.angle = angle; b.input.fire = firing ? 1 : 0;
+    return { a, b };
+  };
+  const AT = Math.PI, AWAY = 0;                  // b sits at +x, so PI faces us
+
+  let { a, b } = setup(900, AT, true, 20);
+  assert.equal(botShootingAt(b, a), true, 'should read it as shooting at us');
+  assert.equal(botShouldFight(a, b, SK.extreme), true, 'and answer it');
+
+  ({ a, b } = setup(900, AWAY, true, 20));
+  assert.equal(botAimedAt(b, a), false, 'facing away is not aimed at us');
+  assert.equal(botShouldFight(a, b, SK.extreme), false, 'so keep farming');
+
+  ({ a, b } = setup(1800, AT, true, 20));
+  assert.equal(botShouldFight(a, b, SK.extreme), false, 'lined up from outside its own range is not a threat');
+
+  // And the odds are the damage race, not a level comparison.
+  ({ a, b } = setup(900, AT, true, 20));
+  const even = botWinOdds(a, b);
+  assert.ok(Math.abs(even - 0.5) < 0.08, 'mirror match should be a coin flip, got ' + even.toFixed(2));
+  b.health = b.maxHealth * 0.1;
+  assert.ok(botWinOdds(a, b) > 0.8, 'a cripple should read as won');
+  a.health = a.maxHealth * 0.1; b.health = b.maxHealth;
+  assert.ok(botWinOdds(a, b) < 0.2, 'and being the cripple should read as lost');
+});
+
+test('turns the gun around to use recoil as an engine while crossing ground', () => {
+  // Firing shoves the tank the other way. Measured over 25 pinned runs, aiming
+  // backwards on a transit leg cut the crossing by 67% on an Annihilator and 9%
+  // on a Tank; aiming forwards while moving costs about as much again.
+  const leg = (difficulty) => {
+    const g = new Game('ffa', null, { headless: true, botCount: 0, difficulty });
+    g.entities = g.entities.filter((e) => e.type !== 'shape');
+    g.wantedShapes = 0; g.botCount = 0;
+    g.mode = Object.assign({}, g.mode, { noBoss: true });
+    const t = place(g.spawnBot(), 0, 0);
+    const def = DEFS.filter(Boolean).filter((d) => d.name === 'Destroyer')[0];
+    t.addScore(LEVEL_SCORE[45]); t.setTank(def.id);
+    t.stats = [7, 7, 7, 7, 5, 0, 0, 0]; t.recompute();
+    t.aiTankId = undefined;
+    const far = g.add(new Shape(g, 'pentagon', 3000, 0));
+    far.shiny = false; far.scoreReward = 130; far.health = far.maxHealth = 1e9;
+    let backwards = 0, n = 0;
+    for (let i = 0; i < 300; i++) {
+      far.x = 3000; far.y = 0; far.vx = far.vy = 0; far.health = 1e9;
+      // The health pin is what makes this a fixed-length walk, and it is also
+      // exactly what the give-up rule watches for. Keep it off the books, or a
+      // slow leg trips the ban at tick 200 and the bot wanders with a random aim.
+      t.farmBan = undefined; t.farmSince = g.tick;
+      t.pendingUpgrades = [];
+      g.step();
+      if (Math.hypot(t.x - 3000, t.y) < 900) break;      // arrived: transit over
+      const aim = Math.atan2(t.mouse.y - t.y, t.mouse.x - t.x);
+      if (Math.abs(angleDiff(aim, 0)) > 2) backwards++;  // the goal is due east
+      n++;
+    }
+    return n ? backwards / n : 0;
+  };
+  assert.ok(leg('extreme') > 0.3, 'a sharp bot should be boosting for much of the leg');
+  assert.ok(leg('easy') < 0.1, 'a dull one should not know the trick, got ' + leg('easy').toFixed(2));
+});
+
+test('notices a rammer walking at it, and does not turn its back', () => {
+  // Reported: a player Smasher could walk all the way in and the bots carried on
+  // farming. Two causes. A rammer never fires and points where it is going, so
+  // reading threat off barrels missed it entirely. And a big one tripped the
+  // out-of-our-league rule, which dropped it from the scan altogether — so the
+  // bot never even tracked the thing that was killing it.
+  const g = new Game('ffa', 'Player', { headless: false, botCount: 0, difficulty: 'extreme' });
+  g.botCount = 0;
+  g.mode = Object.assign({}, g.mode, { noBoss: true });
+  const p = g.player;
+  const sm = DEFS.filter(Boolean).filter((d) => d.name === 'Smasher')[0];
+  p.addScore(LEVEL_SCORE[45]); p.setTank(sm.id);
+  p.stats = [7, 0, 0, 0, 0, 7, 7, 5]; p.recompute();
+  place(p, 1000, 0);
+  const bot = place(g.spawnBot(), 0, 0);
+  bot.build = BOT_BUILDS.filter((b) => !b.ram)[0];   // pin: a rammer bot rams back, correctly
+  bot.addScore(LEVEL_SCORE[30]);
+
+  // A Smasher is a threat without ever firing or aiming — it is closing.
+  p.vx = -20; p.vy = 0;
+  assert.equal(botShootingAt(p, bot), false, 'it has no gun to shoot with');
+  assert.equal(botThreatens(p, bot), true, 'but closing on us is the threat');
+
+  let tracked = 0, fired = 0, n = 0;
+  for (let i = 0; i < 200 && !bot.dead; i++) {
+    const ang = Math.atan2(bot.y - p.y, bot.x - p.x);
+    p.input.right = Math.cos(ang) > 0.35 ? 1 : 0; p.input.left = Math.cos(ang) < -0.35 ? 1 : 0;
+    p.input.down = Math.sin(ang) > 0.35 ? 1 : 0; p.input.up = Math.sin(ang) < -0.35 ? 1 : 0;
+    p.mouse.x = bot.x; p.mouse.y = bot.y;
+    bot.pendingUpgrades = [];                       // pin the class, not the point here
+    g.step();
+    if (Math.hypot(p.x - bot.x, p.y - bot.y) > 1200) continue;   // only while it bears down
+    if (bot.aiTarget === p) tracked++;
+    if (bot.input.fire) fired++;
+    n++;
+  }
+  assert.ok(n > 30, 'expected a decent stretch of the approach, got ' + n + ' ticks');
+  assert.ok(tracked / n > 0.5, 'should have it tracked most of the time, got ' + (tracked / n * 100).toFixed(0) + '%');
+  assert.ok(fired / n > 0.8, 'and should be shooting, got ' + (fired / n * 100).toFixed(0) + '%');
+});
+
+test('a rammer it can outrun is not the same threat as one it cannot', () => {
+  // Contact damage only ever lands if the thing can catch you, so the odds have
+  // to weigh it that way — otherwise bots flee Smashers they could kite down.
+  const g = new Game('ffa', null, { headless: true, botCount: 0, difficulty: 'extreme' });
+  g.botCount = 0;
+  const bot = place(g.spawnBot(), 0, 0);
+  bot.addScore(LEVEL_SCORE[30]);
+  const ram = place(g.spawnBot(), 500, 0);
+  ram.addScore(LEVEL_SCORE[30]);
+  const sm = DEFS.filter(Boolean).filter((d) => d.name === 'Smasher')[0];
+  ram.setTank(sm.id); ram.recompute();
+
+  ram.movementSpeed = bot.movementSpeed * 2;        // it will catch us
+  const fast = botWinOdds(bot, ram);
+  ram.movementSpeed = bot.movementSpeed * 0.3;      // it never will
+  const slow = botWinOdds(bot, ram);
+  assert.ok(slow > fast, 'a rammer that cannot catch us should read as less dangerous');
 });
 
 console.log('\nRetreat');
@@ -367,24 +619,36 @@ test('the higher tier wins the duel: easy < hard, medium < extreme', () => {
   }
 });
 
-test('better bots farm better', () => {
-  const score = (d) => {
-    let total = 0;
-    for (let run = 0; run < 5; run++) {
-      const g = new Game('ffa', null, { headless: true, botCount: 0, difficulty: d });
-      g.mode = Object.assign({}, g.mode, { noBoss: true });
-      g.botCount = 0;
-      const t = g.spawnBot();
-      let peak = 0;
-      for (let i = 0; i < 3000 && !t.dead; i++) { g.step(); if (t.score > peak) peak = t.score; }
-      total += peak;                       // peak, not final: a late death still earned it
-    }
-    return total / 5;
-  };
-  // Loose on purpose. Farming is noisy over a handful of runs, and this guards
-  // an inversion, not a percentage — the real gap is nearer 4x over 10 runs.
-  const easy = score('easy'), hard = score('hard');
-  assert.ok(hard > easy * 1.5, `Hard farmed ${Math.round(hard)} vs Easy ${Math.round(easy)}`);
+test('works up to bigger shapes as its damage grows, never before', () => {
+  // The reported bug, as an assertion: small bots walked past the Squares to
+  // grind Hexagons. Ranking by value-per-metre made a Hexagon look 150x better
+  // than a Square; ranking by value-per-tick, against what its gun can actually
+  // chew and what the exposure costs its health pool, produces Squares, then
+  // Triangles, then Pentagons — with no per-level table anywhere.
+  const kinds = ['square', 'triangle', 'pentagon', 'hexagon'];
+  let prev = 0, first = null;
+  for (const lvl of [1, 4, 6, 9, 12, 20, 30, 45]) {
+    const { t } = withShapes('hard', lvl, kinds, 500);
+    botScan(t, SK.hard, true);
+    assert.ok(t.aiFarm, 'level ' + lvl + ' found nothing to farm');
+    assert.ok(t.aiFarm.maxHealth >= prev,
+      'level ' + lvl + ' dropped back to a ' + t.aiFarm.kind + ' after a bigger one');
+    prev = t.aiFarm.maxHealth;
+    if (first === null) first = t.aiFarm.kind;
+  }
+  assert.equal(first, 'square', 'the smallest tank should be on Squares');
+
+  // And it holds when the big one is the closest thing on the map, which is
+  // where a nearest-first fallback used to put small bots straight back on it.
+  const { g, t } = withShapes('hard', 2, [], 0);
+  const near = g.add(new Shape(g, 'hexagon', 300, 0));
+  near.shiny = false; near.scoreReward = SHAPES.hexagon.score;
+  near.health = near.maxHealth = SHAPES.hexagon.health;
+  const far = g.add(new Shape(g, 'square', 1500, 0));
+  far.shiny = false; far.scoreReward = SHAPES.square.score;
+  far.health = far.maxHealth = SHAPES.square.health;
+  botScan(t, SK.hard, true);
+  assert.equal(t.aiFarm, far, 'took the near Hexagon over a Square five times further out');
 });
 
 console.log('\n' + passed + ' passed\n');

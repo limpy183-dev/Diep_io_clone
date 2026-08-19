@@ -83,6 +83,9 @@ Entity.prototype.applyDamage = function (dmg, source) {
   if (this.damageReduction === 0) return;
   this.health -= dmg;
   this.lastDamage = this.game.tick;
+  // Who is actually fighting us. Reading that off barrel angles is a guess that
+  // only holds while they have the trigger down; a bullet landing is not.
+  if (source) { var r = source; while (r.owner) r = r.owner; this.lastHitBy = r; }
   if (!this.noDmgIndicator) this.hurtFlash = 4;
   if (this.opacity < 1 && this.invisible) this.opacity = Math.min(1, this.opacity + 0.2);
   // The no-overkill scaling is meant to land the loser exactly on 0, but floats
@@ -193,9 +196,16 @@ Barrel.prototype.tick = function (shooting) {
     this.children = this.children.filter(function (c) { return !c.dead; });
     if (this.children.length >= this.maxDrones()) { this.cycle = this.period(); return; }
   }
-  var p = this.period();
-  if (this.cycle < p) this.cycle += 1;
-  if (this.cycle >= p && (shooting || d.forceFire)) { this.shoot(); this.cycle = 0; }
+  var p = this.period(), delay = d.delay || 0;
+  // The delay fraction sits *past* full reload: a barrel is loaded at p but only
+  // pulls the trigger at p*(1+delay), then drops back to p*delay — so its period
+  // stays p while its phase is offset by delay*p from a delay-0 sibling. Idling
+  // parks every barrel at p rather than at its own threshold, so letting go of
+  // fire never collapses a Twin's two barrels into one simultaneous shot.
+  var thr = p * (1 + delay), firing = shooting || d.forceFire;
+  if (this.cycle < thr) this.cycle += 1;
+  if (firing) { if (this.cycle >= thr) { this.shoot(); this.cycle = p * delay; } }
+  else if (this.cycle > p) this.cycle = p;
 };
 
 Barrel.prototype.maxDrones = function () {
@@ -464,8 +474,8 @@ Tank.prototype.setTank = function (id) {
   if (post && post.turrets) {
     for (var i = 0; i < post.turrets; i++) this.turrets.push(new Turret(this, i, post.turrets, !!post.arc));
   }
-  // delay staggers the firing phase: delay 0 fires immediately, 0.5 half a cycle later
-  this.barrels.forEach(function (b) { b.cycle = b.period() * (1 - (b.def.delay || 0)); });
+  // Loaded but not yet past the delay threshold — see Barrel.tick.
+  this.barrels.forEach(function (b) { b.cycle = b.period(); });
 };
 
 Tank.prototype.recompute = function () {
@@ -920,6 +930,47 @@ function botDps(t) {
   return Math.max(0.02, dps);          // floor only guards the divide
 }
 
+// Is that one pointed at us, and is it shooting? Both are readable off the
+// entity: angle is where its barrel points, and a tank holding fire is about to
+// put something down that line. Being lined up on is the difference between a
+// fight that can be declined and one that has already started.
+function botAimedAt(o, t) {
+  if (o.angle === undefined) return false;
+  return Math.abs(angleDiff(o.angle, Math.atan2(t.y - o.y, t.x - o.x))) < 0.45;
+}
+function botShootingAt(o, t) {
+  var firing = o.type === 'boss' || !!(o.input && (o.input.fire || o.autoFire));
+  return firing && botAimedAt(o, t);
+}
+
+// A body-damage tank never fires and does not need to point at anything — a
+// Smasher aims where it is going, not at you. What makes it dangerous is that
+// it is closing and that touching it hurts. Reading threat off barrels alone
+// made the entire Smasher line invisible: bots farmed on while one walked up.
+function botClosing(o, t) {
+  var dx = t.x - o.x, dy = t.y - o.y, d = Math.hypot(dx, dy) || 1;
+  return (o.vx * dx + o.vy * dy) / d > 3;                  // units a tick of approach
+}
+function botThreatens(o, t) {
+  if (botShootingAt(o, t)) return true;
+  return !!(o.barrels && o.barrels.length === 0) && botClosing(o, t);
+}
+
+// Who wins the damage race. Levels and health bars were only ever a proxy for
+// this; the race itself is the thing, and it is the question the bot is really
+// asking when it decides whether to take a fight.
+function botWinOdds(t, o) {
+  var mine = botDps(t), theirs = botDps(o);
+  // Body damage is only collected on contact, so a rammer's threat is really a
+  // question of whether it can catch you. Counting it as continuous made bots
+  // back away from Smashers they could comfortably have kited to death.
+  if (o.barrels && o.barrels.length === 0)
+    theirs *= Math.max(0.15, Math.min(1.4, o.movementSpeed / Math.max(0.01, t.movementSpeed)));
+  var killThem = o.health / Math.max(0.01, mine);
+  var killMe = t.health / Math.max(0.01, theirs);
+  return killMe / (killMe + killThem);
+}
+
 // Killing a tank awards no score in this game — Tank's constructor never passes
 // one, so scoreReward is 0 and a kill pays nothing but the counter. Shapes are
 // the entire economy. That makes a fight a pure cost: it takes time, and losing
@@ -928,22 +979,27 @@ function botDps(t) {
 // has nothing left to level for — and otherwise walks away and farms, which is
 // the only thing that ever makes it big.
 function botShouldFight(t, tgt, sk) {
+  if (t.level >= MAX_LEVEL - 2) return true;                       // nothing left to farm for
+  // How readily the odds talk it out of something. At zero it charges whatever
+  // it can see, which is most of what being an easy bot means.
+  var floor = 0.45 * sk.sense;
+  var odds = botWinOdds(t, tgt);
+  // Being lined up on is not a fight that can be declined politely — walking
+  // away just means eating the shots side-on. Answer unless it is hopeless.
+  if (botThreatens(tgt, t) && dist2(t, tgt) < Math.pow(botReach(tgt) * 1.2, 2)) return odds > floor * 0.7;
   // Taking fire, and it is actually costing something. Without the health test
   // a single stray pellet in a crowded arena reads as "I am in a fight", every
-  // bot answers, and nobody ever gets back to farming — which is how the top
-  // tiers ended up with a lower median level than Medium.
-  if (t.game.tick - t.lastDamage < 50 && t.health < t.maxHealth * 0.85) return true;
-  if (t.level >= MAX_LEVEL - 2) return true;                       // nothing left to farm for
-  // Health counts for more than levels here on purpose: something on its last
-  // sliver is worth finishing even when it out-ranks you, and at 6 a two-level
-  // gap was cancelling a 95% health advantage.
-  var mine = t.level + t.health / t.maxHealth * 10;
-  var theirs = (tgt.level || MAX_LEVEL) + tgt.health / tgt.maxHealth * 10;
-  if (mine - theirs > 5) return true;                              // winning it cheaply
-  if (tgt.isPlayer && sk.hunt >= 0.5 && mine > theirs - 8) return true;
-  // How far it will cross to pick a fight, shrinking as it gets smarter: a dumb
-  // bot charges anything it can see, a sharp one only what is already on it.
-  return dist2(t, tgt) < Math.pow(botReach(t) * (2.2 - 1.4 * sk.sense), 2);
+  // bot answers, and nobody ever gets back to farming.
+  if (t.game.tick - t.lastDamage < 50 && t.health < t.maxHealth * 0.85) return odds > floor * 0.7;
+  if (odds > 0.5 + 0.2 * sk.sense) return true;                    // winning it cheaply
+  if (tgt.isPlayer && sk.hunt >= 0.5 && odds > floor) return true;
+  // How far it will cross to pick a fight. Two things set it: skill, because a
+  // dumb bot charges anything it can see and a sharp one only what is already
+  // on it — and whether that tank is even looking this way. Something with its
+  // barrel pointed elsewhere is a thing to walk around, not a fight.
+  var range = botReach(t) * (2.2 - 1.4 * sk.sense)
+    * (botAimedAt(tgt, t) || botThreatens(tgt, t) ? 1.5 : 0.85);
+  return odds > floor && dist2(t, tgt) < range * range;
 }
 
 // Not how far a bullet *can* go — a basic Tank's carries 1750 units, and a shot
@@ -994,48 +1050,95 @@ function botClassScore(d, build) {
 }
 
 // One pass answers both questions: who to fight, and what to farm if nobody.
-function botScan(t, sk) {
+function botScan(t, sk, doShapes) {
   var g = t.game, i, e;
-  var sight2 = sk.sight * sk.sight, fs = sk.sight * sk.farm, farm2 = fs * fs;
+  var sight2 = sk.sight * sk.sight;
+  // No farm radius. Distance is already priced in the value below, and a hard
+  // cutoff made the pick flip on whether anything at all happened to fall inside
+  // it. The farm knob sets how dearly the walk is charged instead — and it runs
+  // this way round, not the other: undervaluing your own time is the dumb
+  // mistake. A low weight sends a bot trekking after distant fat shapes, which
+  // is where it wastes minutes and where it gets killed. Sharp bots clear what
+  // is under them.
+  var walk = 1.2 + 2.4 * sk.farm;
+  // Pricing every shape in the arena costs a bot 1000 square roots per scan,
+  // which at 28 bots and a two-tick react window ate 96% of the frame. Cull at
+  // a radius wide enough that the choice never turns on it — a few hundred
+  // candidates — and keep the nearest one as a floor so the list is never empty.
+  var cull2 = 3000 * 3000, nearS = null, nearD = Infinity;
   var dps = botDps(t), speed = Math.max(1, t.movementSpeed * 10);   // terminal speed under 10% friction
-  var bestT = null, bestTS = -Infinity, bestS = null, bestSS = -Infinity;
+  var b0 = t.barrels[0];
+  var pen = Math.max(0.5, (1.5 * t.stats[S_PEN] + 2) * (b0 ? b0.def.bullet.health : 1));
+  var bestT = null, bestTS = -Infinity, bestS = null, bestSS = -Infinity, bestAtUs = false;
+  var hitter = g.tick - t.lastDamage < 120 ? t.lastHitBy : null;   // whoever last landed one
+
   for (i = 0; i < g.entities.length; i++) {
     e = g.entities[i];
     if (e === t || e.dead || e.sides === 0 || e.owner) continue;
     if (e.team !== null && e.team === t.team) continue;
+    var shape = e.type === 'shape';
+    if (shape && !doShapes) continue;
+    if (!shape && e.type !== 'tank' && e.type !== 'boss') continue;
     var d2 = dist2(t, e);
-    if (e.type === 'shape') {
-      if (d2 > farm2 || (e.kind === 'alpha' && t.level < 25)) continue;
+    if (shape) {
       if (e.id === t.farmBan) continue;                        // tried it, got nowhere
+      if (e.kind === 'alpha' && t.level < 25) continue;
+      if (d2 < nearD) { nearD = d2; nearS = e; }
+      if (d2 > cull2) continue;
       // Measured: a level 30 bot cracks a Hexagon in 235 ticks and a level 15
       // one never does at all. Half a minute of chewing is the line between a
-      // fat target and a trap, and it moves on its own as damage output grows.
-      if (e.health > dps * 900) continue;
+      // fat target and a trap — but it is a heavy penalty, not a disqualification.
+      // Excluding outright left bots with an empty list, and a bot with nothing
+      // to shoot at wanders in a random new direction every 90 ticks with its
+      // gun silent, which from across the map reads as a broken tank.
+      var over = e.health > dps * 900 * (1 + t.stats[S_PEN] * 0.4) ? 0.02 : 1;
       // Value per tick, not value per metre. A level 2 bot grinding a 1500 HP
       // Hexagon earns far less than the same seconds spent on 10 HP Squares,
       // and pricing the kill time says so. As its damage grows the big shapes
       // come back on the menu by themselves — no level gates to hand-tune.
-      // Travel counts triple: the walk earns nothing and is the part of farming
-      // that gets you killed, so a Square underfoot beats a Pentagon two screens
-      // away even though the Pentagon pays better per shot.
-      var ss = (e.scoreReward || 1) / (3 * Math.sqrt(d2) / speed + e.health / dps);
+      // The walk is charged above its face value because it earns nothing and
+      // is the part of farming that gets you killed, so a Square underfoot beats
+      // a Pentagon two screens away even though the Pentagon pays better a shot.
+      var kill = e.health / dps * (1 + e.health / (pen * 200));
+      // And what the attempt costs in health. Rate alone says a Pentagon always
+      // beats a Square — it pays 13x for 13x the work — but a small tank spends
+      // five minutes pressed against something that hits for 3, which is why
+      // low-level bots were dying on the farm. Weighing exposure against its own
+      // health pool is what produces Squares, then Triangles, then Pentagons,
+      // with no per-level table anywhere.
+      var risk = e.damagePerTick * kill / Math.max(1, t.maxHealth);
+      var ss = over * (e.scoreReward || 1) / ((walk * Math.sqrt(d2) / speed + kill) * (1 + risk));
       if (ss > bestSS) { bestSS = ss; bestS = e; }
       continue;
     }
-    if (e.type !== 'tank' && e.type !== 'boss') continue;
     if (d2 > sight2) continue;
     if (e.opacity <= 0 && !t.seesInvisible) continue;          // a hidden Stalker is not there
+    // Whoever is on us, plus whoever was and has not left yet — tickBot holds
+    // the latch through the gaps between their shots. A fight already happening
+    // is not a choice, so the odds do not get to price it: out-level a bot and
+    // the punching-up penalty below used to rank you under a passing Square.
+    var atUs = e === t.aiEngaged || e === hitter || botThreatens(e, t);
     var gap = (e.level || MAX_LEVEL) - t.level;
     var ts = -Math.sqrt(d2) / 400
-      - sk.threat * Math.max(0, gap) * 0.22                    // punching up is how bots die
+      - (atUs ? 0 : sk.threat * Math.max(0, gap) * 0.22)       // punching up is how bots die
       + sk.threat * (1 - e.health / e.maxHealth) * 2           // finish what is already hurt
       + (e.isPlayer ? sk.hunt : 0)
-      + (e.type === 'boss' ? sk.threat - 4 : 0);
-    if (sk.threat && gap > 12 && ts < 0) continue;             // that one is out of our league
-    if (ts > bestTS) { bestTS = ts; bestT = e; }
+      + (e.type === 'boss' ? sk.threat - 4 : 0)
+      + (atUs ? sk.threat * 1.5 : 0);                          // answer whoever is coming for us
+    // Out of our league — but only worth ignoring if it is also far away and
+    // minding its own business. Dropping it from the scan outright is what let
+    // a big Smasher walk all the way in without the bot ever reacting.
+    if (sk.threat && gap > 12 && ts < 0 && !atUs
+        && d2 > Math.pow(botReach(t) * 1.5, 2)) continue;
+    if (ts > bestTS) { bestTS = ts; bestT = e; bestAtUs = atUs; }
   }
   t.aiTarget = bestT;
-  t.aiFarm = bestS;
+  // The latch follows the pick whenever the pick is something that is actually
+  // fighting us. First-come let one stray bot lining up somewhere behind hold
+  // the slot while the player stood in front of us; the score already weighs
+  // distance, woundedness and who is coming for us, so it is the better answer.
+  if (bestAtUs) t.aiEngaged = bestT;
+  if (doShapes) t.aiFarm = bestS || nearS;
 }
 
 // Accumulate a push away from anything already in the air that is going to
@@ -1070,12 +1173,39 @@ function tickBot(t) {
   var g = t.game, sk = t.botSkill || g.botSkill || BOT_SKILL.medium, i = t.input, k;
   if (!t.build || !t.build.order) t.build = pick(BOT_BUILDS);
   if (t.aiTankId !== t.tankId) { botClassify(t); t.aiTankId = t.tankId; }   // upgrades, /clone, /class
-  if (g.tick % sk.react === t.id % sk.react) botScan(t, sk);
+  // The react window is how long it takes to notice something new, not how long
+  // it stands there after its target dies — waiting one out with nothing to
+  // shoot at is most of what a broken-looking tank is doing. So scan on schedule
+  // and also the moment the goal is gone.
+  var lostTank = !t.aiTarget || t.aiTarget.dead;
+  var lostFarm = !t.aiFarm || t.aiFarm.dead;
+  // Shapes are a thousand entities to price and they do not move much, so they
+  // get a lazier cadence than the reaction window — but an immediate look the
+  // moment the one being chewed on dies, or the bot stands there with its gun off.
+  var doShapes = lostFarm || g.tick % 15 === t.id % 15;
+  if (lostTank || lostFarm || doShapes || g.tick % sk.react === t.id % sk.react) botScan(t, sk, doShapes);
 
   var tgt = t.aiTarget && !t.aiTarget.dead ? t.aiTarget : null;
   var farmable = t.aiFarm && !t.aiFarm.dead ? t.aiFarm : null;
-  // A fight it does not have to take is time it is not spending levelling.
-  if (tgt && farmable && !botShouldFight(t, tgt, sk)) tgt = null;
+  // A fight it does not have to take is time it is not spending levelling —
+  // but declining is not the same as ignoring. Something already closing on us
+  // stays the target: the bot keeps shooting it and backs off, which is what to
+  // do about a Smasher it cannot out-trade. Turning its back is how it dies.
+  // Let go on distance and nothing else. Reading the engagement off
+  // botThreatens every tick meant it blinked out the moment you released fire
+  // or turned a few degrees, and the bot strolled back to its Square with you
+  // still shooting it in the back. Now it keeps firing, backing away, until
+  // you are clear of both guns.
+  var eng = t.aiEngaged;
+  if (eng && (eng.dead || (eng.opacity <= 0 && !t.seesInvisible)
+      || dist2(t, eng) > Math.pow(Math.max(botReach(t), botReach(eng)) * 1.4 + 250, 2)))
+    t.aiEngaged = eng = null;
+  var backOff = false;
+  if (tgt && farmable && !botShouldFight(t, tgt, sk)) {
+    if (tgt === eng) backOff = true;
+    else if (eng) { tgt = eng; backOff = true; }  // declined that one; this one is still on us
+    else tgt = null;
+  }
 
   // Break off while hurt and come back once the regen has done its work. The
   // gap between the two thresholds stops it flip-flopping on the line, and the
@@ -1084,6 +1214,7 @@ function tickBot(t) {
     if (t.health < t.maxHealth * sk.flee) t.fleeing = true;
     else if (t.health > t.maxHealth * 0.75) t.fleeing = false;
   } else t.fleeing = false;
+  if (backOff) t.fleeing = true;                 // fighting retreat, not a turned back
 
   // Whether a given class can actually crack a given shape is a question about
   // bullet penetration, body damage and regeneration that is not worth
@@ -1100,7 +1231,7 @@ function tickBot(t) {
   }
 
   var goal = tgt || farmable;
-  var mv = { x: 0, y: 0 }, aim, aimDist = 400, d = 0;
+  var mv = { x: 0, y: 0 }, aim, aimDist = 400, d = 0, boost = false;
 
   if (goal) {
     var gx = goal.x - t.x, gy = goal.y - t.y;
@@ -1112,19 +1243,22 @@ function tickBot(t) {
     // An Alpha Pentagon carries 3000 HP at 5 damage a tick and will outlast
     // anything hugging it, so it gets kited exactly like a tank does.
     var slugfest = !tgt && goal.health * goal.damagePerTick > 2000;
+    // Extra spacing against a body-damage tank: touching you is its whole weapon.
+    var ram = !!(tgt && tgt.barrels && tgt.barrels.length === 0);
     var ideal = t.rammer ? 0
-      : (tgt || slugfest) ? Math.max(220, Math.min(1100, botReach(t) * sk.range)) * (t.fleeing ? 1.8 : 1)
+      : (tgt || slugfest) ? Math.max(220, Math.min(1100, botReach(t) * sk.range)) * (t.fleeing ? 1.8 : 1) * (ram ? 1.5 : 1)
       : 260;
     // Signed, and never zero in the band around `ideal` — the old dead zone is
     // what left bots standing still at exactly the range they were being shot from.
     mv.x += Math.cos(to) * Math.max(-1, Math.min(1, (d - ideal) / 160));
     mv.y += Math.sin(to) * Math.max(-1, Math.min(1, (d - ideal) / 160));
-    if (!t.rammer && sk.strafe) {
+    if (!t.rammer && sk.strafe && tgt) {
       if (t.strafeDir === undefined || g.tick % 140 === t.id % 140) t.strafeDir = sign();
       mv.x += -Math.sin(to) * sk.strafe * t.strafeDir;
       mv.y += Math.cos(to) * sk.strafe * t.strafeDir;
     }
     aim = botAim(t, goal, sk);
+    boost = sk.sense >= 0.5 && !tgt && !t.rammer && !t.aiDrone && d > 900;
   } else {
     if (t.wander === undefined || g.tick % 90 === t.id % 90) t.wander = Math.random() * Math.PI * 2;
     mv.x += Math.cos(t.wander); mv.y += Math.sin(t.wander);
@@ -1170,6 +1304,22 @@ function tickBot(t) {
   if (t.unstick > 0) { t.unstick--; mv.x = Math.cos(t.escape) * 1.5; mv.y = Math.sin(t.escape) * 1.5; }
 
   var m = Math.hypot(mv.x, mv.y);
+  // Recoil is an engine: firing shoves the tank the other way, so crossing open
+  // ground with the gun turned around is worth 39% on a Tank and 20% on a
+  // Sniper, and pointing it forwards while moving costs about as much again.
+  // The catch is that a kick arriving while the tank is still turning fights
+  // the steering rather than helping — measured, that made a Destroyer and an
+  // Annihilator slower, not faster. So only once it is already up to speed and
+  // heading roughly where it means to go.
+  if (boost && m > 0.2) {
+    var sp = Math.hypot(t.vx, t.vy);
+    var drift = sp > 3 ? Math.abs(angleDiff(Math.atan2(t.vy, t.vx), Math.atan2(mv.y, mv.x))) : Math.PI;
+    if (drift < 0.5) {
+      aim = Math.atan2(-mv.y, -mv.x);
+      t.mouse.x = t.x + Math.cos(aim) * 400;
+      t.mouse.y = t.y + Math.sin(aim) * 400;
+    }
+  }
   i.up = i.down = i.left = i.right = 0;
   if (m > 0.02) {
     var ux = mv.x / m, uy = mv.y / m;
@@ -1227,6 +1377,7 @@ function Game(modeKey, playerName, opts) {
   this.leaderboard = [];
   this.walls = [];
   this.bases = [];
+  this.timeScale = 1;               // /timewarp: sim steps per wall-clock tick
 
   var h = this.mode.size / 2;
   this.arena = { left: -h, right: h, top: -h, bottom: h, size: this.mode.size };
@@ -1246,7 +1397,7 @@ function Game(modeKey, playerName, opts) {
 
   if (!this.headless) this.player = this.spawnTank({ name: playerName, isPlayer: true });
   this.setDifficulty(opts.difficulty || 'medium');
-  this.botCount = opts.botCount !== undefined ? opts.botCount : (this.mode.sandbox ? 104 : 128);
+  this.botCount = opts.botCount !== undefined ? opts.botCount : (this.mode.sandbox ? 64 : 80);
   for (var b = 0; b < this.botCount; b++) this.spawnBot();
 }
 
@@ -1320,12 +1471,15 @@ Game.prototype.setDifficulty = function (d) {
   return this.botSkill;
 };
 
-Game.prototype.spawnShape = function () {
-  var a = this.arena;
+// inNest restricts the roll to the Pentagon Nest ring, so mid can be topped up
+// on its own. The keep-away radius decays across the retries: camping the nest
+// otherwise blocks every candidate point in it and nothing ever comes back.
+Game.prototype.spawnShape = function (inNest) {
+  var a = this.arena, lo = inNest ? -a.right / 10 : a.left, hi = inNest ? a.right / 10 : a.right;
   for (var i = 0; i < 20; i++) {
-    var x = rand(a.left, a.right), y = rand(a.top, a.bottom);
+    var x = rand(lo, hi), y = rand(lo, hi);
     if (this.inWall(x, y, 80)) continue;
-    if (this.nearTank(x, y, 1000)) continue;
+    if (this.nearTank(x, y, 1000 - i * 50)) continue;
     return this.add(new Shape(this, this.shapeKindAt(x, y), x, y));
   }
   return null;
@@ -1595,15 +1749,26 @@ Game.prototype.step = function () {
   }
   this.entities = alive;
 
-  // top up shapes
-  var shapeCount = 0;
-  for (i = 0; i < this.entities.length; i++) if (this.entities[i].type === 'shape') shapeCount++;
+  // Top up shapes. The nest has its own quota: it is ~1% of the arena's area, so
+  // a farmed-out mid barely registers against the global count and the deficit
+  // gets spent refilling the fields instead. Counted and refilled separately.
+  var shapeCount = 0, nestCount = 0, nestR = this.arena.right / 10;
+  for (i = 0; i < this.entities.length; i++) {
+    e = this.entities[i];
+    if (e.type !== 'shape') continue;
+    shapeCount++;
+    if (Math.max(Math.abs(e.x), Math.abs(e.y)) < nestR) nestCount++;
+  }
+  var wantNest = Math.round(this.wantedShapes * NEST_SHARE);
+  if (nestCount < wantNest && this.tick % NEST_REFILL_TICKS === 0 && this.spawnShape(true)) shapeCount++;
   for (i = shapeCount; i < this.wantedShapes; i++) this.spawnShape();
 
   // respawn bots
   var botCount = 0;
   for (i = 0; i < this.entities.length; i++) { e = this.entities[i]; if (e.type === 'tank' && e.bot && !e.dead) botCount++; }
-  if (botCount < this.botCount && this.tick % 25 === 0) this.spawnBot();
+  // Refill the whole deficit, not one tank a second: bots die faster than that,
+  // so a trickle settled the arena around 40 instead of the count that was set.
+  if (this.tick % 25 === 0) for (i = botCount; i < this.botCount; i++) this.spawnBot();
 
   // boss cycle
   if (!this.mode.noBoss) {

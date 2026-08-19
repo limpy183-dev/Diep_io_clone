@@ -12,6 +12,8 @@ var HYPER_REGEN_DELAY = 750;   // 30s undamaged
 var HASH_CELL = 128;           // 2^7
 var BOSS_INTERVAL = 45 * 60 * TPS;
 var SHINY_CHANCE = 1 / 1000000;
+var NEST_SHARE = 0.015;        // share of the shape quota reserved for the Pentagon Nest
+var NEST_REFILL_TICKS = 75;    // one nest shape every 3s, so a farmed mid stays farmed a while
 var ROOT2 = Math.SQRT2;
 
 // --- palette -----------------------------------------------------------

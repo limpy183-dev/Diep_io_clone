@@ -156,7 +156,7 @@ function runCommand(ctx, raw) {
   var args = rest ? rest.split(/\s+/) : [];
   var c = COMMANDS[key];
   if (!c) return ctx.say('Unknown command /' + key + ' — try /help');
-  if (c.cheat && !ctx.sandbox) return ctx.say('/' + c.name + ' is a cheat — offline play or an online Sandbox arena only.');
+  if (c.cheat && !ctx.sandbox) return ctx.say('/' + c.name + ' is a cheat — cheats are off here. Run /cheats on to turn them on for this arena.');
   if (c.needsTank && (!ctx.tank || ctx.tank.dead)) return ctx.say('You have to be alive for /' + c.name + '.');
   var out;
   try { out = c.run(ctx, args, rest); }
@@ -612,28 +612,39 @@ cmd('boss', {
     return 'Spawned the ' + b.name + '.';
   }
 });
-cmd('bots', {
-  cat: 'cheat', cheat: true, args: '<n>', help: 'Set how many bots the arena keeps alive.',
+cmd('bots maxplayers', {
+  cat: 'cheat', cheat: true, args: '<n>', help: 'Set the max player count — how many bots the arena keeps alive.',
   run: function (ctx, a) {
+    if (!a[0]) return 'Max players is ' + ctx.game.botCount + '. Pass a number 0-160 to change it.';
     var n = clampN(Math.round(num(a[0], 0)), 0, 160);
-    ctx.game.botOverride = n;
     ctx.game.botCount = n;
-    return 'Bot count pinned at ' + n + '.';
+    return 'Max players pinned at ' + n + '.';
   }
 });
 cmd('botspawn addbots', {
-  cat: 'cheat', cheat: true, args: '[n] [random]',
-  help: 'Spawn bots right now, one-off. "random" scatters them over the whole map. /bots sets the sustained count instead.',
+  cat: 'cheat', cheat: true, args: '[n] [gap] [random]',
+  help: 'Spawn bots right now, one-off. A second number is the gap between each tank (0 stacks them, big spreads them out). "random" scatters them over the whole map. /bots sets the sustained count instead.',
   run: function (ctx, a) {
-    var n = clampN(Math.round(num(a[0], 1)), 1, 60), g = ctx.game;
+    // ponytail: no upper bound on n by request — a huge number will chug.
+    var nums = a.filter(function (s) { return isFinite(parseFloat(s)); });
+    var n = Math.max(1, Math.round(num(nums[0], 1))), g = ctx.game;
+    var gap = nums.length > 1 ? Math.max(0, num(nums[1], 0)) : null;
     var scatter = a.filter(function (s) { return /^rand/i.test(s); }).length > 0;
+    var lim = g.arena.size, cols = Math.ceil(Math.sqrt(n));
+    var ox = ctx.tank ? ctx.tank.x : 0, oy = ctx.tank ? ctx.tank.y : 0;
     for (var i = 0; i < n; i++) {
       // spawnBot already scatters across the map and keeps its distance; only
-      // the non-scatter case has to drag them over to you.
-      var b = g.spawnBot(), p = scatter || !ctx.tank ? null : nearPoint(ctx.tank, 900);
-      if (p) { b.x = b.px = p.x; b.y = b.py = p.y; }
+      // the non-scatter case has to place them relative to you.
+      var b = g.spawnBot(), p = scatter ? null
+        : gap !== null ? { x: ox + (i % cols - (cols - 1) / 2) * gap, y: oy + (Math.floor(i / cols) - (cols - 1) / 2) * gap }
+        : ctx.tank ? nearPoint(ctx.tank, 900) : null;
+      if (p) {
+        b.x = b.px = clampN(p.x, -lim, lim);
+        b.y = b.py = clampN(p.y, -lim, lim);
+      }
     }
-    return n + (n === 1 ? ' bot' : ' bots') + (scatter ? ' scattered over the map' : ' spawned') +
+    return n + (n === 1 ? ' bot' : ' bots') + (scatter ? ' scattered over the map'
+      : gap !== null ? ' spawned ' + Math.round(gap) + ' apart' : ' spawned') +
       (g.botCount ? '.' : ' — respawn is off, so that is all you get.');
   }
 });
@@ -643,7 +654,7 @@ cmd('botrespawn', {
     var g = ctx.game, on = onOff(a[0], g.botCount > 0);
     var alive = g.entities.filter(function (e) { return e.type === 'tank' && e.bot && !e.dead; }).length;
     if (on && !alive) return 'No bots out there to hold on to — /botspawn <n> or /bots <n> first.';
-    g.botCount = g.botOverride = on ? alive : 0;   // the server re-reads botOverride every tick
+    g.botCount = on ? alive : 0;
     return 'Bot respawn ' + (on ? 'ON — holding at ' + alive + '.'
       : 'OFF — the ' + alive + ' still out there are the last of them.');
   }
@@ -796,6 +807,45 @@ cmd('disco', {
       e.fill = randomHex(); e.stroke = darken(e.fill);
     });
     ctx.broadcast(ctx.name + ' turned the lights down.');
+  }
+});
+cmd('timewarp warp tw gamespeed', {
+  cat: 'cheat', cheat: true, args: '<0.05-10|normal>',
+  help: 'Speed the whole arena up or slow it down. 1 is normal, 0.25 is slow motion, 4 is chaos.',
+  run: function (ctx, a) {
+    var g = ctx.game;
+    if (!a.length) return 'Time is running at x' + (g.timeScale || 1) + '. /timewarp <0.05-10> or /timewarp normal.';
+    var m = /^(normal|reset|off|stop|1x)$/i.test(a[0]) ? 1 : clampN(num(a[0], 1), 0.05, 10);
+    g.timeScale = m;
+    ctx.broadcast(ctx.name + ' set the clock to x' + m +
+      (m > 1 ? ' — hold on to something.' : m < 1 ? ' — slow motion.' : ' — back to normal.'));
+  }
+});
+// The camera is per-viewer, so the command cannot just poke the shared Game:
+// ctx.setView is wired by whoever owns the camera (main.js offline, the client
+// record on the server).
+cmd('view spectate watch', {
+  cat: 'cheat', cheat: true, args: '<player|off>',
+  help: 'Park your camera on another player. Your own tank sits still while you watch.',
+  run: function (ctx, a, rest) {
+    if (!ctx.setView) return 'There is no camera to move here.';
+    if (!rest || /^(off|none|me|stop|self)$/i.test(rest)) { ctx.setView(null); return 'Back behind your own eyes.'; }
+    var target = findTank(ctx.game, rest);
+    if (!target) return 'Nobody here is called "' + rest + '".';
+    if (target === ctx.tank) { ctx.setView(null); return 'That is you. Back to normal.'; }
+    ctx.setView(target);
+    return 'Watching ' + target.name + ' — /view off to come back.';
+  }
+});
+// Local on purpose: this only arms the click handler. The click itself goes
+// through /view, which is gated by whoever owns the world.
+cmd('viewclick clickview', {
+  cat: 'cheat', local: true, args: '[on|off]',
+  help: 'Click any tank to watch it. Click empty ground to come back to your own.',
+  run: function (ctx, a) {
+    var g = ctx.game;
+    g.clickView = onOff(a[0], g.clickView);
+    return 'Click-to-watch ' + (g.clickView ? 'ON — click a tank.' : 'OFF');
   }
 });
 cmd('closearena', {

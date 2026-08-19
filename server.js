@@ -68,7 +68,7 @@ function getArena(modeKey) {
   a.game.onPlayerDeath = (tank) => {
     const c = tank.client;
     if (!c || !c.alive) return;
-    c.spectate = tank.killerEntity || null;
+    if (!c.viewing) c.spectate = tank.killerEntity || null;
     sendDeath(c, tank);
     // Dying in a closing arena moves you off it: there is nothing to respawn into.
     if (a.game.closing) evict(c, 'This arena has closed — press Play to join a new one');
@@ -113,16 +113,24 @@ function dropArena(a, force) {
 function controlled(client) {
   const t = client.tank;
   if (t && t.possessing && !t.possessing.dead) return t.possessing;
-  // dead players watch their killer until it dies too, then stay where it fell
-  if (t && t.dead && client.spectate && !client.spectate.dead) return client.spectate;
   return t;
 }
+
+// Whose eyes you are borrowing: /view picks one on purpose, and dying puts you
+// behind your killer until it dies too. Never what your inputs drive — that
+// stays `controlled`, or /view would let you fly somebody else's tank.
+function watching(client) {
+  const s = client.spectate;
+  if (!s || s.dead) return null;
+  return (client.viewing || (client.tank && client.tank.dead)) ? s : null;
+}
+function cameraOf(client) { return watching(client) || controlled(client); }
 
 // Death snaps the view to 0.4 regardless of whose tank the camera is riding.
 function fovOf(client) {
   const t = client.tank;
   if (!t || t.dead) return 0.4;
-  const c = controlled(client);
+  const c = cameraOf(client);
   return c && !c.dead ? c.fov : 0.4;
 }
 
@@ -234,7 +242,7 @@ function hex(h) {
 
 function sendUpdate(client, arena) {
   const g = arena.game, t = client.tank;
-  const ctrl = controlled(client);
+  const ctrl = cameraOf(client);
   if (ctrl && !ctrl.dead) { client.camX = ctrl.x; client.camY = ctrl.y; }
   const v = viewOf(client);
 
@@ -273,6 +281,17 @@ function sendUpdate(client, arena) {
     b.u8(t.autoSpin ? 1 : 0);
     b.u32(t.spawnTick);
     b.u8(Math.min(255, t.kills));
+  }
+
+  // /view: the build of whoever you are watching, so the client can draw their
+  // stat panel greyed out. Ten bytes, and only while you are deliberately
+  // watching someone — dying onto your killer leaves the corner alone.
+  const seen = client.viewing ? watching(client) : null;
+  b.u8(seen && seen.stats ? 1 : 0);
+  if (seen && seen.stats) {
+    b.u8(seen.tankId === undefined ? 0 : seen.tankId);
+    b.u8(Math.min(255, seen.level || 1));
+    for (let i = 0; i < 8; i++) b.u8(seen.stats[i] || 0);
   }
 
   // Leaderboard. The arena re-ranks once a second, but scores keep moving, so
@@ -381,6 +400,7 @@ function commandCtx(client, arena) {
     game: g, tank: t, online: true,
     name: (t && t.name) || 'an unnamed tank',
     sandbox: cheatsOK(g),
+    setView: (e) => { client.spectate = e || null; client.viewing = !!e; },
     say: (text) => sendChat(client, 1, null, text, '#FFDE43'),
     broadcast: (text) => chatAll(arena, 1, null, text, '#85E8A0'),
     whisper: (name, text) => {
@@ -437,10 +457,15 @@ function send(client, bytes) {
 // ---- tick ---------------------------------------------------------------
 function tickArena(a) {
   const g = a.game;
-  try { g.step(); } catch (err) { console.error('[sim]', err); return; }
-
-  // Humans only unless someone asked for bots with /bots.
-  g.botCount = g.botOverride === undefined ? 0 : g.botOverride;
+  // /timewarp. Sped up, one wire tick carries several sim steps and the client
+  // interpolates across the bigger jump. Slowed, a tick that steps nothing sends
+  // nothing either — the client measures the gap between snapshots, so the whole
+  // arena simply moves in slow motion.
+  a.warp = (a.warp || 0) + (g.timeScale || 1);
+  const steps = Math.min(10, Math.floor(a.warp));
+  a.warp -= steps;
+  if (!steps) return;
+  try { for (let i = 0; i < steps; i++) g.step(); } catch (err) { console.error('[sim]', err); return; }
 
   // Arena-wide notifications go to everyone exactly once. Mark them all before
   // the client loop, or only the first client would see them.
@@ -538,6 +563,10 @@ function handle(client, b) {
       const bits = b.ru16();
       const mx = b.ri16(), my = b.ri16();
       const c = controlled(client);       // inputs drive whatever you are piloting
+      if (watching(client)) {             // /view: you are a camera, not a driver
+        c.input.fire = c.input.up = c.input.left = c.input.down = c.input.right = c.input.altFire = 0;
+        return;
+      }
       c.input.fire = bits & IN.FIRE ? 1 : 0;
       c.input.up = bits & IN.UP ? 1 : 0;
       c.input.left = bits & IN.LEFT ? 1 : 0;
@@ -615,6 +644,7 @@ function spawn(client, name, old) {
   if (old) old.client = null;
   client.tank = t;
   client.spectate = null;
+  client.viewing = false;
   client.seen = new Set();
   client.camX = t.x; client.camY = t.y;
   sendWelcome(client, client.arena);

@@ -56,8 +56,8 @@ authoritative one, then broadcasts the result. Three flavours:
 - **Local** (`/help`, `/clear`, `/mute`, `/fps`, `/ping`, …) never leave the browser.
 - **World** (`/me`, `/roll`, `/w`, `/players`, `/nick`, …) run wherever the world is.
 - **Cheats** (`/god`, `/max`, `/class`, `/tp`, `/boss`, `/nuke`, `/army`, `/rain`, `/disco`,
-  … 40 of them) are gated on `ctx.sandbox`: always allowed offline, online only inside
-  a Sandbox arena. The gate is checked by whoever owns the world, so a client cannot cheat
+  `/timewarp`, `/view`, … 47 of them) are gated on `ctx.sandbox`: always allowed
+  offline, online only inside a Sandbox arena. The gate is checked by whoever owns the world, so a client cannot cheat
   its way past it. `/help` lists everything, `/cheats` lists just those.
 
 ## Objective modes
@@ -181,7 +181,7 @@ node -e "const fs=require('fs');fs.writeFileSync('js/tankdefs.js','var TANK_DEFS
   dissolve, and rammer ejection.
 - **UI** — scoreboard, score/level bars, stat panel with queueing, upgrade cards, minimap,
   leader arrow, notifications, class-tree overlay, death screen with killer attribution.
-- **Chat** — top-left overlay, arena-wide online, 71 slash commands including a cheat set
+- **Chat** — top-left overlay, arena-wide online, 74 slash commands including a cheat set
   that only unlocks offline or in a Sandbox arena. See above.
 - **28 bots** with build orders and class choices, so the leaderboard is alive. *Play
   Offline* opens a difficulty picker first — Easy through Extreme, or Custom, which

@@ -9,7 +9,7 @@ for (const f of ['js/tankdefs.js', 'js/tankdefs-extra.js', 'js/data.js', 'js/pro
   vm.runInContext(readFileSync(new URL(f, import.meta.url), 'utf8'), ctx, { filename: f });
 
 const G = (expr) => vm.runInContext(expr, ctx);
-const { Game, Tank, Entity, handleCollision } = ctx;
+const { Game, Tank, Entity, Barrel, handleCollision } = ctx;
 const near = (a, b, eps, msg) => assert.ok(Math.abs(a - b) <= eps, `${msg}: got ${a}, want ~${b}`);
 
 let passed = 0;
@@ -146,14 +146,39 @@ test('Twin Flank nets zero recoil; Annihilator kicks 6.8 grid squares', () => {
   // total displacement under 10% friction = v / 0.1
   near(Math.hypot(t.vx, t.vy) / 0.1 / 50, 6.8, 0.05, 'grid squares travelled');
 });
-test('Octo Tank barrels alternate in two sets of four', () => {
+// Fire ticks per barrel over `ticks` ticks of held fire, after a release.
+function fireTicks(tankId, reloadPoints, ticks) {
   const g = new Game('sandbox', 'T');
   const t = g.player;
-  t.setTank(5); t.recompute();
-  const phases = t.barrels.map(b => Math.round(b.cycle));
-  const distinct = [...new Set(phases)];
+  t.setTank(tankId); t.stats[1] = reloadPoints; t.recompute();
+  for (let i = 0; i < 60; i++) t.barrels.forEach(b => b.tick(false));   // idle, trigger released
+  const out = t.barrels.map(() => []);
+  const shoot = Barrel.prototype.shoot;
+  for (let i = 0; i < ticks; i++) t.barrels.forEach((b, n) => {
+    Barrel.prototype.shoot = function () { out[n].push(i); };
+    b.tick(true);
+    Barrel.prototype.shoot = shoot;
+  });
+  return out;
+}
+test('Twin alternates 1-2-1-2 after releasing fire, at every reload level', () => {
+  for (const pts of [0, 4, 7]) {
+    const p = 15 * Math.pow(0.914, pts);
+    const shots = fireTicks(1, pts, 60)
+      .flatMap((ticks, n) => ticks.map(t => ({ t, n })))
+      .sort((x, y) => x.t - y.t);
+    assert.ok(shots.length >= 6, `both barrels fire (P=${pts})`);
+    for (let i = 1; i < 6; i++) {
+      assert.notEqual(shots[i].n, shots[i - 1].n, `shot ${i} alternates barrels (P=${pts})`);
+      near(shots[i].t - shots[i - 1].t, p / 2, 1.01, `gap ${i} is half a reload (P=${pts})`);
+    }
+  }
+});
+test('Octo Tank barrels alternate in two sets of four', () => {
+  const first = fireTicks(5, 0, 40).map(f => f[0]);
+  const distinct = [...new Set(first)];
   assert.equal(distinct.length, 2, 'two firing phases');
-  assert.equal(phases.filter(p => p === distinct[0]).length, 4);
+  assert.equal(first.filter(p => p === distinct[0]).length, 4);
 });
 
 console.log('\nPhase 4 — progression');
@@ -368,6 +393,21 @@ test('Hexagons exist and actually spawn in the nest', () => {
   // nest ends at right/10 (1115), crasher ring at right/5 (2230), fields beyond
   assert.equal(g.shapeKindAt(1500, 0).slice(0, 7), 'crasher', 'crasher ring unchanged');
   assert.ok(['square', 'triangle', 'pentagon'].includes(g.shapeKindAt(9000, 0)), 'fields unchanged');
+});
+
+test('cleared nest refills even with the player parked in it', () => {
+  const g = new Game('ffa', 'T');
+  const nestR = g.arena.right / 10;
+  const inNest = () => g.entities.filter(
+    (e) => e.type === 'shape' && Math.max(Math.abs(e.x), Math.abs(e.y)) < nestR).length;
+
+  g.entities = g.entities.filter((e) => !(e.type === 'shape' && Math.max(Math.abs(e.x), Math.abs(e.y)) < nestR));
+  assert.equal(inNest(), 0, 'nest cleared');
+  g.player.x = 0; g.player.y = 0;                       // camped on mid
+
+  for (let i = 0; i < 400; i++) g.step();
+  const n = inNest();
+  assert.ok(n > 2 && n <= 20, `nest trickles back, got ${n}`);
 });
 
 console.log('\nAdded tanks');
@@ -898,8 +938,10 @@ vm.runInContext(readFileSync(new URL('js/commands.js', import.meta.url), 'utf8')
 const { runCommand, cheatsOK } = ctx;
 const cmdCtx = (g) => {
   const said = [];
-  return { game: g, tank: g.player, online: true, name: 'Me', said,
+  const view = { at: null };
+  return { game: g, tank: g.player, online: true, name: 'Me', said, view,
     get sandbox() { return cheatsOK(g); },
+    setView: (e) => { view.at = e; },
     say: (t) => said.push(t), broadcast: (t) => said.push(t) };
 };
 
@@ -959,10 +1001,29 @@ test('/botspawn random scatters over the map with a gap between them', () => {
   const span = Math.max(...b.map(e => e.x)) - Math.min(...b.map(e => e.x));
   assert.ok(span > g.arena.size * 0.5, 'spread wide, not clustered: ' + Math.round(span));
 });
+test('/botspawn takes a gap and no bot cap', () => {
+  const g = new Game('sandbox', 'Me', { botCount: 0 });
+  const c = cmdCtx(g);
+  runCommand(c, '/cheats on');
+  runCommand(c, '/botspawn 9 300');
+  let b = g.entities.filter(e => e.type === 'tank' && e.bot && !e.dead);
+  assert.equal(b.length, 9);
+  let closest = Infinity;
+  for (let i = 0; i < b.length; i++) for (let j = i + 1; j < b.length; j++)
+    closest = Math.min(closest, Math.hypot(b[i].x - b[j].x, b[i].y - b[j].y));
+  assert.ok(Math.abs(closest - 300) < 1e-6, 'neighbours exactly the gap apart, got ' + closest);
+  runCommand(c, '/killbots');
+  runCommand(c, '/botspawn 4 0');                     // gap 0 stacks them
+  b = g.entities.filter(e => e.type === 'tank' && e.bot && !e.dead);
+  assert.ok(b.every(e => e.x === b[0].x && e.y === b[0].y), 'gap 0 puts them on one spot');
+  runCommand(c, '/killbots');
+  runCommand(c, '/botspawn 200 50');                  // used to cap at 60
+  assert.equal(g.entities.filter(e => e.type === 'tank' && e.bot && !e.dead).length, 200);
+});
 test('bots spawned at match start are spread over the whole map with gaps', () => {
   const g = new Game('ffa', 'Me');
   const b = g.entities.filter(e => e.type === 'tank' && e.bot && !e.dead);
-  assert.equal(b.length, 128, 'default bot count');
+  assert.equal(b.length, 80, 'default bot count');
   let closest = Infinity;
   for (let i = 0; i < b.length; i++) for (let j = i + 1; j < b.length; j++)
     closest = Math.min(closest, Math.hypot(b[i].x - b[j].x, b[i].y - b[j].y));
@@ -982,7 +1043,6 @@ test('/botspawn is one-off, /botrespawn decides whether they come back', () => {
   assert.equal(bots(), 6);
   runCommand(c, '/botrespawn on');
   assert.equal(g.botCount, 6);
-  assert.equal(g.botOverride, 6);                     // the server re-reads this every tick
   g.entities.filter(e => e.type === 'tank' && e.bot).slice(0, 3).forEach(e => e.kill(null));
   for (let i = 0; i < 150; i++) g.step();
   assert.ok(bots() >= 5, 'topped back up towards 6, got ' + bots());
@@ -1009,6 +1069,87 @@ test('/botlevel max lifts every bot, and they upgrade themselves from there', ()
   runCommand(c, '/killbots');
   runCommand(c, '/botlevel max');
   assert.match(c.said.pop(), /No bots/);
+});
+
+test('/timewarp scales sim time and clamps, /view aims the camera at one tank', () => {
+  const g = new Game('sandbox', 'Me', { botCount: 0 });
+  const c = cmdCtx(g);
+  assert.equal(g.timeScale, 1);
+  runCommand(c, '/timewarp 4');
+  assert.equal(g.timeScale, 4);
+  runCommand(c, '/timewarp 0.25');
+  assert.equal(g.timeScale, 0.25);
+  runCommand(c, '/timewarp 9999');
+  assert.equal(g.timeScale, 10, 'clamped, not unbounded');
+  runCommand(c, '/timewarp normal');
+  assert.equal(g.timeScale, 1);
+
+  runCommand(c, '/botspawn 3');
+  const bot = g.entities.filter(e => e.type === 'tank' && e.bot && !e.dead)[0];
+  runCommand(c, '/view ' + bot.name);
+  assert.equal(c.view.at, bot, 'camera parked on the named tank');
+  runCommand(c, '/view off');
+  assert.equal(c.view.at, null, 'and handed back');
+  runCommand(c, '/view nobody-by-that-name');
+  assert.match(c.said.pop(), /Nobody here/);
+  assert.equal(c.view.at, null, 'a miss leaves the camera where it was');
+});
+
+// render.js is browser script with no DOM at load time, and updateCamera only
+// reads this.game / this.cam — so the offline half of /view is testable here.
+vm.runInContext(readFileSync(new URL('js/render.js', import.meta.url), 'utf8'), ctx, { filename: 'js/render.js' });
+
+test('offline, /view rides the watched tank while you are still alive', () => {
+  const g = new Game('sandbox', 'Me', { botCount: 0 });
+  const c = cmdCtx(g);
+  c.setView = (e) => { g.spectate = e || null; g.viewing = !!e; };   // what main.js wires
+  runCommand(c, '/botspawn 2 500');
+  const bot = g.entities.filter(e => e.type === 'tank' && e.bot && !e.dead)[0];
+  bot.x = bot.px = 4000; bot.y = bot.py = -4000;
+  g.player.x = g.player.px = 0; g.player.y = g.player.py = 0;
+
+  const cam = { game: g, cam: { x: 0, y: 0, fov: 0.35 } };
+  const settle = () => { for (let i = 0; i < 400; i++) ctx.Renderer.prototype.updateCamera.call(cam, 16, 0); };
+
+  settle();
+  assert.ok(Math.hypot(cam.cam.x, cam.cam.y) < 1, 'starts on your own tank');
+
+  runCommand(c, '/view ' + bot.name);
+  settle();
+  assert.ok(Math.hypot(cam.cam.x - 4000, cam.cam.y + 4000) < 1, 'camera walked over to the bot');
+
+  bot.dead = true;                                  // the tank you were watching dies
+  settle();
+  assert.ok(Math.hypot(cam.cam.x, cam.cam.y) < 1, 'camera falls back to you on its own');
+
+  bot.dead = false;
+  runCommand(c, '/view off');
+  settle();
+  assert.ok(Math.hypot(cam.cam.x, cam.cam.y) < 1, 'and /view off keeps it there');
+});
+
+test('offline, the stat panel borrows the watched build and stays read-only', () => {
+  const g = new Game('sandbox', 'Me', { botCount: 0 });
+  const c = cmdCtx(g);
+  c.setView = (e) => { g.spectate = e || null; g.viewing = !!e; };
+  runCommand(c, '/botspawn 2 500');
+  const bot = g.entities.filter(e => e.type === 'tank' && e.bot && !e.dead)[0];
+  runCommand(c, '/maxstats');                       // give the two builds different shapes
+  bot.stats = [1, 2, 3, 4, 5, 6, 7, 0];
+  const cam = { game: g, cam: { x: 0, y: 0, fov: 0.35 } };
+  const owner = () => ctx.Renderer.prototype.statsOwner.call(cam);
+
+  assert.equal(owner(), g.player, 'your own build by default');
+  runCommand(c, '/view ' + bot.name);
+  assert.equal(owner(), bot, 'watching hands the panel to them');
+  assert.deepEqual(owner().stats, bot.stats, 'and it is their numbers, not yours');
+  assert.equal(owner().statsAvailable, bot.statsAvailable);
+  assert.ok(Array.isArray(owner().queued), 'the panel reads .queued, so it has to be there');
+  g.player.dead = true;                             // dying hands the corner to the death screen
+  assert.equal(owner(), g.player);
+  g.player.dead = false;
+  runCommand(c, '/view off');
+  assert.equal(owner(), g.player, 'and /view off gives it back');
 });
 
 console.log(`\n${passed} passed\n`);

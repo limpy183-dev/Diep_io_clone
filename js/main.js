@@ -82,6 +82,26 @@
     else if (!best) game.notify('Nothing of yours to take control of nearby', 60);
   }
 
+  // ------------------------------------------------------------- spectating
+  // /view and /viewclick. Offline the camera is ours to move; online the server
+  // owns it, so the click is relayed as the same /view command the user types.
+  function viewing() { return !!(game && game.viewing && game.spectate && !game.spectate.dead); }
+
+  function applyView(e) {
+    if (online) net.sendChat('/view ' + (e && e.name ? e.name : 'off'));
+    else { game.spectate = e || null; game.viewing = !!e; }
+  }
+
+  function tankAt(wx, wy) {
+    var best = null, bd = Infinity;
+    game.entities.forEach(function (e) {
+      if (e.type !== 'tank' || e.dead || !e.name) return;
+      var d = Math.hypot(e.x - wx, e.y - wy);
+      if (d < e.size + 20 && d < bd) { bd = d; best = e; }
+    });
+    return best;
+  }
+
   // ------------------------------------------------------------------ chat
   // Offline the command runs against the local sim; online everything that
   // touches the world is sent to the server, which owns the real answer.
@@ -101,6 +121,7 @@
     return {
       game: game, tank: player(), online: online, name: myName(),
       sandbox: !online || cheatsOK(game),
+      setView: applyView,
       say: say, broadcast: say
     };
   }
@@ -245,15 +266,26 @@
       if (inside(lay.close) || inside(lay.ignore)) { renderer.upgradeHidden = true; return true; }
       if (inside(lay.panel)) return true;             // panel swallows its own clicks
     }
-    var stats = p.statsAvailable > 0 ? renderer.statRects() : [];   // hover-only panel doesn't eat shots
+    // A borrowed build (/view) is drawn read-only, so it must not take clicks
+    // either — otherwise clicking their greyed bars spends your own points.
+    var stats = (renderer.statsOwner() === p && p.statsAvailable > 0) ? renderer.statRects() : [];
     for (i = 0; i < stats.length; i++) {
       var s = stats[i];
       if (x >= s.x && x <= s.x + s.w + 6 + s.h * 1.35 && y >= s.y && y <= s.y + s.h) { doStat(s.wire); return true; }
+    }
+    if (game.clickView) {
+      var w = renderer.toWorld(x, y);
+      applyView(tankAt(w.x, w.y));               // empty ground picks nobody, which is /view off
+      return true;
     }
     return false;
   }
 
   function readKeys() {
+    if (viewing()) {                              // watching someone else: your tank sits still
+      localInput.up = localInput.down = localInput.left = localInput.right = localInput.fire = localInput.altFire = 0;
+      return;
+    }
     localInput.up = (keys['w'] || keys['arrowup'] || keys['ArrowUp']) ? 1 : 0;
     localInput.down = (keys['s'] || keys['arrowdown'] || keys['ArrowDown']) ? 1 : 0;
     localInput.left = (keys['a'] || keys['arrowleft'] || keys['ArrowLeft']) ? 1 : 0;
@@ -308,22 +340,24 @@
       return;
     }
 
-    acc += dt;
+    // /timewarp scales sim time against wall time; the step cap scales with it
+    // so a sped-up arena is not silently throttled back to real time.
+    var warp = game.timeScale || 1, cap = Math.max(5, Math.ceil(5 * warp));
+    acc += dt * warp;
     var steps = 0;
-    while (acc >= MSPT && steps < 5) {
+    while (acc >= MSPT && steps < cap) {
       var lp = game.player;
       if (lp && !lp.dead) {
         var ctrl = (lp.possessing && !lp.possessing.dead) ? lp.possessing : lp;
         ctrl.input.up = localInput.up; ctrl.input.down = localInput.down;
         ctrl.input.left = localInput.left; ctrl.input.right = localInput.right;
         ctrl.input.fire = localInput.fire; ctrl.input.altFire = localInput.altFire;
-        var mw = mouseWorld();
-        ctrl.mouse.x = mw.x; ctrl.mouse.y = mw.y;
+        if (!viewing()) { var mw = mouseWorld(); ctrl.mouse.x = mw.x; ctrl.mouse.y = mw.y; }
       }
       game.step();
       acc -= MSPT; steps++;
     }
-    if (steps === 5) acc = 0;
+    if (steps === cap) acc = 0;
 
     // Closers swept the board: hold the CLOSED banner, then drop back to the
     // menu, which is what "reset" means offline — the next Play is a new arena.
@@ -416,7 +450,7 @@
 
   var sel = 'medium';
   var custom = { aim: 5, react: 5, dodge: 5, move: 5, aggro: 5, brain: 5 };
-  var botCount = 128;
+  var botCount = 80;
 
   function difficultyArg() {
     if (sel !== 'custom') return sel;

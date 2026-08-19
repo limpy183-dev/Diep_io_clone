@@ -49,7 +49,11 @@ Renderer.prototype.updateCamera = function (dt, alpha) {
   // offline, piloting a Dominator/Mothership moves the camera onto it
   if (p && p.possessing && !p.possessing.dead) p = p.possessing;
   var fPos = smooth(dt, 0.0173), fFov = smooth(dt, 0.0031), fSpec = smooth(dt, 0.0063);
-  if (p && !p.dead) {
+  // /view parks the camera on someone else while you are still alive. Offline
+  // that is game.viewing; online the server already points the camera for us,
+  // so there is nothing extra to do here.
+  var watch = (this.game.viewing && this.game.spectate && !this.game.spectate.dead) ? this.game.spectate : null;
+  if (p && !p.dead && !watch) {
     // Follow the *interpolated* position. Tracking p.x directly makes the camera
     // step at the 25Hz sim rate while everything else renders interpolated —
     // which reads as the player tank jittering in place.
@@ -65,8 +69,9 @@ Renderer.prototype.updateCamera = function (dt, alpha) {
     this.cam.y = lerp(this.cam.y, ty, fPos);
     this.cam.fov = lerp(this.cam.fov, p.fov, fFov);
   } else if (p) {
-    this.cam.fov = lerp(this.cam.fov, 0.4, fFov);
-    var k2 = this.game.spectate;
+    // Watching someone alive borrows their field of view; death snaps to 0.4.
+    this.cam.fov = lerp(this.cam.fov, watch && !p.dead ? watch.fov : 0.4, fFov);
+    var k2 = watch || this.game.spectate;
     if (k2 && !k2.dead) {
       var is = ipos(k2, alpha || 0);
       this.cam.x = lerp(this.cam.x, is.x, fSpec); this.cam.y = lerp(this.cam.y, is.y, fSpec);
@@ -501,10 +506,21 @@ Renderer.prototype.drawStatus = function () {
   this.bar(x + 40, y - 30, w - 80, 22, into, C.scoreBar, 'Score: ' + abbrev(p.score));
 };
 
+// Whose build the stat panel shows. Watching someone (/view) borrows theirs,
+// greyed out because it is not yours to spend: offline that is the tank itself,
+// online it is the build the server ships alongside the camera. Dying hands the
+// corner back to the death screen.
+Renderer.prototype.statsOwner = function () {
+  var g = this.game, p = g.player;
+  if (!p || p.dead) return p;
+  var w = (g.viewing && g.spectate && !g.spectate.dead) ? g.spectate : g.watched;
+  return (w && !w.dead) ? w : p;
+};
+
 // t defaults to the live slide position; pass 1 to get the fully-open layout
 // even while the panel is parked (used for the hover hit-box).
 Renderer.prototype.statRects = function (t) {
-  var p = this.game.player;
+  var p = this.statsOwner();
   if (!p) return [];
   if (t === undefined) t = this.statsT;
   if (t < 0.01) return [];
@@ -532,17 +548,18 @@ Renderer.prototype.statsHovered = function () {
 };
 
 Renderer.prototype.drawStats = function () {
-  var g = this.game, p = g.player, c = this.ctx;
+  var g = this.game, p = this.statsOwner(), c = this.ctx;
+  var mine = p === g.player;                    // someone else's build is read-only
   var now = performance.now(), dt = Math.min(0.1, (now - this.statsTime) / 1000 || 0);
   this.statsTime = now;
   // slide+fade in while there are points to spend, or on hover (read-only)
-  var target = (p && !p.dead && (p.statsAvailable > 0 || this.statsHovered())) ? 1 : 0;
+  var target = (p && !p.dead && (!mine || p.statsAvailable > 0 || this.statsHovered())) ? 1 : 0;
   this.statsT += (target - this.statsT) * (1 - Math.exp(-dt * 9));
   if (Math.abs(target - this.statsT) < 0.005) this.statsT = target;
   if (!p || p.dead) return;
   var rects = this.statRects();
   if (!rects.length) return;
-  var alpha = this.statsT * (p.statsAvailable > 0 ? 1 : 0.45);   // greyed when nothing to spend
+  var alpha = this.statsT * (mine && p.statsAvailable > 0 ? 1 : 0.45);   // greyed when nothing to spend, or not yours
   c.save();
   c.globalAlpha = alpha;
   for (var i = 0; i < rects.length; i++) {
@@ -571,7 +588,7 @@ Renderer.prototype.drawStats = function () {
     c.fillStyle = '#FFF'; c.fillText(label, r.x + r.w - 10, r.y + r.h / 2);
     // + button is always present in the real client, dimmed when unspendable
     var bx = r.x + r.w + 5, bw2 = r.h * 1.28;
-    var live = p.statsAvailable > 0 && cur < max;
+    var live = mine && p.statsAvailable > 0 && cur < max;
     c.globalAlpha = alpha * (live ? 1 : 0.45);
     c.beginPath(); c.roundRect(bx, r.y, bw2, r.h, 5);
     c.fillStyle = col; c.fill();
@@ -583,7 +600,7 @@ Renderer.prototype.drawStats = function () {
     c.fillRect(px - th / 2, py - arm, th, arm * 2);
     c.globalAlpha = alpha;
   }
-  if (p.statsAvailable > 0 && rects.length) {
+  if (mine && p.statsAvailable > 0 && rects.length) {
     // tilted "xN" sits above the + column, like the real client
     var top = rects[0], txt = 'x' + p.statsAvailable;
     c.save();

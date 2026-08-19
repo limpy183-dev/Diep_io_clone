@@ -178,6 +178,18 @@ NetGame.prototype.readUpdate = function (b) {
     while (p.queued.length && p.statsAvailable === 0) p.queued.shift();
   }
 
+  // /view: the build of whoever we are watching. Just enough of a tank for the
+  // stat panel to lay out and grey — it is read-only, so nothing else is needed.
+  this.watched = null;
+  if (b.ru8()) {
+    var wid = b.ru8(), wlvl = b.ru8(), ws = [];
+    for (i = 0; i < 8; i++) ws.push(b.ru8());
+    this.watched = {
+      tankId: wid, def: TANK_DEFS[wid] || TANK_DEFS[0], level: wlvl,
+      stats: ws, statsAvailable: 0, queued: [], dead: false
+    };
+  }
+
   // leaderboard
   n = b.ru8();
   this.leaderboard = [];
@@ -218,7 +230,10 @@ NetGame.prototype.readUpdate = function (b) {
   // reads as a stutter on every other tank.
   if (this.lastPacket) {
     var gap = now - this.lastPacket;
-    if (gap < MSPT * 4) this.packetDt = this.packetDt ? this.packetDt * 0.9 + gap * 0.1 : gap;
+    // The window is wide enough to cover a /timewarp-slowed arena, which sends a
+    // snapshot only on the ticks it actually stepped. A one-off hitch still gets
+    // in, but the 0.9 EMA walks it back out within a second.
+    if (gap < MSPT * 24) this.packetDt = this.packetDt ? this.packetDt * 0.9 + gap * 0.1 : gap;
   }
   this.lastPacket = now;
 };
