@@ -596,37 +596,56 @@ test('body damage, health and regen are what buy the right to close', () => {
 });
 
 test('drives through what it can absorb and steers off what it cannot', () => {
-  // Most bots a shape killed were not farming it — they backed into one
-  // mid-fight or brushed past on the way somewhere. The push is priced in what
-  // a bounce costs against the bar it has left, which is the same currency the
-  // closing decision uses: a deep pool shoulders a Pentagon aside, a shallow
-  // one goes around, and it is the pool that decides, not a health percentage.
-  const push = (healthStat, hp, kind) => {
-    kind = kind || 'pentagon';
-    const g = bare('hard', { react: 9999 });
-    const t = place(g.spawnBot(), 0, 0);
+  // Most bots that lose health to a shape were not farming it — they backed into
+  // one mid-fight or brushed past on the way somewhere, and against a big shape
+  // one graze is a quarter of the bar with nothing bought for it. Two reasons to
+  // go around and a shape only has to give one: what a bounce costs against the
+  // bar left, or whether the shape is even going to still be there — a Square
+  // dies under the bot's own body on the first tick of contact, a Hexagon does not.
+  // Probed with the hulls already touching, because that is the only place the
+  // answer matters and the place the old push was weakest: it ramped on the
+  // distance between centres, so it peaked at a separation two solid bodies can
+  // never reach and came out at 0.6 against a pursuit vector of 1.
+  const push = (healthStat, hp, kind, shapeHp) => {
+    // Strafe and dodge off: this is the head-on radial balance, and a bot circling
+    // its target measures where the orbit happened to be, not what it decided.
+    const g = bare('hard', { react: 9999, strafe: 0, dodge: 0 });
+    const t = g.spawnBot();
     t.addScore(LEVEL_SCORE[30]);
-    t.stats = [0, 0, 0, 0, 0, 0, healthStat, 0]; t.recompute();
+    // Pin the tank — spawnBot rolls a class and a build off the shared RNG.
+    t.build = BOT_BUILDS.filter((b) => !b.ram)[0];
+    t.pendingUpgrades = []; t.upgradeTo = () => {};
+    t.stats = [0, 0, 0, 0, 0, 0, healthStat, 0]; t.statsAvailable = 0; t.recompute();
     t.health = t.maxHealth * hp;
-    // A tank to chase, dead ahead, with a shape parked in between.
+    // A tank to chase, dead ahead, with the shape parked hull-to-hull in between.
     t.aiTarget = t.aiEngaged = place(g.spawnBot(), 1400, 0);
-    const wall = g.add(new Sh(g, kind, 200, 0));
-    wall.health = wall.maxHealth = SH[kind].health;
+    const wall = g.add(new Sh(g, kind, 0, 0));
+    wall.maxHealth = SH[kind].health;
+    wall.health = wall.maxHealth * (shapeHp === undefined ? 1 : shapeHp);
+    place(t, -(t.size + wall.size), 0);
     g.rebuildGrid();
     g.tick = 1; tickBot(t);
     return t.input.right === 1;                    // 1 = still driving into it
   };
-  // Same class, same level, same shape, same fraction of the bar left — only
-  // the health stat differs, and it is what decides. That is the whole ask:
-  // go in on the stats, not on a health percentage.
-  assert.equal(push(7, 0.5), true, 'a health build shoulders past a Pentagon at half');
-  assert.equal(push(0, 0.5), false, 'a thin bar at the same half goes around it');
-  assert.equal(push(7, 0.15), false, 'and no build drives through on a sliver');
+  // Ground it can walk over: a Square is gone on the first tick of contact, so
+  // swerving off one would cost more than it saves — a bot that did could not
+  // cross its own farm. The share-of-the-bar rule still owns this case, and the
+  // pop rule only ever adds a reason to go around, never takes one away: the same
+  // Square is a third of a 108 HP bar, and that bot goes round it.
+  assert.equal(push(7, 1, 'square'), true, 'a deep bar walks through a Square');
+  assert.equal(push(0, 1, 'square'), false, 'a thin one goes around the same Square');
 
-  // A bigger shape hits harder, so the same tank draws the line in a different
-  // place — no per-shape table, just what one bounce costs.
-  assert.equal(push(7, 0.75, 'hexagon'), true, 'plenty of bar for a Hexagon bump');
-  assert.equal(push(0, 1, 'hexagon'), false, 'a thin bar avoids one even at full health');
+  // Anything that outlasts the bounce is a wall, whatever the build and whatever
+  // is in the bar. There is nothing to buy by touching it: it is not being eaten,
+  // going around is free, and the health does not come back — base regen is a
+  // 17-minute bar and the graze restarts the clock on the only real heal.
+  assert.equal(push(7, 1, 'pentagon'), false, 'a health build at full goes around a Pentagon');
+  assert.equal(push(7, 1, 'hexagon'), false, 'and around a Hexagon, which it could never chew through');
+  assert.equal(push(7, 1, 'alpha'), false, 'and around an Alpha, whose graze is a quarter of the bar');
+
+  // Read off the shape's live health, not a table of kinds: the Pentagon it has
+  // nearly finished stops being a wall on its own, because now it does pop.
+  assert.equal(push(7, 1, 'pentagon', 0.05), true, 'a nearly-dead Pentagon is walkable again');
 });
 
 console.log('\nRoles');

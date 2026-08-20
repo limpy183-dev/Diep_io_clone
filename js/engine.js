@@ -1153,6 +1153,25 @@ var FARM_SLOG_TICKS = 900;
 // less than the run-to-run noise, so this is a threshold with a meaning rather
 // than a tuned number, and a quarter of the bar is the meaning.
 var SHOVE_MIN = 0.25;
+// The share of the bar is not the only reason to go around, and on its own it is
+// what put bots inside the Pentagon Nest. A Hexagon graze on a level 45 tank
+// prices at 8% and reads as free — but base regen is a 17-minute bar and the only
+// heal worth having wants HYPER_REGEN_DELAY clean ticks, so that 8% is gone for
+// the rest of the life and the graze also restarts the clock on getting it back.
+// The second question is whether the shape is still going to be there: a Square
+// pops under the bot's own body on the first tick of contact and a Crasher on the
+// second, so a field of them is walkable ground, while a Hexagon carries 1500 HP
+// and is still charging after the fourth bounce. This is how many ticks of body
+// damage a shape has to survive to be worth a detour at any health, and two is
+// "it does not pop on contact". Measured across an FFA before this: Hexagons and
+// Alphas were 12% of all shape damage taken, at 0% of it spent on one the bot was
+// actually farming — every point paid for nothing.
+var SHOVE_POP = 2;
+// How hard to swerve once it has decided to. Rises with what the bounce costs
+// against the bar it has left, but never falls to nothing — the pursuit vector it
+// competes with is a unit vector, so a swerve worth making has to be worth about
+// as much.
+var SHOVE_FLOOR = 0.3;
 
 // There are two ways to eat a shape and they have different bills.
 //   kite  stand at gun range and shoot: costs time and nothing else
@@ -1535,32 +1554,47 @@ function tickBot(t) {
 
   botDodge(t, sk, mv);
 
-  // Most bots that die on a shape were not farming it — they backed into one
-  // mid-fight, or brushed past on the way somewhere. Measured before this: every
-  // bot a shape killed was under 15% health and still driving, because the push
-  // off was a flat nudge that switched on at a health threshold and lost to the
-  // pursuit vector every time.
-  // So price it the way the bot prices everything else — in what one touch costs
-  // against the bar it has left. At full health a Square is a scratch and gets
-  // walked through; at a sliver every solid thing on the field is a wall, and it
-  // is seen from further out because there is no room left to react late.
-  var scan = 180 + 320 * (1 - t.health / t.maxHealth);
+  // Most bots that lose health to a shape were not farming it. Measured over a
+  // default FFA: 76-100% of every contact episode, by shape kind, happened while
+  // the bot had a tank target — it backed into one mid-fight, or brushed past on
+  // the way somewhere, or crossed the Pentagon Nest to get at something on the
+  // far side. Those cost real bar: the worst single Alpha bump took 54% of a tank
+  // and the worst Pentagon 72%, none of them on a shape it was farming.
+  // The query radius has to cover the widest lean computed below or the pass never
+  // sees the shape it is meant to swerve off. The old floor was 180 against an
+  // Alpha Pentagon that needs 360 — its hull plus a big tank's plus the standoff
+  // band — so whether a bot noticed one came down to which grid cells the query
+  // happened to straddle.
+  var scan = 380 + 300 * (1 - t.health / t.maxHealth);
   var seen = g.tick * 31337 + t.id;               // a shape spanning four cells is one shape
   g.nearby(t.x, t.y, scan, function (p) {
     if (p.shoved === seen) return;
     p.shoved = seen;
     if (p.dead || p.type !== 'shape') return;
     if (p.team !== null && p.team === t.team) return;
-    // What one bounce off it would cost, as a share of what is left. A bounce is
-    // CONTACT_TOUCHES ticks of contact — that is what the margin means — so this
-    // is the same currency the closing decision is made in, not a second one.
-    var risk = Math.min(1, botTouch(t, p) * CONTACT_TOUCHES / Math.max(1, t.health));
-    if (risk < SHOVE_MIN) return;                 // affordable, walk through it
     if (p === goal && botCanTank(t, p)) return;   // this one is the job
-    var dx = t.x - p.x, dy = t.y - p.y, span = t.size + p.size + 70 + 260 * risk;
+    // Ticks of contact before the bot's own body kills it, off live health so the
+    // Pentagon it has nearly finished stops being a wall without anything saying so.
+    var pop = p.health / Math.max(1, botTouch(p, t));
+    // What one bounce costs, as a share of what is left. A bounce is CONTACT_TOUCHES
+    // ticks of contact — that is what the margin means — so this is the same
+    // currency the closing decision is made in, not a second one.
+    var risk = Math.min(1, botTouch(t, p) * CONTACT_TOUCHES / Math.max(1, t.health));
+    // Two reasons to go around and a shape only has to give one: the bounce is a
+    // real share of the bar, or the shape outlasts the bounce and keeps charging.
+    if (risk < SHOVE_MIN && pop < SHOVE_POP) return;
+    var w = Math.max(SHOVE_FLOOR, risk);
+    // Over the gap between the two bodies, not between their centres. Ramping on
+    // centre distance put the peak at zero separation — a place two solid bodies
+    // never reach — so the lean was still climbing at the moment the hulls met and
+    // came out at 0.6 against a pursuit vector of 1. The bot drove in every time.
+    // Measured on the gap it hits full strength exactly as contact happens, which
+    // is the only place it has to win.
+    var dx = t.x - p.x, dy = t.y - p.y, skin = t.size + p.size;
+    var reach = 70 + 260 * w;
     var d = Math.hypot(dx, dy);
-    if (d > span || d < 1) return;
-    var f = (1 - d / span) * 4 * risk;            // outweighs pursuit once a bounce would hurt
+    if (d > skin + reach || d < 1) return;
+    var f = (1 - Math.max(0, d - skin) / reach) * 4 * w;   // outweighs pursuit once a bounce would hurt
     mv.x += dx / d * f; mv.y += dy / d * f;
   });
 
@@ -1584,7 +1618,12 @@ function tickBot(t) {
   // second. Catches every cause at once, so nothing needs to name them.
   if (g.tick % 10 === t.id % 10) {
     if (t.wasMoving && t.stuckX !== undefined && Math.abs(t.x - t.stuckX) + Math.abs(t.y - t.stuckY) < 25) {
-      t.unstick = 22; t.escape = Math.random() * Math.PI * 2;
+      // Out the way the pile is already pushing. Wedged between two Hexagons a
+      // coin flip is as likely to drive deeper in, and mv at this point is the
+      // sum of everything shoving it, which points at the gap it came through.
+      var em = Math.hypot(mv.x, mv.y);
+      t.unstick = 22;
+      t.escape = em > 0.2 ? Math.atan2(mv.y, mv.x) : Math.random() * Math.PI * 2;
     }
     t.stuckX = t.x; t.stuckY = t.y;
   }
