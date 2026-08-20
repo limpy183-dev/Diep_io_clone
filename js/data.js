@@ -10,6 +10,7 @@ var MAX_LEVEL = 45;
 var SPAWN_PROTECT_TICKS = 374; // ~15s
 var HYPER_REGEN_DELAY = 750;   // 30s undamaged
 var HASH_CELL = 128;           // 2^7
+var DRONE_HUNT_RANGE = 1700;   // Auto Fire leash for drones/minions (idle guard radius is 900)
 var BOSS_INTERVAL = 45 * 60 * TPS;
 var SHINY_CHANCE = 1 / 1000000;
 var NEST_SHARE = 0.015;        // share of the shape quota reserved for the Pentagon Nest
@@ -95,6 +96,11 @@ var SHAPES = {
 };
 // bullet-speed stat gain per point (diep uses 3; lower = flatter upgrade curve)
 var BSPEED_GAIN = 1.5;
+// Share of a tank's score that goes to whoever killed it. The share is the one
+// figure in here with no published source behind it, so it is a knob rather than
+// a constant: under 1 so a kill is a reward and not a transfer, and so score
+// leaves the arena on every death instead of pooling in one runaway leader.
+var KILL_SCORE_SHARE = 0.25;   // TODO: unverified, tune to taste
 var SHAPE_ROTATION = 0.01, SHAPE_ORBIT = 0.005, SHAPE_VELOCITY = 1, TURN_TIMEOUT = 300;
 
 // --- addons ------------------------------------------------------------

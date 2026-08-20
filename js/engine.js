@@ -99,9 +99,15 @@ Entity.prototype.kill = function (source) {
   this.deathFrame = 5;
   this.health = 0;
   this.opacity = 1 - 1 / 6;
-  if (this.scoreReward && source) {
+  // A tank pays out a share of what it was carrying; a shape pays its listed
+  // reward. The mode multiplier is the arena's *shape* score multiplier — FFA 1x,
+  // Mothership 3x — so it has no business scaling a kill.
+  var reward = this.type === 'tank'
+    ? this.score * KILL_SCORE_SHARE
+    : this.scoreReward * this.game.mode.xp;
+  if (reward && source) {
     var root = source; while (root.owner) root = root.owner;
-    if (root.type === 'tank' && !root.dead) root.addScore(this.scoreReward * this.game.mode.xp);
+    if (root.type === 'tank' && !root.dead && root !== this) root.addScore(reward);
   }
   if (this.onKill) this.onKill(source);
 };
@@ -710,7 +716,10 @@ function tickProjectile(p) {
       if (p.controllable && owner.input.fire) { tx = owner.mouse.x; ty = owner.mouse.y; }
       else if (p.controllable && owner.input.altFire) { tx = p.x * 2 - owner.mouse.x; ty = p.y * 2 - owner.mouse.y; }
       else {
-        if (g.tick % 2 === p.id % 2) p.dTarget = g.findTarget(p, 900, true, owner);
+        // Auto Fire turns drones into hunters: same homing, longer leash than
+        // the 900 du idle guard radius, so they go after whoever is on screen.
+        var range = owner.autoFire ? DRONE_HUNT_RANGE : 900;
+        if (g.tick % 2 === p.id % 2) p.dTarget = g.findTarget(p, range, true, owner);
         if (p.dTarget && !p.dTarget.dead) { tx = p.dTarget.x; ty = p.dTarget.y; }
         else {
           // idle orbit around the owner
@@ -729,7 +738,7 @@ function tickProjectile(p) {
       if (p.type === 'minion' && p.barrels) {
         p.scaleFactor = 1; p.stats = (p.statsOwner || owner).stats; p.reloadTime = (p.statsOwner || owner).reloadTime;
         var mt = p.dTarget && !p.dTarget.dead;
-        p.barrels[0].tick(mt || !!owner.input.fire);
+        p.barrels[0].tick(mt || !!owner.input.fire || !!owner.autoFire);
       }
       break;
     }
@@ -971,13 +980,12 @@ function botWinOdds(t, o) {
   return killMe / (killMe + killThem);
 }
 
-// Killing a tank awards no score in this game — Tank's constructor never passes
-// one, so scoreReward is 0 and a kill pays nothing but the counter. Shapes are
-// the entire economy. That makes a fight a pure cost: it takes time, and losing
-// it resets you to respawnLevel. So a sharp bot fights when the fight is already
-// on it, when it is winning cheaply, when a human is in front of it, or when it
-// has nothing left to level for — and otherwise walks away and farms, which is
-// the only thing that ever makes it big.
+// A kill pays KILL_SCORE_SHARE of what the loser was carrying, so a fight is no
+// longer a pure cost — but most tanks are carrying very little, and losing still
+// resets you to respawnLevel, so shapes remain the reliable economy. A sharp bot
+// fights when the fight is already on it, when it is winning cheaply, when a
+// human is in front of it, or when it has nothing left to level for, and
+// otherwise walks away and farms.
 function botShouldFight(t, tgt, sk) {
   if (t.level >= MAX_LEVEL - 2) return true;                       // nothing left to farm for
   // How readily the odds talk it out of something. At zero it charges whatever
@@ -1010,6 +1018,15 @@ function botReach(t) {
   var b = t.barrels[0];
   if (!b) return 0;
   return (20 + BSPEED_GAIN * t.stats[S_BSPEED]) * b.def.bullet.speed * 25 + 250;
+}
+
+// Far enough away to stop being our problem: outside both guns, with margin —
+// and outside what the bot can see, because whatever it can see it can pick up
+// again. A release line inside its own sight is a release and a re-acquire every
+// tick, and a gun that snaps back and forth while the two fight over it.
+function botClear2(t, o, sk) {
+  var r = Math.max(botReach(t), botReach(o)) * 1.4 + 250;
+  return Math.max(r * r, sk.sight * sk.sight);
 }
 
 // Where to point. Drones steer themselves at the mouse every tick, so leading
@@ -1111,7 +1128,14 @@ function botScan(t, sk, doShapes) {
       if (ss > bestSS) { bestSS = ss; bestS = e; }
       continue;
     }
-    if (d2 > sight2) continue;
+    // Sight is how far it goes looking for a fight, not how far it can be shot
+    // from. A high level gun out-ranges a low tier bot's whole awareness, so
+    // dropping distant tanks here blinded it to the one killing it: nothing to
+    // latch, nothing to answer, back to the Squares. Being hit is noticing.
+    // ponytail: a shot has to land before it notices someone out there — a bot
+    // being missed from beyond its sight still knows nothing. Read owners off the
+    // incoming bullets in botDodge if that gap ever matters.
+    if (d2 > sight2 && e !== t.aiEngaged && !(e === hitter && d2 < botClear2(t, e, sk))) continue;
     if (e.opacity <= 0 && !t.seesInvisible) continue;          // a hidden Stalker is not there
     // Whoever is on us, plus whoever was and has not left yet — tickBot holds
     // the latch through the gaps between their shots. A fight already happening
@@ -1124,7 +1148,9 @@ function botScan(t, sk, doShapes) {
       + sk.threat * (1 - e.health / e.maxHealth) * 2           // finish what is already hurt
       + (e.isPlayer ? sk.hunt : 0)
       + (e.type === 'boss' ? sk.threat - 4 : 0)
-      + (atUs ? sk.threat * 1.5 : 0);                          // answer whoever is coming for us
+      + (atUs ? sk.threat * (1.5 + Math.max(0, gap) * 0.08) : 0);   // answer whoever is coming for us,
+    // and the bigger one first. Among fights already happening the level gap is
+    // not a reason to stay out — it is which one is about to kill us.
     // Out of our league — but only worth ignoring if it is also far away and
     // minding its own business. Dropping it from the scan outright is what let
     // a big Smasher walk all the way in without the bot ever reacting.
@@ -1173,6 +1199,15 @@ function tickBot(t) {
   var g = t.game, sk = t.botSkill || g.botSkill || BOT_SKILL.medium, i = t.input, k;
   if (!t.build || !t.build.order) t.build = pick(BOT_BUILDS);
   if (t.aiTankId !== t.tankId) { botClassify(t); t.aiTankId = t.tankId; }   // upgrades, /clone, /class
+  // Let go on distance and nothing else. Reading the engagement off botThreatens
+  // every tick meant it blinked out the moment you released fire or turned a few
+  // degrees, and the bot strolled back to its Square with you still shooting it
+  // in the back. Now it keeps firing, backing away, until you are clear of both
+  // guns. Released before the scan runs, or the scan re-reads the fight it is
+  // about to drop and latches it straight back on.
+  var eng = t.aiEngaged;
+  if (eng && (eng.dead || (eng.opacity <= 0 && !t.seesInvisible) || dist2(t, eng) > botClear2(t, eng, sk)))
+    t.aiEngaged = null;
   // The react window is how long it takes to notice something new, not how long
   // it stands there after its target dies — waiting one out with nothing to
   // shoot at is most of what a broken-looking tank is doing. So scan on schedule
@@ -1184,6 +1219,7 @@ function tickBot(t) {
   // moment the one being chewed on dies, or the bot stands there with its gun off.
   var doShapes = lostFarm || g.tick % 15 === t.id % 15;
   if (lostTank || lostFarm || doShapes || g.tick % sk.react === t.id % sk.react) botScan(t, sk, doShapes);
+  eng = t.aiEngaged;                             // the scan may have just picked one up
 
   var tgt = t.aiTarget && !t.aiTarget.dead ? t.aiTarget : null;
   var farmable = t.aiFarm && !t.aiFarm.dead ? t.aiFarm : null;
@@ -1191,15 +1227,6 @@ function tickBot(t) {
   // but declining is not the same as ignoring. Something already closing on us
   // stays the target: the bot keeps shooting it and backs off, which is what to
   // do about a Smasher it cannot out-trade. Turning its back is how it dies.
-  // Let go on distance and nothing else. Reading the engagement off
-  // botThreatens every tick meant it blinked out the moment you released fire
-  // or turned a few degrees, and the bot strolled back to its Square with you
-  // still shooting it in the back. Now it keeps firing, backing away, until
-  // you are clear of both guns.
-  var eng = t.aiEngaged;
-  if (eng && (eng.dead || (eng.opacity <= 0 && !t.seesInvisible)
-      || dist2(t, eng) > Math.pow(Math.max(botReach(t), botReach(eng)) * 1.4 + 250, 2)))
-    t.aiEngaged = eng = null;
   var backOff = false;
   if (tgt && farmable && !botShouldFight(t, tgt, sk)) {
     if (tgt === eng) backOff = true;
@@ -1570,6 +1597,7 @@ Game.prototype.findTarget = function (from, range, preferTanks, ownerAnchor) {
     if (e === from || e.dead || e.sides === 0) continue;
     if (e.type === 'base' || e.type === 'wall' || e.type === 'basespawner') continue;
     if (e.owner) continue;                                    // don't chase someone's bullets
+    if (e === anchor || e === from.parent) continue;           // never your own tank: in FFA it is teamless, so the team check misses it
     if (e.team !== null && e.team === from.team) continue;
     if (from.isCloser && e.isCloser) continue;                 // closers ignore each other
     if (from.team === null && e.type === 'shape') continue;    // AI turrets ignore shapes when teamless

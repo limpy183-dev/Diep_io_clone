@@ -227,6 +227,35 @@ test('regen: 0 points = 0.1%/s, each point adds 0.4%/s', () => {
 });
 
 console.log('\nPhase 5 — shapes');
+test('killing a tank pays a share of its score; a shape pays its listed reward', () => {
+  const g = new Game('ffa', null, { headless: true, botCount: 0 });
+  const share = G('KILL_SCORE_SHARE');
+  const killer = g.spawnTank({ name: 'k', bot: false });
+  const victim = g.spawnTank({ name: 'v', bot: false });
+  victim.addScore(8000);
+  const before = killer.score;
+  victim.kill(killer);
+  near(killer.score - before, 8000 * share, 1, 'kill payout');
+
+  // A tank is not a shape: the mode multiplier is the arena's shape score
+  // multiplier (FFA 1x, Mothership 3x) and has no business scaling a kill.
+  const g3 = new Game('mothership', null, { headless: true, botCount: 0 });
+  assert.equal(g3.mode.xp, 3, 'mothership triples shape score');
+  const k3 = g3.spawnTank({ name: 'k', bot: false });
+  const v3 = g3.spawnTank({ name: 'v', bot: false });
+  v3.addScore(8000);
+  const b3 = k3.score;
+  v3.kill(k3);
+  near(k3.score - b3, 8000 * share, 1, 'a kill is not tripled by the shape multiplier');
+
+  // and nobody collects on themselves
+  const solo = g.spawnTank({ name: 's', bot: false });
+  solo.addScore(4000);
+  const s0 = solo.score;
+  solo.kill(solo);
+  assert.equal(solo.score, s0, 'no score for killing yourself');
+});
+
 test('shape draw radii are the round numbers players measure', () => {
   const S = G('SHAPES');
   near(S.square.size * Math.SQRT2, 55, 1e-9, 'square');
@@ -311,6 +340,24 @@ test('Necromancer captures a Square, up to 11 + reload points per barrel', () =>
   assert.equal(sq.type, 'necro');
   assert.equal(sq.owner, t);
   assert.equal(t.barrels[0].children.length, 1);
+});
+test('Auto Fire lets drones hunt past the 900 du idle leash', () => {
+  const g = new Game('sandbox', 'O');
+  const t = g.player;
+  t.level = 45; t.setTank(12); t.recompute();          // Overlord
+  t.x = 0; t.y = 0;
+  g.entities = g.entities.filter(e => e === t);         // empty the sandbox of bots and shapes
+  const foe = g.add(mk(g, { type: 'tank', x: 1200, y: 0, team: 'red', maxHealth: 100 }));
+  const drone = g.add(mk(g, { type: 'drone', x: 0, y: 0, owner: t, accel: 1, life: 1e9 }));
+  drone.controllable = true;                            // Overlord drones follow the mouse while firing
+  // drones re-scan on tick parity, so line the game tick up with the drone id
+  const seek = () => { drone.dTarget = null; g.tick = drone.id % 2; ctx.tickProjectile(drone); };
+  t.autoFire = false; seek();
+  assert.equal(drone.dTarget, null, 'idle drones ignore a foe 1200 du out');
+  t.autoFire = true; seek();
+  assert.equal(drone.dTarget, foe, 'Auto Fire drones lock on and chase');
+  t.input.fire = 1; drone.dTarget = null; seek();
+  assert.equal(drone.dTarget, null, 'holding fire still overrides with mouse control');
 });
 test('invisibility fades at 1/invisibilityRate ticks', () => {
   const secs = (id) => Math.ceil(1 / G(`TANK_DEFS[${id}].invisibilityRate`)) / 25;

@@ -12,6 +12,7 @@ const { Game, Entity, Shape, BOT_SKILL, BOT_DIFFICULTIES, botSkill } = ctx;
 const { BOT_BUILDS, botClassScore, botReach, botFlightTicks, tickBot, TANK_DEFS, LEVEL_SCORE } = ctx;
 const { botScan, botDps, botShouldFight, SHAPES, BOT_SKILL: SK } = ctx;
 const { botAimedAt, botShootingAt, botThreatens, botWinOdds, angleDiff, TANK_DEFS: DEFS } = ctx;
+const { botClear2 } = ctx;
 
 // One bot in an empty arena, plus a ring of whatever shapes the caller wants.
 function withShapes(difficulty, level, kinds, radius) {
@@ -392,6 +393,75 @@ test('a shot that lands is what makes it a fight, trigger held or not', () => {
   assert.ok(off < 0.35, 'and the gun comes round, off by ' + off.toFixed(2));
 });
 
+test('a gun that out-ranges its sight still gets answered', () => {
+  // Reported: as a Smasher the bots handle you fine, as a high level gun they go
+  // back to ignoring you. A rammer has to close to touch you, so it is always
+  // inside sight; a big gun shoots from outside it. Sight was checked before
+  // anything else, so the tank landing the shots was dropped from the scan and
+  // there was nothing left to latch on to.
+  const g = bare('medium', { react: 1 });                 // sight 1300
+  const t = place(g.spawnBot(), 0, 0);
+  t.build = BOT_BUILDS.filter((b) => !b.ram)[0];
+  t.addScore(LEVEL_SCORE[8]);
+  const you = place(g.spawnBot(), 1400, 0);               // beyond it, and out-levelling it
+  you.bot = false; you.isPlayer = true;
+  you.addScore(LEVEL_SCORE[45]);
+  you.stats = [0, 7, 7, 7, 7, 0, 5, 0]; you.recompute();  // bullet speed: the reach to stand out there
+  const sq = g.add(new Shape(g, 'square', 0, 300));
+  sq.health = sq.maxHealth = 1e6;
+
+  g.tick = 1; tickBot(t);
+  assert.equal(t.aiTarget, null, 'out of sight and it has not been touched: nothing to see');
+
+  t.applyDamage(3, you);                                  // then a shot arrives out of nowhere
+  g.tick = 2; tickBot(t);
+  assert.equal(t.aiEngaged, you, 'being hit is how it finds out');
+  const off = Math.abs(angleDiff(aimAngle(t), Math.atan2(you.y - t.y, you.x - t.x)));
+  assert.ok(off < 0.35, 'and the gun comes round, off by ' + off.toFixed(2));
+
+  // But it is not a tracker: get properly clear and it goes back to its Squares.
+  place(you, 9000, 0);
+  g.tick = 3; tickBot(t);
+  assert.equal(t.aiEngaged, null, 'let go once well out of range');
+  assert.equal(t.aiTarget, null, 'and stopped scanning it entirely');
+});
+
+test('a fight is not let go at a range it can be picked straight back up', () => {
+  // Reported: bot guns jittering in bursts for no visible reason. The line a
+  // fight was released at sat inside the bot's own sight, so a tank in that band
+  // got dropped on the ticks between scans and re-latched on the scan ticks —
+  // and each flip took the target away, turned the recoil engine on, and swung
+  // the gun through 180 degrees.
+  const sk = SK.hard;
+  const g = bare('hard', { react: 9999 });
+  const t = place(g.spawnBot(), 0, 0);
+  t.build = BOT_BUILDS.filter((b) => !b.ram)[0];
+  t.addScore(LEVEL_SCORE[12]);
+  const you = place(g.spawnBot(), 1400, 0);        // past both guns, still well in view
+  you.bot = false; you.isPlayer = true;
+  you.addScore(LEVEL_SCORE[45]);
+  you.stats = [0, 7, 7, 7, 0, 0, 7, 5]; you.recompute();
+  you.angle = Math.PI; you.input.fire = 1;
+  const sq = g.add(new Shape(g, 'square', 0, 400));  // gives it a farm, so scans stay on their cadence
+  sq.health = sq.maxHealth = 1e6;
+
+  assert.ok(botClear2(t, you, sk) >= sk.sight * sk.sight,
+    'the release line must sit outside sight, or the two fight over it every tick');
+
+  g.tick = 1; tickBot(t);
+  assert.equal(t.aiEngaged, you, 'latched on');
+  let changes = 0, last = t.aiEngaged, swings = 0, lastAim = aimAngle(t);
+  for (let i = 2; i < 40; i++) {
+    g.tick = i; tickBot(t);
+    if (t.aiEngaged !== last) changes++;
+    last = t.aiEngaged;
+    if (Math.abs(angleDiff(aimAngle(t), lastAim)) > 0.8) swings++;
+    lastAim = aimAngle(t);
+  }
+  assert.equal(changes, 0, 'held the whole way, dropped and re-took it ' + changes + ' times');
+  assert.equal(swings, 0, 'and the gun stayed put, swung ' + swings + ' times');
+});
+
 test('a bot on its own always has something to shoot at', () => {
   // Reported: bots far from the player paced back and forth with their guns
   // silent. With no goal the movement code picks a fresh random heading every
@@ -521,7 +591,9 @@ test('notices a rammer walking at it, and does not turn its back', () => {
     p.mouse.x = bot.x; p.mouse.y = bot.y;
     bot.pendingUpgrades = [];                       // pin the class, not the point here
     g.step();
-    if (Math.hypot(p.x - bot.x, p.y - bot.y) > 1200) continue;   // only while it bears down
+    // Only while it bears down — wide enough to cover the whole approach now that
+    // a bot being run down holds its distance instead of standing there.
+    if (Math.hypot(p.x - bot.x, p.y - bot.y) > 1500) continue;
     if (bot.aiTarget === p) tracked++;
     if (bot.input.fire) fired++;
     n++;
