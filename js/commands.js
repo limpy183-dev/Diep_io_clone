@@ -659,11 +659,25 @@ cmd('botrespawn', {
       : 'OFF — the ' + alive + ' still out there are the last of them.');
   }
 });
+// Difficulty says how good they are; the role mix says what they are doing.
+// Reported by /difficulty because that is where anyone asking the first question
+// is already standing, and because a personality nobody can see is decoration.
+function botCensus(g) {
+  var n = {}, total = 0;
+  g.entities.forEach(function (e) {
+    if (e.type !== 'tank' || !e.bot || e.dead) return;
+    var k = (e.botRole && e.botRole.label) || 'Balanced';
+    n[k] = (n[k] || 0) + 1; total++;
+  });
+  if (!total) return 'nobody.';
+  return Object.keys(n).sort().map(function (k) { return n[k] + ' ' + k; }).join(', ') + '.';
+}
 cmd('difficulty diff', {
   cat: 'cheat', cheat: true, args: '<name>', help: 'How good the bots are: ' + BOT_DIFFICULTIES.join(', ') + '.',
   run: function (ctx, a, rest) {
     var want = String(rest || a[0] || '').toLowerCase().replace(/[^a-z]/g, '');
-    if (!want) return 'Bots are ' + ctx.game.botSkill.label + '. Options: ' + BOT_DIFFICULTIES.join(', ') + '.';
+    if (!want) return 'Bots are ' + ctx.game.botSkill.label + '. Options: ' + BOT_DIFFICULTIES.join(', ')
+      + '.  Out there right now: ' + botCensus(ctx.game);
     var key = BOT_DIFFICULTIES.filter(function (d) { return d.indexOf(want) === 0; })[0];
     if (!key) return 'Pick one of: ' + BOT_DIFFICULTIES.join(', ') + '.';
     return 'Bots are now ' + ctx.game.setDifficulty(key).label + '.';
@@ -835,6 +849,22 @@ cmd('view spectate watch', {
     if (target === ctx.tank) { ctx.setView(null); return 'That is you. Back to normal.'; }
     ctx.setView(target);
     return 'Watching ' + target.name + ' — /view off to come back.';
+  }
+});
+// Same camera as /view, but the target is re-picked by whoever owns the world
+// (main.js offline, tickArena online), so the crown changing hands drags the
+// camera with it.
+cmd('viewleader watchleader king vl', {
+  cat: 'cheat', cheat: true, args: '[off]',
+  help: 'Watch whoever is #1, and keep watching whoever takes the lead off them.',
+  run: function (ctx, a) {
+    if (!ctx.setView) return 'There is no camera to move here.';
+    if (/^(off|none|stop|me|self)$/i.test(a[0] || '')) { ctx.setView(null); return 'Back behind your own eyes.'; }
+    var top = ctx.game.leader;
+    ctx.setView(top, true);
+    if (!top) return 'Nobody is on the board yet — the camera jumps to the leader as soon as there is one.';
+    if (top === ctx.tank) return 'You are #1, so you are watching yourself. The camera leaves the moment somebody passes you.';
+    return 'Watching ' + top.name + ' at ' + Math.floor(top.score) + ' — /viewleader off to come back.';
   }
 });
 // Local on purpose: this only arms the click handler. The click itself goes

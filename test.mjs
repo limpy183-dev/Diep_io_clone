@@ -1147,6 +1147,39 @@ test('/timewarp scales sim time and clamps, /view aims the camera at one tank', 
   assert.equal(c.view.at, null, 'a miss leaves the camera where it was');
 });
 
+test('/viewleader keeps the camera on whoever is #1', () => {
+  const g = new Game('sandbox', 'Me', { botCount: 0 });
+  const c = cmdCtx(g);
+  // what main.js wires: applyView, plus the re-point simPump does each pump.
+  const applyView = (e, follow) => {
+    if (e && e === g.player) e = null;               // watching yourself freezes your tank
+    g.spectate = e || null; g.viewing = !!e; g.followLeader = !!follow;
+  };
+  c.setView = applyView;
+  const pump = () => { g.updateLeaderboard(); if (g.followLeader) applyView(g.leader, true); };
+
+  runCommand(c, '/botspawn 3 500');
+  const bots = g.entities.filter(e => e.type === 'tank' && e.bot && !e.dead);
+  g.player.score = 10; bots[0].score = 5000; bots[1].score = 100; bots[2].score = 50;
+  pump();
+  runCommand(c, '/viewleader');
+  assert.equal(g.spectate, bots[0], 'parked on #1');
+
+  bots[1].score = 9000;                              // the lead changes hands
+  pump();
+  assert.equal(g.spectate, bots[1], 'camera went with the crown');
+
+  g.player.score = 99999;                            // you take the lead yourself
+  pump();
+  assert.equal(g.spectate, null, 'handed back rather than freezing your own tank');
+  assert.equal(g.followLeader, true, 'but still following');
+
+  runCommand(c, '/viewleader off');
+  bots[1].score = 1e6; pump();
+  assert.equal(g.followLeader, false, '/viewleader off stops the follow');
+  assert.equal(g.spectate, null);
+});
+
 // render.js is browser script with no DOM at load time, and updateCamera only
 // reads this.game / this.cam — so the offline half of /view is testable here.
 vm.runInContext(readFileSync(new URL('js/render.js', import.meta.url), 'utf8'), ctx, { filename: 'js/render.js' });

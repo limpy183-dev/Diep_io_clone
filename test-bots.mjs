@@ -13,6 +13,15 @@ const { BOT_BUILDS, botClassScore, botReach, botFlightTicks, tickBot, TANK_DEFS,
 const { botScan, botDps, botShouldFight, SHAPES, BOT_SKILL: SK } = ctx;
 const { botAimedAt, botShootingAt, botThreatens, botWinOdds, angleDiff, TANK_DEFS: DEFS } = ctx;
 const { botClear2, botFarmBudget, SHAPES: SH, respawnLevel, Shape: Sh, REGEN_HP_WAIT } = ctx;
+const { BOT_ROLES, botContact, botCanTank, botRole, CONTACT_TOUCHES } = ctx;
+
+// A role is rolled at spawn and shifts what a bot wants. Every test that is not
+// about roles is measuring the AI itself, so pin the neutral one here and let
+// the role tests set it deliberately — a random personality is noise elsewhere.
+const ROLE = (k) => BOT_ROLES.filter((r) => r.key === k)[0];
+const BALANCED = ROLE('balanced');
+const rawSpawnBot = ctx.Game.prototype.spawnBot;
+ctx.Game.prototype.spawnBot = function () { const t = rawSpawnBot.call(this); t.botRole = BALANCED; return t; };
 
 // One bot in an empty arena, plus a ring of whatever shapes the caller wants.
 function withShapes(difficulty, level, kinds, radius) {
@@ -489,6 +498,176 @@ test('a bot on its own always has something to shoot at', () => {
   }
 });
 
+console.log('\nContact');
+test('one touch is priced at what it actually takes off the bar', () => {
+  // The multiplier vs a shape is 4, not 1: min is max(1, 1) and max is
+  // min(6, 4). A Square hits a tank for 8 and an Alpha Pentagon for 20, and
+  // missing that factor is what had bots strolling into their own food.
+  const g = bare('hard', { react: 9999 });
+  const t = place(g.spawnBot(), 0, 0);
+  const touch = (kind) => {
+    const sh = g.add(new Sh(g, kind, 400, 0));
+    sh.health = sh.maxHealth = SH[kind].health;
+    return botContact(t, sh).touch;
+  };
+  assert.equal(touch('square'), 8, 'a Square hits for 8');
+  assert.equal(touch('pentagon'), 12);
+  assert.equal(touch('alpha'), 20, 'and an Alpha Pentagon takes 20 a tick');
+});
+
+test('never closes on something a few touches would kill it with', () => {
+  // The reported bug: bots walking through Squares and Triangles at a sliver of
+  // health and dying on them. Measured over 10k ticks before this, every bot a
+  // shape killed was under 15% health and still driving.
+  const g = bare('hard', { react: 9999 });
+  const t = place(g.spawnBot(), 0, 0);
+  t.addScore(LEVEL_SCORE[20]);
+  const sh = g.add(new Sh(g, 'square', 400, 0));
+  sh.health = sh.maxHealth = SH.square.health;
+  t.health = t.maxHealth;
+  assert.equal(botCanTank(t, sh), true, 'a healthy tank shoulders a Square aside');
+  t.health = botContact(t, sh).touch * CONTACT_TOUCHES - 0.01;
+  assert.equal(botCanTank(t, sh), false, 'at a few touches left it keeps its distance');
+  assert.equal(botCanTank(t, sh), botContact(t, sh).close, 'and both spellings agree');
+});
+
+test('body damage, health and regen are what buy the right to close', () => {
+  // What the difference between farming a shape and dying on one is made of.
+  // Same class, same level, same shape — only the stats move.
+  const shapeFor = (t, kind) => {
+    const sh = t.game.add(new Sh(t.game, kind, 400, 0));
+    sh.health = sh.maxHealth = SH[kind].health;
+    return sh;
+  };
+  const build = (stats) => {
+    const g = bare('hard', { react: 9999 });
+    const t = place(g.spawnBot(), 0, 0);
+    t.addScore(LEVEL_SCORE[30]);
+    t.stats = stats.slice(); t.recompute(); t.health = t.maxHealth;
+    return t;
+  };
+  //            speed rel dmg pen bspd BODY HEALTH REGEN
+  const glass = build([0, 0, 0, 0, 0, 0, 0, 0]);
+  const tanky = build([0, 0, 0, 0, 0, 7, 7, 7]);
+  const pg = shapeFor(glass, 'pentagon'), pt = shapeFor(tanky, 'pentagon');
+  assert.ok(botContact(tanky, pt).ram < botContact(glass, pg).ram * 0.6,
+    'body damage kills it markedly faster at contact');
+  assert.ok(botContact(tanky, pt).cost < botContact(glass, pg).cost,
+    'and health plus regen makes the same seconds cheaper');
+  assert.equal(botCanTank(tanky, pt), true, 'so the body build closes');
+
+  // And the same tank, hurt, stops being that tank.
+  tanky.health = tanky.maxHealth * 0.12;
+  assert.equal(botCanTank(tanky, pt), false, 'until the bar says otherwise');
+});
+
+test('drives through what it can absorb and steers off what it cannot', () => {
+  // Most bots a shape killed were not farming it — they backed into one
+  // mid-fight or brushed past on the way somewhere. The push is priced in what
+  // a bounce costs against the bar it has left, which is the same currency the
+  // closing decision uses: a deep pool shoulders a Pentagon aside, a shallow
+  // one goes around, and it is the pool that decides, not a health percentage.
+  const push = (healthStat, hp, kind) => {
+    kind = kind || 'pentagon';
+    const g = bare('hard', { react: 9999 });
+    const t = place(g.spawnBot(), 0, 0);
+    t.addScore(LEVEL_SCORE[30]);
+    t.stats = [0, 0, 0, 0, 0, 0, healthStat, 0]; t.recompute();
+    t.health = t.maxHealth * hp;
+    // A tank to chase, dead ahead, with a shape parked in between.
+    t.aiTarget = t.aiEngaged = place(g.spawnBot(), 1400, 0);
+    const wall = g.add(new Sh(g, kind, 200, 0));
+    wall.health = wall.maxHealth = SH[kind].health;
+    g.rebuildGrid();
+    g.tick = 1; tickBot(t);
+    return t.input.right === 1;                    // 1 = still driving into it
+  };
+  // Same class, same level, same shape, same fraction of the bar left — only
+  // the health stat differs, and it is what decides. That is the whole ask:
+  // go in on the stats, not on a health percentage.
+  assert.equal(push(7, 0.5), true, 'a health build shoulders past a Pentagon at half');
+  assert.equal(push(0, 0.5), false, 'a thin bar at the same half goes around it');
+  assert.equal(push(7, 0.15), false, 'and no build drives through on a sliver');
+
+  // A bigger shape hits harder, so the same tank draws the line in a different
+  // place — no per-shape table, just what one bounce costs.
+  assert.equal(push(7, 0.75, 'hexagon'), true, 'plenty of bar for a Hexagon bump');
+  assert.equal(push(0, 1, 'hexagon'), false, 'a thin bar avoids one even at full health');
+});
+
+console.log('\nRoles');
+test('every role is a complete bag, and they pull in different directions', () => {
+  const keys = ['key', 'label', 'farm', 'fight', 'prey', 'greed', 'flee', 'ram'];
+  for (const r of BOT_ROLES) for (const k of keys)
+    assert.notEqual(r[k], undefined, (r.key || '?') + '.' + k + ' is missing');
+  const farm = BOT_ROLES.map((r) => r.farm), fight = BOT_ROLES.map((r) => r.fight);
+  assert.ok(Math.max(...farm) / Math.min(...farm) > 2, 'the farm pull has to actually spread');
+  assert.ok(Math.max(...fight) / Math.min(...fight) > 2, 'and so does the fight pull');
+  assert.equal(botRole({}).key, 'balanced', 'anything unrolled reads as neutral');
+});
+
+test('a Farmer declines the fight a Hunter takes', () => {
+  const g = bare('extreme', { react: 9999 });
+  const t = place(g.spawnBot(), 0, 0);
+  const foe = place(g.spawnBot(), 700, 0);
+  t.addScore(LEVEL_SCORE[20]); foe.addScore(LEVEL_SCORE[20]);
+  t.stats = [4, 4, 4, 4, 4, 4, 4, 5]; t.recompute(); t.health = t.maxHealth;
+  foe.stats = [4, 4, 4, 4, 4, 4, 4, 5]; foe.recompute();
+  foe.health = foe.maxHealth * 0.55;               // ahead, but not a rout
+  const odds = botWinOdds(t, foe);
+  assert.ok(odds > 0.5 && odds < 0.9, 'an even-ish fight is the interesting case, got ' + odds.toFixed(2));
+  t.botRole = ROLE('hunter');
+  assert.equal(botShouldFight(t, foe, SK.extreme), true, 'a Hunter crosses the gap for it');
+  t.botRole = ROLE('farmer');
+  assert.equal(botShouldFight(t, foe, SK.extreme), false, 'a Farmer goes back to its Pentagon');
+});
+
+test('roles pick the build that matches them', () => {
+  // A Brawler that rolled a bullet build is a Brawler in name only.
+  const g = bare('hard');
+  for (let i = 0; i < 60; i++) {
+    const t = rawSpawnBot.call(g);                 // unpinned: the real roll
+    assert.ok(t.botRole, 'every bot gets one');
+    if (t.botRole.ram >= 0) assert.equal(t.build.ram, t.botRole.ram, t.botRole.key + ' got the wrong build');
+  }
+});
+
+test('roles play visibly different games in the same arena', () => {
+  // The reported symptom: every bot beelined for every other bot and the arena
+  // was one rolling scrum. Measured as what each one is actually pointed at,
+  // pressing forward rather than backing away — level is the same claim but a
+  // dozen times noisier, and it made this test flap.
+  // Respawn stays on and the roles alternate as the arena refills. With a fixed
+  // pod the population drains, the survivors carry the whole sample, and the
+  // measurement flaps — half the runs read a spread that is not there.
+  const g = new Game('ffa', null, { headless: true, botCount: 0, difficulty: 'hard' });
+  g.mode = Object.assign({}, g.mode, { noBoss: true });
+  const pressing = { farmer: 0, hunter: 0 }, ticks = { farmer: 0, hunter: 0 };
+  let flip = 0;
+  g.spawnBot = function () {
+    const t = rawSpawnBot.call(this);
+    t.botRole = ROLE(flip++ % 2 ? 'hunter' : 'farmer');
+    return t;
+  };
+  g.botCount = 30;
+  for (let i = 0; i < 30; i++) g.spawnBot();
+  for (let i = 0; i < 4000; i++) {
+    g.step();
+    for (const t of g.entities) {
+      if (t.type !== 'tank' || !t.bot || t.dead || !t.aiGoal) continue;
+      const key = t.botRole.key;
+      if (ticks[key] === undefined) continue;
+      ticks[key]++;
+      if (t.aiGoal.type !== 'shape' && !t.fleeing) pressing[key]++;
+    }
+  }
+  const share = (k) => pressing[k] / Math.max(1, ticks[k]);
+  assert.ok(share('hunter') > share('farmer') * 2,
+    'hunters pressed ' + (share('hunter') * 100).toFixed(0) + '% of ticks, farmers '
+    + (share('farmer') * 100).toFixed(0) + '% — the roles are decoration');
+  assert.ok(share('farmer') < 0.35, 'a Farmer that fights a third of the time is not a Farmer');
+});
+
 console.log('\nReading the other tank');
 test('a hurt bot stops leaning on the shape it is eating', () => {
   // Reported: a bot with less health than a Hexagon walked into it and died.
@@ -623,7 +802,7 @@ test('notices a rammer walking at it, and does not turn its back', () => {
   assert.equal(botThreatens(p, bot), true, 'but closing on us is the threat');
 
   let tracked = 0, fired = 0, n = 0;
-  for (let i = 0; i < 200 && !bot.dead; i++) {
+  for (let i = 0; i < 200 && !bot.dead && !p.dead; i++) {   // stop when there is nothing left to track
     const ang = Math.atan2(bot.y - p.y, bot.x - p.x);
     p.input.right = Math.cos(ang) > 0.35 ? 1 : 0; p.input.left = Math.cos(ang) < -0.35 ? 1 : 0;
     p.input.down = Math.sin(ang) > 0.35 ? 1 : 0; p.input.up = Math.sin(ang) < -0.35 ? 1 : 0;
@@ -679,9 +858,12 @@ test('hurt bots break off and come back once healed', () => {
   assert.ok(!t.regening, 'never heals through someone shooting at it');
 });
 
-test('with nobody on it, a badly hurt bot leaves to heal instead, gun down', () => {
-  // The only heal worth having needs HYPER_REGEN_DELAY ticks without a scratch,
-  // so a bot that farms on at 30% never gets one. It has to actually walk off.
+test('a badly hurt bot declines the fight and drifts off, but keeps shooting', () => {
+  // Reported: bots alone in a corner pacing a small patch, not farming and not
+  // firing. That was this: healing used to drop the goal outright, which turned
+  // the gun off for up to 45 seconds at a stretch. Only being *hit* delays
+  // hyper-regen — firing never has — so healing declines tank fights and opens
+  // the gap, and goes on shooting shapes the whole way.
   const g = bare('hard', { react: 9999 });
   const t = place(g.spawnBot(), 0, 0);
   const food = g.add(new Sh(g, 'square', 300, 0));
@@ -692,11 +874,11 @@ test('with nobody on it, a badly hurt bot leaves to heal instead, gun down', () 
   t.health = t.maxHealth * (REGEN_HP_WAIT - 0.05);
   g.tick = 1; tickBot(t);
   assert.equal(t.regening, true, 'under the wait line with nothing latched on');
-  assert.equal(t.input.fire, 0, 'the silent gun is the point — no goal left to shoot');
-  assert.equal(t.input.left, 1, 'walking away from whoever hit it');
+  assert.equal(t.input.fire, 1, 'gun stays on — a silent tank is the bug, not the fix');
+  assert.equal(t.input.left, 1, 'opening the gap from whoever hit it');
   assert.equal(t.fleeing, false, 'this is leaving, not a fighting retreat');
 
-  // The gap up to 0.75 is what stops it going back to the farm at 36% and
+  // The gap up to 0.75 is what stops it going back into a fight at 36% and
   // getting knocked straight down again.
   t.health = t.maxHealth * 0.6;
   g.tick = 2; tickBot(t);
@@ -705,18 +887,35 @@ test('with nobody on it, a badly hurt bot leaves to heal instead, gun down', () 
   t.health = t.maxHealth * 0.8;
   g.tick = 3; tickBot(t);
   assert.equal(t.regening, false, 'back to work');
-  assert.equal(t.input.fire, 1, 'and back on the square');
+  assert.equal(t.input.fire, 1, 'and still on the square');
 
-  // Alone with the shapes there is nothing to walk away from, so it keeps
-  // farming — the guard that stops this reading as a broken pacing tank.
+  // Alone with the shapes: nothing to walk away from, so it just farms from
+  // range. This is the case that used to read as a broken pacing tank.
   const g2 = bare('hard', { react: 9999 });
   const t2 = place(g2.spawnBot(), 0, 0);
   const food2 = g2.add(new Sh(g2, 'square', 300, 0));
   food2.health = food2.maxHealth = SH.square.health;
   t2.health = t2.maxHealth * 0.1;
   g2.tick = 1; tickBot(t2);
-  assert.ok(!t2.regening, 'no tank in sight, no reason to leave');
   assert.equal(t2.input.fire, 1, 'gun stays on');
+  assert.ok(t2.wasMoving, 'and it is going somewhere, not standing still');
+});
+
+test('a healing bot never stops playing for long', () => {
+  // The measured symptom, end to end: one bot alone with shapes, badly hurt.
+  // Before the fix it spent whole 900-tick stretches with the gun off.
+  const g = new Game('ffa', null, { headless: true, botCount: 0, difficulty: 'hard' });
+  g.botCount = 0;
+  g.mode = Object.assign({}, g.mode, { noBoss: true });
+  const t = g.spawnBot();
+  t.health = t.maxHealth * 0.15;
+  let quiet = 0, run = 0, worst = 0;
+  for (let i = 0; i < 1200 && !t.dead; i++) {
+    g.step();
+    if (t.input.fire) run = 0; else { quiet++; run++; worst = Math.max(worst, run); }
+  }
+  assert.ok(worst < 60, 'longest silent stretch was ' + worst + ' ticks');
+  assert.ok(quiet / 1200 < 0.15, 'held fire for ' + (quiet / 12).toFixed(0) + '% of the run');
 });
 
 console.log('\nStability');
@@ -793,7 +992,12 @@ test('works up to bigger shapes as its damage grows, never before', () => {
     prev = t.aiFarm.maxHealth;
     if (first === null) first = t.aiFarm.kind;
   }
-  assert.equal(first, 'square', 'the smallest tank should be on Squares');
+  // Not "Squares", specifically: the collision multiplier vs a shape is 4, so a
+  // level 1 tank puts 20 a tick into a Triangle by leaning on it and eats 30 HP
+  // of it in half a second for 10 of its own. Squares and Triangles are both the
+  // right answer at that size; a Pentagon at eleven seconds of standing still is
+  // not, and neither is anything above it.
+  assert.ok(first === 'square' || first === 'triangle', 'the smallest tank was on ' + first);
 
   // And it holds when the big one is the closest thing on the map, which is
   // where a nearest-first fallback used to put small bots straight back on it.

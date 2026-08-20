@@ -87,9 +87,11 @@
   // owns it, so the click is relayed as the same /view command the user types.
   function viewing() { return !!(game && game.viewing && game.spectate && !game.spectate.dead); }
 
-  function applyView(e) {
-    if (online) net.sendChat('/view ' + (e && e.name ? e.name : 'off'));
-    else { game.spectate = e || null; game.viewing = !!e; }
+  // follow: /viewleader, re-pointed at game.leader every pump.
+  function applyView(e, follow) {
+    if (e && e === player()) e = null;            // watching your own tank would freeze it
+    if (online) net.sendChat(follow ? '/viewleader' : '/view ' + (e && e.name ? e.name : 'off'));
+    else { game.spectate = e || null; game.viewing = !!e; game.followLeader = !!follow; }
   }
 
   function tankAt(wx, wy) {
@@ -347,6 +349,7 @@
       acc -= MSPT; steps++;
     }
     if (steps === cap) acc = 0;
+    if (game.followLeader) applyView(game.leader, true);   // the crown moves, the camera follows
     flushQueue();
   }
 

@@ -400,7 +400,11 @@ function commandCtx(client, arena) {
     game: g, tank: t, online: true,
     name: (t && t.name) || 'an unnamed tank',
     sandbox: cheatsOK(g),
-    setView: (e) => { client.spectate = e || null; client.viewing = !!e; },
+    setView: (e, follow) => {
+      client.followLeader = !!follow;             // /viewleader: tickArena re-points it
+      if (e === client.tank) e = null;            // watching your own tank would freeze it
+      client.spectate = e || null; client.viewing = !!e;
+    },
     say: (text) => sendChat(client, 1, null, text, '#FFDE43'),
     broadcast: (text) => chatAll(arena, 1, null, text, '#85E8A0'),
     whisper: (name, text) => {
@@ -479,6 +483,10 @@ function tickArena(a) {
       for (const n of c.tank.notes) if (!n.sent) { n.sent = true; sendNotify(c, n.text); }
     }
     if (g.mapDirty) sendMapState(c, g);
+    if (c.followLeader) {                         // /viewleader: whoever is #1 right now
+      c.spectate = g.leader && g.leader !== c.tank ? g.leader : null;
+      c.viewing = !!c.spectate;
+    }
     sendUpdate(c, a);
   }
   g.mapDirty = false;
@@ -645,6 +653,7 @@ function spawn(client, name, old) {
   client.tank = t;
   client.spectate = null;
   client.viewing = false;
+  client.followLeader = false;
   client.seen = new Set();
   client.camX = t.x; client.camY = t.y;
   sendWelcome(client, client.arena);
