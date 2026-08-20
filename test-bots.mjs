@@ -12,7 +12,7 @@ const { Game, Entity, Shape, BOT_SKILL, BOT_DIFFICULTIES, botSkill } = ctx;
 const { BOT_BUILDS, botClassScore, botReach, botFlightTicks, tickBot, TANK_DEFS, LEVEL_SCORE } = ctx;
 const { botScan, botDps, botShouldFight, SHAPES, BOT_SKILL: SK } = ctx;
 const { botAimedAt, botShootingAt, botThreatens, botWinOdds, angleDiff, TANK_DEFS: DEFS } = ctx;
-const { botClear2 } = ctx;
+const { botClear2, botFarmBudget, SHAPES: SH, respawnLevel, Shape: Sh, REGEN_HP_WAIT } = ctx;
 
 // One bot in an empty arena, plus a ring of whatever shapes the caller wants.
 function withShapes(difficulty, level, kinds, radius) {
@@ -202,8 +202,13 @@ test('closes on a pentagon but keeps its distance from an Alpha', () => {
   for (const [kind, closes] of [['pentagon', true], ['alpha', false]]) {
     const g = bare('hard', { react: 9999 });
     const t = place(g.spawnBot(), 0, 0);
+    t.build = BOT_BUILDS.filter((b) => !b.ram)[0];
     t.addScore(LEVEL_SCORE[30]);
-    t.aiFarm = g.add(new Shape(g, kind, 300, 0));
+    // Spend the points: a level 30 bot holding all 28 of them is not a thing the
+    // game produces, and an unbuilt one has the damage and the health pool of a
+    // level 1, which changes what it can afford to stand next to.
+    for (let i = 0; i < 80; i++) for (const w of t.build.order) if (t.upgradeStat(w)) break;
+    g.add(new Shape(g, kind, 300, 0));      // found and priced by the scan, as in play
     g.tick = 1; tickBot(t);
     assert.equal(t.input.right === 1, closes, `should ${closes ? 'close on' : 'back off from'} a ${kind}`);
   }
@@ -485,6 +490,40 @@ test('a bot on its own always has something to shoot at', () => {
 });
 
 console.log('\nReading the other tank');
+test('a hurt bot stops leaning on the shape it is eating', () => {
+  // Reported: a bot with less health than a Hexagon walked into it and died.
+  // Measured over 10k ticks: every bot that died on a shape was already under
+  // half health. Farm risk was priced against maxHealth, so a bot at 10% read
+  // the job exactly the same as a fresh one did.
+  const closes = (hp) => {
+    const g = bare('hard', { react: 9999 });
+    const t = place(g.spawnBot(), 0, 0);
+    t.build = BOT_BUILDS.filter((b) => !b.ram)[0];
+    t.addScore(LEVEL_SCORE[20]);
+    for (let i = 0; i < 80; i++) for (const w of t.build.order) if (t.upgradeStat(w)) break;
+    t.health = t.maxHealth * hp;
+    const sh = g.add(new Shape(g, 'triangle', 300, 0));
+    sh.health = sh.maxHealth = SH.triangle.health;
+    g.tick = 1; tickBot(t);
+    assert.equal(t.aiFarm, sh, 'the only thing on the field');
+    return t.input.right === 1;                    // 1 = closing on it, 0 = holding off
+  };
+  assert.equal(closes(1), true, 'at full health a Triangle is just food');
+  assert.equal(closes(0.2), false, 'at a fifth it should shoot from where it stands');
+});
+
+test('the health it will spend is what it has over the reserve', () => {
+  const g = bare('hard', { react: 9999 });
+  const t = place(g.spawnBot(), 0, 0);
+  t.addScore(LEVEL_SCORE[20]);
+  t.health = t.maxHealth;
+  assert.ok(botFarmBudget(t) > 0, 'a healthy bot has something to spend');
+  t.health = t.maxHealth * 0.5;
+  assert.ok(botFarmBudget(t) <= 0, 'at the reserve it is done spending');
+  t.health = t.maxHealth * 0.1;
+  assert.ok(botFarmBudget(t) < 0, 'and below it everything on the field is too expensive');
+});
+
 test('engages on the odds and on whether that tank is even looking', () => {
   // Reported: bots locked onto anything that entered a radius. Three things
   // decide it now — who wins the damage race, how far away it is, and whether
@@ -627,14 +666,57 @@ test('hurt bots break off and come back once healed', () => {
   const g = bare('extreme', { react: 9999 });
   const t = place(g.spawnBot(), 0, 0);
   const foe = place(g.spawnBot(), 300, 0);
-  t.aiTarget = foe;
+  t.aiTarget = t.aiEngaged = foe;                 // latched: it is in a fight, not picking one
   t.health = t.maxHealth * 0.2;
-  g.tick = 1; tickBot(t);
+  g.tick = 1; t.lastDamage = g.tick;              // and taking fire, which is what makes it one
+  tickBot(t);
   assert.equal(t.fleeing, true);
+  assert.equal(t.input.fire, 1, 'a fighting retreat still shoots');
   assert.equal(t.input.left, 1, 'should be backing away from something at +x');
   t.health = t.maxHealth * 0.9;
-  g.tick = 2; tickBot(t);
+  g.tick = 2; t.lastDamage = g.tick; tickBot(t);
   assert.equal(t.fleeing, false, 'should re-engage once patched up');
+  assert.ok(!t.regening, 'never heals through someone shooting at it');
+});
+
+test('with nobody on it, a badly hurt bot leaves to heal instead, gun down', () => {
+  // The only heal worth having needs HYPER_REGEN_DELAY ticks without a scratch,
+  // so a bot that farms on at 30% never gets one. It has to actually walk off.
+  const g = bare('hard', { react: 9999 });
+  const t = place(g.spawnBot(), 0, 0);
+  const food = g.add(new Sh(g, 'square', 300, 0));
+  food.health = food.maxHealth = SH.square.health;
+  t.aiFarm = food;
+  // A tank in sight but not yet on it: something to leave, nothing latched on.
+  t.lastHitBy = t.aiTarget = place(g.spawnBot(), 400, 0);
+  t.health = t.maxHealth * (REGEN_HP_WAIT - 0.05);
+  g.tick = 1; tickBot(t);
+  assert.equal(t.regening, true, 'under the wait line with nothing latched on');
+  assert.equal(t.input.fire, 0, 'the silent gun is the point — no goal left to shoot');
+  assert.equal(t.input.left, 1, 'walking away from whoever hit it');
+  assert.equal(t.fleeing, false, 'this is leaving, not a fighting retreat');
+
+  // The gap up to 0.75 is what stops it going back to the farm at 36% and
+  // getting knocked straight down again.
+  t.health = t.maxHealth * 0.6;
+  g.tick = 2; tickBot(t);
+  assert.equal(t.regening, true, 'not done until it is actually patched up');
+
+  t.health = t.maxHealth * 0.8;
+  g.tick = 3; tickBot(t);
+  assert.equal(t.regening, false, 'back to work');
+  assert.equal(t.input.fire, 1, 'and back on the square');
+
+  // Alone with the shapes there is nothing to walk away from, so it keeps
+  // farming — the guard that stops this reading as a broken pacing tank.
+  const g2 = bare('hard', { react: 9999 });
+  const t2 = place(g2.spawnBot(), 0, 0);
+  const food2 = g2.add(new Sh(g2, 'square', 300, 0));
+  food2.health = food2.maxHealth = SH.square.health;
+  t2.health = t2.maxHealth * 0.1;
+  g2.tick = 1; tickBot(t2);
+  assert.ok(!t2.regening, 'no tank in sight, no reason to leave');
+  assert.equal(t2.input.fire, 1, 'gun stays on');
 });
 
 console.log('\nStability');
@@ -676,7 +758,10 @@ function fight(skA, skB, swap) {
   if (a.dead === b.dead) return null;                    // timeout or mutual kill
   return ((a.dead ? b : a) === a) === !swap ? 'a' : 'b';
 }
-function winRate(lo, hi, n = 30) {
+// n=30 put the 60% bar about one sigma from the true ~70%, so this failed on
+// roughly one run in five with nothing wrong. Fights are two tanks in an empty
+// arena and cost almost nothing; buy the confidence interval instead.
+function winRate(lo, hi, n = 120) {
   let a = 0, b = 0;
   for (let i = 0; i < n; i++) {
     const r = fight(BOT_SKILL[lo], BOT_SKILL[hi], i % 2 === 1);   // swap sides each fight
@@ -721,6 +806,35 @@ test('works up to bigger shapes as its damage grows, never before', () => {
   far.health = far.maxHealth = SHAPES.square.health;
   botScan(t, SK.hard, true);
   assert.equal(t.aiFarm, far, 'took the near Hexagon over a Square five times further out');
+});
+
+console.log('\nRespawn');
+test('a dead bot comes back one rung down, not from scratch', () => {
+  // The whole arena resetting to zero on every death is why a Very Hard board
+  // used to churn in the low hundreds forever: ~200 bot deaths a minute against
+  // a population that always restarted at level 1.
+  const g = new Game('ffa', null, { headless: true, botCount: 1, difficulty: 'medium' });
+  const dead = g.entities.filter((e) => e.type === 'tank' && e.bot)[0];
+  dead.addScore(LEVEL_SCORE[20] - dead.score);
+  assert.equal(dead.level, 20);
+  dead.kill(null);
+  assert.equal(g.botRespawn.join(), String(respawnLevel(20)));
+  const back = g.spawnBot();
+  assert.equal(back.level, respawnLevel(20), 'came back at level ' + back.level);
+  assert.ok(back.level > 1 && back.level < 20, 'respawn must cost something, and not everything');
+  assert.equal(g.botRespawn.length, 0, 'the slot was consumed');
+  assert.equal(g.spawnBot().level, 1, 'an empty queue still spawns fresh bots');
+});
+
+test('the queue cannot outgrow the bot count', () => {
+  // /bots 0 stops respawns; deaths must not pile up a backlog that all walks
+  // back in at once the moment bots are turned on again.
+  const g = new Game('ffa', null, { headless: true, botCount: 8, difficulty: 'medium' });
+  for (const t of g.entities.filter((e) => e.type === 'tank' && e.bot)) t.kill(null);
+  assert.ok(g.botRespawn.length <= 8, g.botRespawn.length + ' queued for 8 slots');
+  g.botCount = 0;
+  g.spawnBot().kill(null);
+  assert.equal(g.botRespawn.length, 0);
 });
 
 console.log('\n' + passed + ' passed\n');

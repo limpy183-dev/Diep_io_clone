@@ -495,15 +495,17 @@ function localOverlay(g) {
   return out;
 }
 
+// Watching someone (/view, /clickview) shows their level and score, not yours.
 Renderer.prototype.drawStatus = function () {
-  var g = this.game, p = g.player, c = this.ctx;
+  var g = this.game, p = this.statsOwner(), c = this.ctx;
   if (!p) return;
   var w = 420, x = (this.canvas.width - w) / 2, y = this.canvas.height - 44;
   var span = LEVEL_SCORE[Math.min(MAX_LEVEL, p.level) + 1] - LEVEL_SCORE[p.level];
   var into = p.level >= MAX_LEVEL ? 1 : (p.score - LEVEL_SCORE[p.level]) / (span || 1);
   // gold plate is a static nameplate; the green bar above is the XP progress
   this.bar(x, y, w, 26, 1, C.levelBar, 'Lvl ' + p.level + ' ' + p.def.name);
-  this.bar(x + 40, y - 30, w - 80, 22, into, C.scoreBar, 'Score: ' + abbrev(p.score));
+  this.bar(x + 40, y - 30, w - 80, 22, into, C.scoreBar,
+    (p === g.player ? '' : p.name + ' - ') + 'Score: ' + abbrev(p.score));
 };
 
 // Whose build the stat panel shows. Watching someone (/view) borrows theirs,

@@ -301,6 +301,11 @@
 
   // ---------------------------------------------------------------- loop
   var acc = 0, last = 0, netAcc = 0;
+  var simTimer = 0, simLast = 0;
+  // Wall time a single pump is allowed to replay. Browsers freeze rAF in a
+  // hidden tab and throttle background intervals to ~1 Hz, so the sim needs to
+  // catch up in bursts or an alt-tabbed arena sits exactly where you left it.
+  var SIM_CATCHUP = 2000;
   var closedAt = 0;                 // ms stamp of the offline arena closing; 0 = still open
   var CLOSE_LINGER = 5000;
 
@@ -311,6 +316,38 @@
     if (!lay) return 12;
     var dpr = canvas.width / window.innerWidth;
     return Math.round((lay.panel.y + lay.panel.h) / dpr) + 6;
+  }
+
+  // The offline sim runs off its own clock, pumped from both rAF and an interval:
+  // rAF alone stops dead in a hidden tab, which is why an arena left alone for
+  // five minutes came back with every bot still on its starting score.
+  // ponytail: after ~5 min hidden Chrome throttles intervals to 1/min, so the
+  // arena falls behind wall time instead of stopping. A worker clock would fix
+  // that if it ever matters.
+  function simPump() {
+    if (!running || online || !game) return;
+    var now = performance.now();
+    if (!simLast) simLast = now;
+    // /timewarp scales sim time against wall time; the step cap scales with it
+    // so a sped-up arena is not silently throttled back to real time.
+    var warp = game.timeScale || 1;
+    acc += Math.min(SIM_CATCHUP, now - simLast) * warp;
+    simLast = now;
+    var cap = Math.ceil(SIM_CATCHUP * warp / MSPT), steps = 0;
+    while (acc >= MSPT && steps < cap) {
+      var lp = game.player;
+      if (lp && !lp.dead) {
+        var ctrl = (lp.possessing && !lp.possessing.dead) ? lp.possessing : lp;
+        ctrl.input.up = localInput.up; ctrl.input.down = localInput.down;
+        ctrl.input.left = localInput.left; ctrl.input.right = localInput.right;
+        ctrl.input.fire = localInput.fire; ctrl.input.altFire = localInput.altFire;
+        if (!viewing()) { var mw = mouseWorld(); ctrl.mouse.x = mw.x; ctrl.mouse.y = mw.y; }
+      }
+      game.step();
+      acc -= MSPT; steps++;
+    }
+    if (steps === cap) acc = 0;
+    flushQueue();
   }
 
   function frame(now) {
@@ -340,24 +377,7 @@
       return;
     }
 
-    // /timewarp scales sim time against wall time; the step cap scales with it
-    // so a sped-up arena is not silently throttled back to real time.
-    var warp = game.timeScale || 1, cap = Math.max(5, Math.ceil(5 * warp));
-    acc += dt * warp;
-    var steps = 0;
-    while (acc >= MSPT && steps < cap) {
-      var lp = game.player;
-      if (lp && !lp.dead) {
-        var ctrl = (lp.possessing && !lp.possessing.dead) ? lp.possessing : lp;
-        ctrl.input.up = localInput.up; ctrl.input.down = localInput.down;
-        ctrl.input.left = localInput.left; ctrl.input.right = localInput.right;
-        ctrl.input.fire = localInput.fire; ctrl.input.altFire = localInput.altFire;
-        if (!viewing()) { var mw = mouseWorld(); ctrl.mouse.x = mw.x; ctrl.mouse.y = mw.y; }
-      }
-      game.step();
-      acc -= MSPT; steps++;
-    }
-    if (steps === cap) acc = 0;
+    simPump();
 
     // Closers swept the board: hold the CLOSED banner, then drop back to the
     // menu, which is what "reset" means offline — the next Play is a new arena.
@@ -366,7 +386,6 @@
       else if (now - closedAt > CLOSE_LINGER) { leave(); return; }
     }
 
-    flushQueue();
     var alpha = acc / MSPT;
     renderer.updateCamera(dt, alpha);
     renderer.render(alpha);
@@ -410,6 +429,9 @@
     CHAT.show();
     if (!online) CHAT.system('Press T or Enter to chat. Type /help for commands, /cheats for the rest.');
     running = true; last = 0; acc = 0; netAcc = 0; closedAt = 0;
+    simLast = 0;
+    if (simTimer) clearInterval(simTimer);
+    simTimer = online ? 0 : setInterval(simPump, MSPT);
     requestAnimationFrame(frame);
   }
 
@@ -588,6 +610,7 @@
 
   function leave() {
     running = false;
+    if (simTimer) { clearInterval(simTimer); simTimer = 0; }
     if (net) { net.close(); net = null; }
     online = false;
     CHAT.hide();

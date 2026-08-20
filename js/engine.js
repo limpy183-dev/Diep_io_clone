@@ -623,6 +623,16 @@ Tank.prototype.onKill = function (source) {
     // death screen, so only the killer hears about it.
     root.notify('You killed ' + (this.name || 'an unnamed tank') + '!', 150);
   }
+  // A bot comes back the way you do: one rung down, not from scratch. Without
+  // this the whole population resets to zero on every death, and at ~200 bot
+  // deaths a minute no arena ever levels up — the leaderboard just churns in the
+  // low hundreds forever. The count top-up in step() spawns the replacement, so
+  // the level waits in a queue for whoever fills the slot.
+  if (this.bot) {
+    var q = this.game.botRespawn;
+    q.push(respawnLevel(this.level));
+    while (q.length > this.game.botCount) q.shift();   // /bots 0 must not pile up a backlog
+  }
   if (this.possessing && typeof release === 'function') release(this.game, this);
   if (this.possessedBy && typeof release === 'function') release(this.game, this.possessedBy);
   var logic = this.game.logic;
@@ -1066,6 +1076,23 @@ function botClassScore(d, build) {
   return (ram ? -12 : 6 + Math.min(d.barrels.length, 6)) + d.maxHealth * 0.01;
 }
 
+// What a bot is willing to spend on a shape — health above the reserve it keeps
+// for a fight. Goes negative when it is hurt, which is the point: at that stage
+// nothing on the field is worth touching and it should be shooting from range
+// and regenerating instead.
+function botFarmBudget(t) {
+  return t.health - t.maxHealth * FARM_HP_RESERVE;
+}
+
+// What a shape costs in health to kill at contact range. Contact is intermittent
+// — a collision shoves both parties apart — so charging the whole kill at full
+// contact prices every Pentagon as lethal, and bots would kite their own food.
+// ponytail: the share is eyeballed, not instrumented. Instrument it if farming
+// ever looks too timid or too suicidal.
+function botFarmCost(e, killTicks) {
+  return e.damagePerTick * killTicks * 0.35;
+}
+
 // One pass answers both questions: who to fight, and what to farm if nobody.
 function botScan(t, sk, doShapes) {
   var g = t.game, i, e;
@@ -1088,6 +1115,7 @@ function botScan(t, sk, doShapes) {
   var pen = Math.max(0.5, (1.5 * t.stats[S_PEN] + 2) * (b0 ? b0.def.bullet.health : 1));
   var bestT = null, bestTS = -Infinity, bestS = null, bestSS = -Infinity, bestAtUs = false;
   var hitter = g.tick - t.lastDamage < 120 ? t.lastHitBy : null;   // whoever last landed one
+  var budget = botFarmBudget(t), bestCost = Infinity;
 
   for (i = 0; i < g.entities.length; i++) {
     e = g.entities[i];
@@ -1123,9 +1151,13 @@ function botScan(t, sk, doShapes) {
       // low-level bots were dying on the farm. Weighing exposure against its own
       // health pool is what produces Squares, then Triangles, then Pentagons,
       // with no per-level table anywhere.
-      var risk = e.damagePerTick * kill / Math.max(1, t.maxHealth);
+      // Against the health it has spare, not the bar it would have at full. The
+      // old line read the same on a bot at 10% as on a fresh one, which is how
+      // they ended up walking into a Hexagon they could not survive.
+      var cost = botFarmCost(e, kill);
+      var risk = cost / Math.max(1, budget);
       var ss = over * (e.scoreReward || 1) / ((walk * Math.sqrt(d2) / speed + kill) * (1 + risk));
-      if (ss > bestSS) { bestSS = ss; bestS = e; }
+      if (ss > bestSS) { bestSS = ss; bestS = e; bestCost = cost; }
       continue;
     }
     // Sight is how far it goes looking for a fight, not how far it can be shot
@@ -1164,7 +1196,9 @@ function botScan(t, sk, doShapes) {
   // the slot while the player stood in front of us; the score already weighs
   // distance, woundedness and who is coming for us, so it is the better answer.
   if (bestAtUs) t.aiEngaged = bestT;
-  if (doShapes) t.aiFarm = bestS || nearS;
+  // The fallback is whatever is nearest, which nothing priced — treat it as
+  // unaffordable so the bot shoots it from range rather than leaning on it.
+  if (doShapes) { t.aiFarm = bestS || nearS; t.aiFarmCost = bestS ? bestCost : Infinity; }
 }
 
 // Accumulate a push away from anything already in the air that is going to
@@ -1243,6 +1277,54 @@ function tickBot(t) {
   } else t.fleeing = false;
   if (backOff) t.fleeing = true;                 // fighting retreat, not a turned back
 
+  // Fleeing is not healing. Base regen is a 17-minute bar on a build that skipped
+  // the stat, so the only heal worth having is hyper-regen, and that wants
+  // HYPER_REGEN_DELAY clean ticks — which a bot backing away with the trigger
+  // held never gets. Measured before this: 0.95% of bot life spent hyper-regening
+  // and a quarter of it under half health. So stop playing and go.
+  // The entry gate is "nothing has landed on me lately", not aiEngaged: that
+  // latch holds all the way out to sight range and is set 74% of the time in a
+  // crowd, which switched this off entirely on the first cut. Being locked onto
+  // from 1200 units away is exactly the case where walking off works. Four
+  // seconds of quiet, so dipping under the line between two volleys is not a cue
+  // to turn your back. The tank in sight is what there is to leave — without one
+  // it is already as clean as it will get, and a silent walk away from nobody
+  // just reads as a broken tank.
+  // ponytail: 100 and 25 are eyeballed; every value from 50 to 150 measured the
+  // same inside run-to-run noise, so there is nothing finer to tune them against
+  // without a seeded arena.
+  var clean = g.tick - t.lastDamage;
+  if (t.regening) {
+    // Patched up, or the run is not working and it is being shot in the back.
+    if (t.health > t.maxHealth * 0.75 || (clean < 25 && t.aiEngaged)) t.regening = false;
+  } else if (t.health < t.maxHealth * REGEN_HP_WAIT && clean > 100 && t.aiTarget && !t.aiTarget.dead) {
+    t.regening = true;
+  }
+  if (t.regening) {
+    tgt = farmable = null;                       // no goal -> gun off, further down
+    t.fleeing = false;
+    // Toward the empty part of the map, not just away from the last shot. Being
+    // hurt is what puts a bot at the top of everyone's target list (botScan pays
+    // 2x for a wounded one), so a retreat that only backs off one hunter walks
+    // straight into the next. Measured: healthy bots clear the 30s line a third
+    // of the time, hurt ones 0.1% — the gap is entirely about who is nearby.
+    // Sticky heading, so this sweep runs a tenth as often as the retreat does.
+    if (t.wander === undefined || g.tick % 10 === t.id % 10) {
+      var rx = 0, ry = 0, tag = g.tick * 24593 + t.id;
+      g.nearby(t.x, t.y, 1000, function (o) {
+        if (o.fledBy === tag) return;
+        o.fledBy = tag;
+        if (o === t || o.dead || o.owner || (o.type !== 'tank' && o.type !== 'boss')) return;
+        if (o.team !== null && o.team === t.team) return;
+        var dx = t.x - o.x, dy = t.y - o.y, d2 = dx * dx + dy * dy;
+        if (d2 < 1) return;
+        rx += dx / d2; ry += dy / d2;             // inverse-square: the close one decides
+      });
+      if (rx || ry) t.wander = Math.atan2(ry, rx);
+      else if (t.lastHitBy && !t.lastHitBy.dead) t.wander = Math.atan2(t.y - t.lastHitBy.y, t.x - t.lastHitBy.x);
+    }
+  }
+
   // Whether a given class can actually crack a given shape is a question about
   // bullet penetration, body damage and regeneration that is not worth
   // modelling — and getting it wrong strands a bot forever. So just watch the
@@ -1269,7 +1351,14 @@ function tickBot(t) {
     // pentagon dies long before its contact damage matters — close in and farm.
     // An Alpha Pentagon carries 3000 HP at 5 damage a tick and will outlast
     // anything hugging it, so it gets kited exactly like a tank does.
-    var slugfest = !tgt && goal.health * goal.damagePerTick > 2000;
+    // Closing on a shape means taking its contact damage for the whole job. That
+    // is free with health to spare and fatal without, so the same Square it
+    // shouldered aside at full health gets kited once it is down to its reserve.
+    // Unpriced means unaffordable: the cost is written by the shape scan, which
+    // runs on a lazier cadence than this does, and reading undefined as "free" is
+    // the same mistake in miniature.
+    var farmCost = t.aiFarmCost === undefined ? Infinity : t.aiFarmCost;
+    var slugfest = !tgt && (goal.health * goal.damagePerTick > 2000 || farmCost > botFarmBudget(t));
     // Extra spacing against a body-damage tank: touching you is its whole weapon.
     var ram = !!(tgt && tgt.barrels && tgt.barrels.length === 0);
     var ideal = t.rammer ? 0
@@ -1287,7 +1376,7 @@ function tickBot(t) {
     aim = botAim(t, goal, sk);
     boost = sk.sense >= 0.5 && !tgt && !t.rammer && !t.aiDrone && d > 900;
   } else {
-    if (t.wander === undefined || g.tick % 90 === t.id % 90) t.wander = Math.random() * Math.PI * 2;
+    if (t.wander === undefined || (!t.regening && g.tick % 90 === t.id % 90)) t.wander = Math.random() * Math.PI * 2;
     mv.x += Math.cos(t.wander); mv.y += Math.sin(t.wander);
     aim = t.wander;
   }
@@ -1303,6 +1392,24 @@ function tickBot(t) {
   t.mouse.y = t.y + Math.sin(aim) * aimDist;
 
   botDodge(t, sk, mv);
+
+  // Most bots that die on a shape were not farming it — they backed into it
+  // mid-fight, or brushed past on the way somewhere. At full health that is a
+  // scratch and not worth steering around; below the reserve it is the whole
+  // remaining bar, so push off anything solid it is not currently shooting.
+  if (botFarmBudget(t) < 0) {
+    var seen = g.tick * 31337 + t.id;             // a shape spanning four cells is one shape
+    g.nearby(t.x, t.y, 260, function (p) {
+      if (p.shoved === seen) return;
+      p.shoved = seen;
+      if (p.dead || p === goal || p.type !== 'shape') return;
+      var dx = t.x - p.x, dy = t.y - p.y, span = t.size + p.size + 70;
+      var d = Math.hypot(dx, dy);
+      if (d > span || d < 1) return;
+      var f = (1 - d / span) * 1.6;
+      mv.x += dx / d * f; mv.y += dy / d * f;
+    });
+  }
 
   // Maze walls. Pure repulsion, so it rounds corners but will not solve a real
   // labyrinth — the stuck check below is what covers the rest.
@@ -1425,6 +1532,7 @@ function Game(modeKey, playerName, opts) {
   if (!this.headless) this.player = this.spawnTank({ name: playerName, isPlayer: true });
   this.setDifficulty(opts.difficulty || 'medium');
   this.botCount = opts.botCount !== undefined ? opts.botCount : (this.mode.sandbox ? 64 : 80);
+  this.botRespawn = [];                // levels waiting to come back, one per dead bot
   for (var b = 0; b < this.botCount; b++) this.spawnBot();
 }
 
@@ -1484,9 +1592,16 @@ Game.prototype.paintTeam = function (t) {
 };
 
 Game.prototype.spawnBot = function () {
-  var t = this.spawnTank({ name: pick(BOT_NAMES) + (Math.random() < 0.4 ? ' ' + ((Math.random() * 99) | 0) : ''), bot: true });
+  var lvl = this.botRespawn.length ? this.botRespawn.shift() : 1;
+  var t = this.spawnTank({
+    name: pick(BOT_NAMES) + (Math.random() < 0.4 ? ' ' + ((Math.random() * 99) | 0) : ''),
+    bot: true, score: LEVEL_SCORE[lvl]
+  });
   t.autoFire = false;
   t.build = pick(BOT_BUILDS);
+  // Points and classes are spent one per tick by tickBot, so a level 14 spawn
+  // sorts itself out inside a second — checkUpgrades only opens the first door.
+  t.checkUpgrades();
   botClassify(t);
   return t;
 };

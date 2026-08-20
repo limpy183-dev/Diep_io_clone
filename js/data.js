@@ -101,6 +101,13 @@ var BSPEED_GAIN = 1.5;
 // a constant: under 1 so a kill is a reward and not a transfer, and so score
 // leaves the arena on every death instead of pooling in one runaway leader.
 var KILL_SCORE_SHARE = 0.25;   // TODO: unverified, tune to taste
+// Share of max health a bot keeps back to fight with rather than spend on the
+// farm. Measured: every bot that died on a shape was already under half health,
+// so the thing being protected is the ability to walk away from one.
+var FARM_HP_RESERVE = 0.5;
+// Below this a bot with nobody on it stops playing and goes to heal. Set under
+// the farm reserve: half health is "stop shouldering shapes", this is "leave".
+var REGEN_HP_WAIT = 0.35;
 var SHAPE_ROTATION = 0.01, SHAPE_ORBIT = 0.005, SHAPE_VELOCITY = 1, TURN_TIMEOUT = 300;
 
 // --- addons ------------------------------------------------------------
