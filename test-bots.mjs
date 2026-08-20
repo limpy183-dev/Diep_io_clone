@@ -237,6 +237,40 @@ test('dodge: sidesteps a bullet on a collision course, and Easy does not', () =>
   }
 });
 
+test('dodge: crashers are dodged like fire, other shapes are not', () => {
+  // Reported: bots stood there and let the mid-map Crasher belt run them down.
+  // A crasher is a homing projectile that happens to be a shape, so it goes
+  // through the same closest-approach test the bullets do.
+  for (const [kind, dodges] of [['crasherS', true], ['triangle', false]]) {
+    const g = bare('extreme', { react: 9999, strafe: 0, aimErr: 0 });
+    const t = place(g.spawnBot(), 0, 0);
+    const sh = g.add(new Shape(g, kind, 200, 0));   // dead down the +x line at us
+    sh.shiny = false; sh.vx = -26; sh.vy = 0; sh.target = t;
+    g.rebuildGrid();
+    g.tick = 1; tickBot(t);
+    assert.equal(!!(t.input.up || t.input.down), dodges, kind + ' dodge behaviour');
+  }
+});
+
+test('the crasher hunting this bot outranks the square underfoot', () => {
+  // Priced as food a crasher loses to whatever is closest, and the bill arrives
+  // anyway because it closes on its own. Only the one locked onto *us*: a
+  // crasher crossing the field stays an ordinary shape.
+  const g = bare('extreme', { react: 9999 });
+  const t = place(g.spawnBot(), 0, 0);
+  const sq = g.add(new Shape(g, 'square', 250, 0));
+  const cr = g.add(new Shape(g, 'crasherS', 0, 700));
+  for (const sh of [sq, cr]) { sh.shiny = false; sh.scoreReward = SHAPES[sh.kind].score; }
+
+  cr.target = t;
+  botScan(t, SK.extreme, true);
+  assert.equal(t.aiFarm, cr, 'should answer the one coming for it');
+
+  cr.target = null;                                  // hunting someone else
+  botScan(t, SK.extreme, true);
+  assert.equal(t.aiFarm, sq, 'a passing crasher is just a shape');
+});
+
 test('a bot pinned against a wall shakes itself loose', () => {
   const g = bare('hard', { react: 9999 });
   const t = place(g.spawnBot(), 0, 0);

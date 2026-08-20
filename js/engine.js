@@ -932,7 +932,10 @@ function botSkill(d) {
   return s;
 }
 
-// Things worth stepping out of the way of.
+// Things worth stepping out of the way of. Crashers are not in here because
+// they are shapes, not projectiles — botDodge takes them off isCrasher. Drones
+// and necro squares are, and stay ordinary incoming fire: they are owned, so
+// none of the crasher handling reaches them.
 var BOT_INCOMING = { bullet: 1, trap: 1, drone: 1, necro: 1, swarm: 1, minion: 1, skimmer: 1, rocket: 1, glider: 1, firework: 1 };
 
 // A bullet launches at cruise+30 and is then held at its cruise speed, so it
@@ -1268,6 +1271,14 @@ function botScan(t, sk, doShapes) {
       // drift and crashers chase, so at that health something else is better.
       var safe = t.health > c.touch * CONTACT_TOUCHES ? 1 : 0.05;
       var ss = safe * over * (e.scoreReward || 1) / ((walk * Math.sqrt(d2) / speed + kill) * (1 + risk));
+      // A crasher that has locked onto this bot is not really food — it closes
+      // on its own at 26 units a tick and the bill arrives whether or not the
+      // bot ever chose it. Priced as a shape it loses to whatever Square is
+      // underfoot, which is how bots ended up eaten by the mid-map belt. So
+      // shoot the thing that is coming, then go back to dinner. Only the one
+      // hunting *us*: a crasher crossing the field is an ordinary shape, and
+      // the shove pass below is what keeps the bot out of it.
+      if (e.isCrasher && e.target === t) ss *= 50;
       if (ss > bestSS) { bestSS = ss; bestS = e; }
       continue;
     }
@@ -1325,7 +1336,7 @@ function botDodge(t, sk, mv) {
   g.nearby(t.x, t.y, 300 + 260 * sk.dodge, function (p) {
     if (p.seenBy === stamp) return;
     p.seenBy = stamp;
-    if (p.dead || p.owner === t || !BOT_INCOMING[p.type]) return;
+    if (p.dead || p.owner === t || !(BOT_INCOMING[p.type] || p.isCrasher)) return;
     if (p.team !== null && p.team === t.team) return;
     var dx = p.x - t.x, dy = p.y - t.y, vx = p.vx, vy = p.vy;
     var vv = vx * vx + vy * vy;

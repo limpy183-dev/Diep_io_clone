@@ -225,6 +225,19 @@ try {
   }, 8000, 'movement to keep replicating');
   test('the entity stream stays aligned when the turret count changes');
 
+  // /view parks the camera on someone else, so the client's own tank position
+  // has to ship separately — the minimap still draws your arrow.
+  if (d.player.dead) { d.respawn(); await waitFor(() => !d.player.dead, 6000, 'Dave respawning'); }
+  const carolId = c.myId, cx = c.player.x;
+  await chatty(c, '/view Dave');
+  await waitFor(() => c.watched && c.myId !== carolId, 4000, 'the camera to move onto Dave');
+  assert.ok(c.self, 'own tank position ships alongside the watched build');
+  near(c.self.x, cx, 400, 'your own tank stays where you left it');
+  const watchedByCarol = c.entities.find((e) => e.id === c.myId);
+  assert.ok(watchedByCarol && watchedByCarol.name === 'Dave', 'the camera rides Dave, packet still aligned');
+  test('/view ships the watched build plus your own tank position');
+  await chatty(c, '/view off');
+
   const before = d.chat.length;
   for (let i = 0; i < 6; i++) c.sendChat('spam ' + i);
   await sleep(600);

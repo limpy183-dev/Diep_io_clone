@@ -181,6 +181,7 @@ NetGame.prototype.readUpdate = function (b) {
   // /view: the build of whoever we are watching. Just enough of a tank for the
   // stat panel to lay out and grey — it is read-only, so nothing else is needed.
   this.watched = null;
+  this.self = null;
   if (b.ru8()) {
     var wid = b.ru8(), wlvl = b.ru8(), ws = [];
     for (i = 0; i < 8; i++) ws.push(b.ru8());
@@ -188,6 +189,9 @@ NetGame.prototype.readUpdate = function (b) {
       tankId: wid, def: TANK_DEFS[wid] || TANK_DEFS[0], level: wlvl,
       stats: ws, statsAvailable: 0, queued: [], dead: false
     };
+    // player.x follows the camera, which is on the target — this is our own
+    // tank, sitting where we left it, for the minimap arrow.
+    this.self = { x: b.ri16(), y: b.ri16(), angle: unpackAngle(b.ru8()), dead: !alive };
   }
 
   // leaderboard

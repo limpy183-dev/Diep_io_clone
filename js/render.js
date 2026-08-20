@@ -475,14 +475,26 @@ Renderer.prototype.drawMinimap = function () {
       c.globalAlpha = 1; c.lineWidth = 1.5; c.strokeStyle = '#000'; c.stroke();
     }
   }
-  var p = g.player;
-  if (p && !p.dead) {
-    c.globalAlpha = 1; c.fillStyle = '#000';
-    c.save(); c.translate(mx(p.x), my(p.y)); c.rotate(p.angle);
+  var arrow = function (e, col) {
+    if (!e || e.dead) return;
+    c.globalAlpha = 1; c.fillStyle = col;
+    c.save(); c.translate(mx(e.x), my(e.y)); c.rotate(e.angle);
     c.beginPath(); c.moveTo(7, 0); c.lineTo(-4, -5); c.lineTo(-4, 5); c.closePath(); c.fill();
     c.restore();
-  }
+  };
+  // Online while watching someone, player.x rides the camera (i.e. them), so
+  // net.self carries our own parked tank for this arrow.
+  arrow(g.self || g.player, '#000');
+  arrow(this.viewTarget(), '#E33');
   c.restore();
+};
+
+// Whoever /view is parked on: offline the camera is ours to move (game.spectate),
+// online the server points it and we read back the entity it rides.
+Renderer.prototype.viewTarget = function () {
+  var g = this.game;
+  if (g.viewing && g.spectate && !g.spectate.dead) return g.spectate;
+  return (g.watched && g.byId) ? g.byId.get(g.myId) || null : null;
 };
 
 function localOverlay(g) {

@@ -292,6 +292,10 @@ function sendUpdate(client, arena) {
     b.u8(seen.tankId === undefined ? 0 : seen.tankId);
     b.u8(Math.min(255, seen.level || 1));
     for (let i = 0; i < 8; i++) b.u8(seen.stats[i] || 0);
+    // Your own parked tank: the camera rides the target, so this is the only
+    // way the client still knows where to put your arrow on the minimap.
+    b.i16(Math.round(t ? t.x : 0)); b.i16(Math.round(t ? t.y : 0));
+    b.u8(packAngle(t ? t.angle : 0));
   }
 
   // Leaderboard. The arena re-ranks once a second, but scores keep moving, so
