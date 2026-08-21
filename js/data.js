@@ -238,6 +238,10 @@ var DOMINATOR = {
   captureMsg: 7.5 * TPS
 };
 
+// Predator's right-click pushes the camera this far along the barrel. The bots
+// read it too, so it lives here rather than inline in the renderer.
+var PREDATOR_ZOOM = 1500;
+
 var MOTHERSHIP = {
   id: 27,
   level: 140,

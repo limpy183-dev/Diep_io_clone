@@ -131,6 +131,33 @@ function captureDominator(g, dom, source) {
   g.mapDirty = true;
 }
 
+// --- what the bots are supposed to be doing -------------------------------
+// Every mode below gets an optional botGoal(g, t): the thing this bot should be
+// working on that is not a Square. Without it the whole population played FFA in
+// an objective arena — a Dominator is level 75 and a Mothership 140, so botScan's
+// punching-up cull dropped both on sight, and nothing anywhere read g.flags or
+// g.tiles. Four modes that no bot could win except by walking into a flag.
+//
+// Big objectives are for grown tanks: a level 6 bot charging a Dominator is a
+// donation, and its own levelling is what makes it useful ten levels later.
+function botGrown(t, lvl) { return t.level >= lvl && t.health > t.maxHealth * 0.55; }
+
+// Nearest of a list, by whatever test the mode cares about.
+function botNearest(t, list, ok) {
+  var best = null, bd = Infinity;
+  for (var i = 0; i < list.length; i++) {
+    var e = list[i];
+    if (!ok(e)) continue;
+    var d = dist2(t, e);
+    if (d < bd) { bd = d; best = e; }
+  }
+  return best;
+}
+
+// A place to stand rather than a thing to shoot. vx/vy so botAim can lead it
+// like anything else instead of aiming at NaN.
+function botSpot(e, hard) { return { x: e.x, y: e.y, vx: 0, vy: 0, touch: true, hard: !!hard }; }
+
 var MODE_LOGIC = {};
 
 MODE_LOGIC.domination = {
@@ -146,7 +173,14 @@ MODE_LOGIC.domination = {
     for (i = 1; i < g.dominators.length; i++) if (g.dominators[i].team !== owner) return;
     winRound(g, teamLabel(owner) + ' controls every Dominator — ' + teamLabel(owner) + ' wins!');
   },
-  reset: function (g) { clearModeEntities(g); MODE_LOGIC.domination.init(g); }
+  reset: function (g) { clearModeEntities(g); MODE_LOGIC.domination.init(g); },
+  // Take whichever Dominator is not already ours. It shoots back hard, so this
+  // is deliberately a grown-tank job.
+  botGoal: function (g, t) {
+    if (!g.dominators || !t.team || !botGrown(t, 20)) return null;
+    var d = botNearest(t, g.dominators, function (e) { return !e.dead && e.team !== t.team; });
+    return d ? { e: d } : null;
+  }
 };
 
 // --- Tag -----------------------------------------------------------------
@@ -247,7 +281,13 @@ MODE_LOGIC.mothership = {
       return;
     }
   },
-  reset: function (g) { clearModeEntities(g); MODE_LOGIC.mothership.init(g); }
+  reset: function (g) { clearModeEntities(g); MODE_LOGIC.mothership.init(g); },
+  // Killing theirs is the entire win condition, and no bot had ever shot at one.
+  botGoal: function (g, t) {
+    if (!g.motherships || !t.team || !botGrown(t, 20)) return null;
+    var ms = botNearest(t, g.motherships, function (e) { return !e.dead && e.team !== t.team; });
+    return ms ? { e: ms } : null;
+  }
 };
 
 // Hand the wheel to the highest-scoring living player on that team.
@@ -336,7 +376,17 @@ MODE_LOGIC.breakout = {
     for (i = 0; i < g.tiles.length; i++) if (g.tiles[i].team !== owner) { all = false; break; }
     if (all && owner) winRound(g, teamLabel(owner) + ' holds the whole board — ' + teamLabel(owner) + ' wins!');
   },
-  reset: function (g) { clearModeEntities(g); MODE_LOGIC.breakout.init(g); }
+  reset: function (g) { clearModeEntities(g); MODE_LOGIC.breakout.init(g); },
+  // Ground is taken by standing on it, and only ground touching ground we hold
+  // counts — so head for the nearest neutral tile on our own frontier. No level
+  // gate worth the name: walking onto a square of floor costs nothing.
+  botGoal: function (g, t) {
+    if (!g.tiles || !t.team || !botGrown(t, 8)) return null;
+    var tile = botNearest(t, g.tiles, function (e) {
+      return e.team === null && adjacentToTeam(g, e, t.team);
+    });
+    return tile ? botSpot(tile) : null;
+  }
 };
 
 function claimTile(g, tile, team) {
@@ -471,7 +521,23 @@ MODE_LOGIC.ctf = {
       }
     }
   },
-  reset: function (g) { clearModeEntities(g); MODE_LOGIC.ctf.init(g); }
+  reset: function (g) { clearModeEntities(g); MODE_LOGIC.ctf.init(g); },
+  // Carrying one is the one objective that outranks a fight: stopping to trade
+  // shots with whoever is chasing is how a flag gets returned. Otherwise walk
+  // onto the nearest enemy flag nobody has picked up.
+  // ponytail: no defending — nobody guards our own flag or chases their carrier
+  // beyond the ordinary target scoring. Add a defender role if it reads passive.
+  botGoal: function (g, t) {
+    if (!g.flags || !t.team) return null;
+    for (var i = 0; i < g.flags.length; i++) {
+      if (g.flags[i].carrier !== t) continue;
+      var home = baseOf(g, t.team);
+      return home ? botSpot(home, true) : null;
+    }
+    if (!botGrown(t, 8)) return null;
+    var f = botNearest(t, g.flags, function (e) { return e.team !== t.team && !e.carrier; });
+    return f ? botSpot(f) : null;
+  }
 };
 
 function returnFlag(g, f) {

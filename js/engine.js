@@ -932,6 +932,11 @@ function botSkill(d) {
   return s;
 }
 
+// The same set as BOT_HOMING, keyed by the type the spawner actually writes on
+// the entity — a necrodrone comes out as 'necro'. These are the owned things
+// that are worth shooting rather than only sidestepping.
+var BOT_SWARM = { drone: 1, necro: 1, swarm: 1, minion: 1 };
+
 // Things worth stepping out of the way of. Crashers are not in here because
 // they are shapes, not projectiles — botDodge takes them off isCrasher. Drones
 // and necro squares are, and stay ordinary incoming fire: they are owned, so
@@ -949,25 +954,45 @@ function botFlightTicks(t, d) {
   var bd = b.def.bullet;
   var cruise = (20 + BSPEED_GAIN * t.stats[S_BSPEED]) * bd.speed;
   var life = 75 * (bd.lifeLength === -1 || !bd.lifeLength ? 1 : bd.lifeLength);
+  // fireBarrel zeroes accel on a trap, so a trap never holds cruise — it coasts
+  // down under friction and parks. Stepping one as if it were a bullet said a
+  // maxed Trapper threw its trap 49577 units when it actually stops at 1115,
+  // which is why every Trapper in the game stood a thousand units off leading a
+  // shot that was never going to arrive.
+  var coast = bd.type === 'trap';
   var v = cruise + 30 - (bd.scatterRate || 0) / 2, x = 0;
   for (var n = 1; n <= life; n++) {
-    v += cruise * 0.1;                 // maintainVelocity
+    if (!coast) v += cruise * 0.1;     // maintainVelocity
     x += v;
     v -= v * 0.1;                      // friction
     if (x >= d) return n;
+    if (v < 1) break;                  // parked: it gets no further, and neither does this loop
   }
   return 0;
+}
+
+// Drones home, so a spawner bolted to the side still delivers everything it
+// makes. A bullet or a trap goes where the barrel points and nowhere else, so
+// the four thrusters on the back of a Booster never touch what it is shooting
+// at. Counting them whole told a Booster it had five barrels of output when it
+// has one, and botWinOdds sent it into fights it loses four to one.
+var BOT_HOMING = { drone: 1, swarm: 1, minion: 1, necrodrone: 1 };
+function botBarrelFacing(d) {
+  if (BOT_HOMING[d.bullet.type]) return 1;
+  return Math.max(0, Math.cos(d.angle || 0));
 }
 
 // Roughly what this tank puts out per tick. Only ever used as a ratio between
 // candidate targets, so the collision multipliers that scale every one of them
 // equally are left out.
 function botDps(t) {
-  if (!t.barrels.length) return Math.max(1, t.damagePerTick);      // rammers hit with the body
+  // Drones and traps are candidates too now, and they carry neither — they hit
+  // with the body, same as a rammer.
+  if (!t.barrels || !t.barrels.length || !t.stats) return Math.max(1, t.damagePerTick);
   var dps = 0, dmg = 7 + t.stats[S_DAMAGE] * 3;
   for (var i = 0; i < t.barrels.length; i++) {
     var b = t.barrels[i];
-    dps += dmg * b.def.bullet.damage * (b.def.pellets || 1) / b.period();
+    dps += botBarrelFacing(b.def) * dmg * b.def.bullet.damage * (b.def.pellets || 1) / b.period();
   }
   return Math.max(0.02, dps);          // floor only guards the divide
 }
@@ -1020,7 +1045,11 @@ function botWinOdds(t, o) {
 // human is in front of it, or when it has nothing left to level for, and
 // otherwise walks away and farms.
 function botShouldFight(t, tgt, sk) {
-  if (t.level >= MAX_LEVEL - 2) return true;                       // nothing left to farm for
+  // Nothing left to farm for, so the bar drops to almost nothing — but not to
+  // nothing. A fight it is visibly losing still costs a level 45 bot every point
+  // it spent a whole life collecting, which is how the strongest tanks on the
+  // board ended up with the shortest lives.
+  if (t.level >= MAX_LEVEL - 2) return botWinOdds(t, tgt) > 0.25;
   // How readily the odds talk it out of something. At zero it charges whatever
   // it can see, which is most of what being an easy bot means. The role divides
   // it: a Farmer wants a much surer thing than a Hunter does before it stops
@@ -1054,9 +1083,17 @@ function botShouldFight(t, tgt, sk) {
 // can go and still arrive while the target is roughly where you aimed: one
 // second of flight. That is the range bots actually fight at.
 function botReach(t) {
-  var b = t.barrels[0];
-  if (!b) return 0;
-  return (20 + BSPEED_GAIN * t.stats[S_BSPEED]) * b.def.bullet.speed * 25 + 250;
+  var b = t.barrels && t.barrels[0];
+  if (!b || !t.stats) return 0;
+  var bd = b.def.bullet;
+  var cruise = (20 + BSPEED_GAIN * t.stats[S_BSPEED]) * bd.speed;
+  if (bd.type !== 'trap') return cruise * 25 + 250;
+  // A trap is the other case: it never gets a second of flight because it stops
+  // long before one. Its reach is simply where it comes to rest.
+  var life = 75 * (bd.lifeLength === -1 || !bd.lifeLength ? 1 : bd.lifeLength);
+  var v = cruise + 30, x = 0;
+  for (var n = 1; n <= life && v >= 1; n++) { x += v; v -= v * 0.1; }
+  return x;
 }
 
 // Far enough away to stop being our problem: outside both guns, with margin —
@@ -1094,10 +1131,13 @@ function botAim(t, goal, sk) {
 function botClassify(t) {
   var d = TANK_DEFS[t.tankId];
   t.rammer = d.barrels.length === 0;
-  t.aiDrone = d.barrels.some(function (b) {
-    var k = b.bullet.type;
-    return k === 'drone' || k === 'swarm' || k === 'minion' || k === 'necrodrone';
-  });
+  t.aiDrone = d.barrels.some(function (b) { return !!BOT_HOMING[b.bullet.type]; });
+  t.claimsSquares = !!d.flags.canClaimSquares;    // Necromancer: a Square is a drone
+  t.zoomer = !!d.flags.zoomAbility;               // Predator: right-click moves the camera
+  // fieldFactor is a real zoom-out. A Ranger's camera covers ~40% more ground
+  // than a Tank's, and a flat sight radius meant no bot ever got the awareness
+  // its class pays for — the whole sniper line saw exactly as far as a Twin.
+  t.sightScale = 1 / (d.fieldFactor || 1);
 }
 
 // Does this class suit the stat build the bot committed to at spawn? A rammer
@@ -1106,7 +1146,16 @@ function botClassScore(d, build) {
   if (!d) return -Infinity;
   var ram = d.barrels.length === 0;
   if (build.ram) return (ram ? 12 : 0) + d.speed * 2 + d.maxHealth * 0.02;
-  return (ram ? -12 : 6 + Math.min(d.barrels.length, 6)) + d.maxHealth * 0.01;
+  // Effective barrels, not a headcount: the same facing weight botDps uses. A
+  // headcount ranked a Booster's four thrusters and a Quad Tank's three side
+  // guns as real output, so gun builds kept upgrading into classes that shoot
+  // everywhere except at the thing in front of them.
+  var n = 0;
+  for (var i = 0; i < d.barrels.length; i++) n += botBarrelFacing(d.barrels[i]);
+  // ponytail: still a proxy — it prices where a barrel points, not how hard it
+  // hits. Real per-class DPS needs a drone model (a drone's worth is its time
+  // alive, not its spawn reload), which is a bigger job with no ground truth.
+  return (ram ? -12 : 6 + Math.min(n, 6)) + d.maxHealth * 0.01;
 }
 
 // What a bot is willing to spend on a shape — health above the reserve it keeps
@@ -1218,9 +1267,22 @@ function botContact(t, e) {
 function botCanTank(t, e) { return botContact(t, e).close; }
 
 // One pass answers both questions: who to fight, and what to farm if nobody.
+// Predator's zoom moves the view, it does not widen it — the camera hops up to
+// PREDATOR_ZOOM units along the barrel and shows the same screen from there. So
+// this asks the sight question from the shifted point rather than handing the
+// bot a bigger circle, which would be a different and unearned thing.
+function botZoomSees(t, e, zx, zy, sight2) {
+  if (!zx && !zy) return false;
+  var dx = e.x - t.x - zx, dy = e.y - t.y - zy;
+  return dx * dx + dy * dy <= sight2;
+}
+
 function botScan(t, sk, doShapes) {
   var g = t.game, i, e;
-  var sight2 = sk.sight * sk.sight;
+  var sight = sk.sight * (t.sightScale || 1);
+  var sight2 = sight * sight;
+  var zx = 0, zy = 0;
+  if (t.zoomer && t.input.altFire) { zx = Math.cos(t.angle) * PREDATOR_ZOOM; zy = Math.sin(t.angle) * PREDATOR_ZOOM; }
   // No farm radius. Distance is already priced in the value below, and a hard
   // cutoff made the pick flip on whether anything at all happened to fall inside
   // it. The farm knob sets how dearly the walk is charged instead — and it runs
@@ -1238,17 +1300,41 @@ function botScan(t, sk, doShapes) {
   var cull2 = 3000 * 3000, nearS = null, nearD = Infinity;
   var speed = Math.max(1, t.movementSpeed * 10);   // terminal speed under 10% friction
   var bestT = null, bestTS = -Infinity, bestS = null, bestSS = -Infinity, bestAtUs = false;
+  var reach2 = Math.pow(botReach(t), 2);           // 0 for a rammer: no gun, no answer to a swarm
   var hitter = g.tick - t.lastDamage < 120 ? t.lastHitBy : null;   // whoever last landed one
   var budget = botFarmBudget(t);
 
   for (i = 0; i < g.entities.length; i++) {
     e = g.entities[i];
-    if (e === t || e.dead || e.sides === 0 || e.owner) continue;
+    if (e === t || e.dead || e.sides === 0) continue;
     if (e.team !== null && e.team === t.team) continue;
+    // Everything with an owner used to be skipped outright here, which meant no
+    // bot had ever fired a shot at a drone. There is no other answer to a swarm:
+    // it homes, it persists, and dodging an Overlord's eight forever is only
+    // losing slowly. Bullets outrun the answer and a parked trap gets walked
+    // around, so only the homing set is worth the trigger time.
+    var drone = false, own = null;
+    if (e.owner) {
+      if (!BOT_SWARM[e.type]) continue;
+      own = e.owner; while (own.owner) own = own.owner;
+      if (own === t || (own.team !== null && own.team === t.team)) continue;
+      drone = true;
+    }
     var shape = e.type === 'shape';
     if (shape && !doShapes) continue;
-    if (!shape && e.type !== 'tank' && e.type !== 'boss') continue;
+    if (!shape && !drone && e.type !== 'tank' && e.type !== 'boss') continue;
     var d2 = dist2(t, e);
+    if (drone) {
+      // Only the one already on top of us, and only while it is still closing —
+      // chasing a drone across the map is how you get shot by the thing that
+      // sent it. And never while its owner is the nearer target: killing the
+      // spawner is what actually ends a swarm.
+      if (d2 > reach2 || !botClosing(e, t)) continue;
+      if (!own.dead && dist2(t, own) < d2) continue;
+      var dts = sk.threat * 1.5 - Math.sqrt(d2) / 400;
+      if (dts > bestTS) { bestTS = dts; bestT = e; bestAtUs = true; }
+      continue;
+    }
     if (shape) {
       if (e.id === t.farmBan) continue;                        // tried it, got nowhere
       if (e.kind === 'alpha' && t.level < 25) continue;
@@ -1290,6 +1376,10 @@ function botScan(t, sk, doShapes) {
       // drift and crashers chase, so at that health something else is better.
       var safe = t.health > c.touch * CONTACT_TOUCHES ? 1 : 0.05;
       var ss = safe * over * (e.scoreReward || 1) / ((walk * Math.sqrt(d2) / speed + kill) * (1 + risk));
+      // A Necromancer does not eat a Square, it recruits it — that conversion is
+      // the entire class, and pricing a Square at its score left Necromancer bots
+      // grinding Pentagons with an empty drone bar and nothing to fight with.
+      if (t.claimsSquares && e.kind === 'square') ss *= 8;
       // A crasher that has locked onto this bot is not really food — it closes
       // on its own at 26 units a tick and the bill arrives whether or not the
       // bot ever chose it. Priced as a shape it loses to whatever Square is
@@ -1308,7 +1398,8 @@ function botScan(t, sk, doShapes) {
     // ponytail: a shot has to land before it notices someone out there — a bot
     // being missed from beyond its sight still knows nothing. Read owners off the
     // incoming bullets in botDodge if that gap ever matters.
-    if (d2 > sight2 && e !== t.aiEngaged && !(e === hitter && d2 < botClear2(t, e, sk))) continue;
+    if (d2 > sight2 && e !== t.aiEngaged && !(e === hitter && d2 < botClear2(t, e, sk))
+        && !botZoomSees(t, e, zx, zy, sight2)) continue;
     if (e.opacity <= 0 && !t.seesInvisible) continue;          // a hidden Stalker is not there
     // Whoever is on us, plus whoever was and has not left yet — tickBot holds
     // the latch through the gaps between their shots. A fight already happening
@@ -1394,7 +1485,12 @@ function tickBot(t) {
   // get a lazier cadence than the reaction window — but an immediate look the
   // moment the one being chewed on dies, or the bot stands there with its gun off.
   var doShapes = lostFarm || g.tick % 15 === t.id % 15;
-  if (lostTank || lostFarm || doShapes || g.tick % sk.react === t.id % sk.react) botScan(t, sk, doShapes);
+  if (lostTank || lostFarm || doShapes || g.tick % sk.react === t.id % sk.react) {
+    botScan(t, sk, doShapes);
+    // What the mode wants of it, refreshed on the same schedule — sweeping 64
+    // Breakout tiles every tick for eighty bots is not worth a fresher answer.
+    t.aiObjective = (g.logic && g.logic.botGoal && sk.sense >= 0.4) ? g.logic.botGoal(g, t) : null;
+  }
   eng = t.aiEngaged;                             // the scan may have just picked one up
 
   var tgt = t.aiTarget && !t.aiTarget.dead ? t.aiTarget : null;
@@ -1489,7 +1585,19 @@ function tickBot(t) {
     }
   }
 
+  // A Dominator or a Mothership is a thing to shoot; a flag or a Breakout tile
+  // is a place to stand. Either way it beats another Square — but not a tank
+  // already on us, because a bot walking an objective with its back turned is
+  // just a donation. The exceptions are the objective that *is* the tank in
+  // front of it, and a flag already in hand, which is a run you finish.
+  var obj = t.aiObjective;
+  if (obj && obj.e && (obj.e.dead || obj.e.team === t.team)) obj = null;
+  if (obj && t.regening) obj = null;
+  if (obj && tgt && tgt !== obj.e && !obj.hard) obj = null;
+
   var goal = tgt || farmable;
+  if (obj) goal = obj.e || obj;
+  var objTouch = !!(obj && obj.touch);
   var mv = { x: 0, y: 0 }, aim, aimDist = 400, d = 0, boost = false;
 
   if (goal) {
@@ -1507,14 +1615,15 @@ function tickBot(t) {
     // Asked live against current health rather than read off the scan, which
     // runs on a lazier cadence than this does: the whole failure being fixed
     // here is a bot acting on what it could afford fifteen ticks ago.
-    var slugfest = !tgt && !botCanTank(t, goal);
+    var slugfest = !tgt && !objTouch && !botCanTank(t, goal);
     // Extra spacing against a body-damage tank: touching you is its whole weapon.
     var ram = !!(tgt && tgt.barrels && tgt.barrels.length === 0);
     // A rammer that cannot survive the contact has no shot to fall back on, so
     // standing off a shape is only ever a pause: hold at arm's length and let
     // the next scan hand it something it can actually eat.
     var stand = Math.max(220, Math.min(1100, botReach(t) * sk.range)) * (t.fleeing ? 1.8 : 1) * (ram ? 1.5 : 1);
-    var ideal = t.rammer ? (tgt || !slugfest ? 0 : 420)
+    var ideal = objTouch ? 0                     // a flag is captured by standing on it
+      : t.rammer ? (tgt || !slugfest ? 0 : 420)
       : (tgt || slugfest) ? stand
       : 260;
     // Signed, and never zero in the band around `ideal` — the old dead zone is
@@ -1522,11 +1631,21 @@ function tickBot(t) {
     mv.x += Math.cos(to) * Math.max(-1, Math.min(1, (d - ideal) / 160));
     mv.y += Math.sin(to) * Math.max(-1, Math.min(1, (d - ideal) / 160));
     if (!t.rammer && sk.strafe && tgt) {
-      if (t.strafeDir === undefined || g.tick % 140 === t.id % 140) t.strafeDir = sign();
+      // A fixed 140-tick flip is a metronome: read it once and every shot after
+      // lands. The interval is rolled along with the direction, so there is no
+      // period left to read off it.
+      if (t.strafeDir === undefined || --t.strafeFor <= 0) {
+        t.strafeDir = sign();
+        t.strafeFor = 40 + Math.floor(Math.random() * 160);
+      }
       mv.x += -Math.sin(to) * sk.strafe * t.strafeDir;
       mv.y += Math.cos(to) * sk.strafe * t.strafeDir;
     }
-    aim = botAim(t, goal, sk);
+    // Feet and gun part company only here: the legs are carrying a flag home
+    // and the barrel stays on whatever is chasing it.
+    var at = (objTouch && tgt) ? tgt : goal;
+    aim = botAim(t, at, sk);
+    if (at !== goal) aimDist = Math.hypot(at.x - t.x, at.y - t.y) || 1;
     boost = sk.sense >= 0.5 && !tgt && !t.rammer && !t.aiDrone && d > 900;
   } else {
     if (t.wander === undefined || (!t.regening && g.tick % 90 === t.id % 90)) t.wander = Math.random() * Math.PI * 2;
@@ -1668,7 +1787,26 @@ function tickBot(t) {
   // wait out: anything with a barrel and a target shoots. Rammers hold fire
   // because they have no barrel to fire.
   i.fire = (goal && !t.rammer) ? 1 : 0;
-  i.altFire = (t.aiDrone && sk.sense >= 0.7 && tgt && d < 320) ? 1 : 0;   // repel, don't feed them
+  // Drone classes shove their drones off something that got on top of them.
+  // Predator holds the zoom while it has no fight, which is the only stretch
+  // where a camera 1500 units down the barrel buys it anything.
+  i.altFire = (t.aiDrone && sk.sense >= 0.7 && tgt && d < 320) ? 1
+    : (t.zoomer && sk.sense >= 0.5 && !tgt) ? 1 : 0;
+
+  // Invisibility is bought with stillness: Tank.step only lets opacity fall on a
+  // tick with no movement input and no trigger held. A Stalker that walks and
+  // shoots the whole time is a Sniper with worse stats, and a Landmine that does
+  // it is a Smasher with worse stats — which is what all three classes carrying
+  // the flag were, because nothing in here ever chose to stop. So when the mark
+  // is still walking in, stand dead still and let it come.
+  if (t.invisible && sk.sense >= 0.5 && tgt && !t.fleeing && !t.regening && clean > 30
+      && d > (t.rammer ? (t.size + tgt.size) * 2.5 : botReach(t) * 0.55)
+      && botClosing(tgt, t) && (t.ambush || 0) < 250) {
+    t.ambush = (t.ambush || 0) + 1;
+    i.up = i.down = i.left = i.right = 0;
+    i.fire = 0;
+    t.wasMoving = false;              // held still on purpose; not wedged on anything
+  } else t.ambush = 0;
 
   // spend points and take upgrades
   if (t.statsAvailable > 0) {

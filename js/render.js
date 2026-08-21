@@ -62,7 +62,7 @@ Renderer.prototype.updateCamera = function (dt, alpha) {
     // Predator's right-click pushes the camera up to 1500 units toward the cursor
     if (p.def.flags.zoomAbility && p.input.altFire) {
       var d = Math.hypot(p.mouse.x - tx, p.mouse.y - ty);
-      var k = Math.min(1500, d) / (d || 1);
+      var k = Math.min(PREDATOR_ZOOM, d) / (d || 1);
       tx += (p.mouse.x - tx) * k; ty += (p.mouse.y - ty) * k;
     }
     this.cam.x = lerp(this.cam.x, tx, fPos);

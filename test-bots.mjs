@@ -13,7 +13,7 @@ const { BOT_BUILDS, botClassScore, botReach, botFlightTicks, tickBot, TANK_DEFS,
 const { botScan, botDps, botShouldFight, SHAPES, BOT_SKILL: SK } = ctx;
 const { botAimedAt, botShootingAt, botThreatens, botWinOdds, angleDiff, TANK_DEFS: DEFS } = ctx;
 const { botClear2, botFarmBudget, SHAPES: SH, respawnLevel, Shape: Sh, REGEN_HP_WAIT } = ctx;
-const { BOT_ROLES, botContact, botCanTank, botRole, CONTACT_TOUCHES } = ctx;
+const { BOT_ROLES, botContact, botCanTank, botRole, CONTACT_TOUCHES, botClassify } = ctx;
 
 // A role is rolled at spawn and shifts what a bot wants. Every test that is not
 // about roles is measuring the AI itself, so pin the neutral one here and let
@@ -56,6 +56,19 @@ function bare(difficulty, skillOverrides) {
 }
 function place(t, x, y) { t.x = t.px = x; t.y = t.py = y; return t; }
 function aimAngle(t) { return Math.atan2(t.mouse.y - t.y, t.mouse.x - t.x); }
+// botClassify caches the per-class facts the AI reads every tick, and tickBot
+// only calls it on a class change — so a test that pokes botScan directly has
+// to stand in for that itself.
+function setClass(t, n) {
+  t.setTank(byName(n).id); t.recompute();
+  botClassify(t); t.aiTankId = t.tankId;
+  return t;
+}
+function byName(n) {
+  const d = TANK_DEFS.filter(Boolean).filter((x) => x.name === n)[0];
+  assert.ok(d, 'no tank called ' + n);
+  return d;
+}
 
 console.log('\nDifficulty table');
 test('every preset defines every knob, and they order easy -> extreme', () => {
@@ -1092,6 +1105,267 @@ test('the queue cannot outgrow the bot count', () => {
   g.botCount = 0;
   g.spawnBot().kill(null);
   assert.equal(g.botRespawn.length, 0);
+});
+
+console.log('\nBallistics and output');
+test('a trap is modelled as a trap: it coasts to a stop, it does not fly', () => {
+  // fireBarrel zeroes accel on a trap, so it never holds cruise. The model
+  // stepped one as if it did and came out at 49577 units of carry against a real
+  // 1115, which is why Trappers stood a thousand units off leading a shot that
+  // was never going to arrive.
+  const g = bare('hard', { react: 9999 });
+  const t = place(g.spawnBot(), 0, 0);
+  setClass(t, 'Trapper');
+  t.bot = false; t.autoFire = true;
+  t.mouse.x = t.x + 4000; t.mouse.y = t.y;
+  let trap = null;
+  for (let i = 0; i < 200 && !trap; i++) { g.step(); trap = g.entities.filter((e) => e.type === 'trap')[0]; }
+  assert.ok(trap, 'expected a trap');
+  const start = trap.x;
+  let carry = 0, n = 0;
+  while (!trap.dead && n < 800) { g.step(); n++; carry = Math.max(carry, trap.x - start); }
+  assert.ok(carry > 0, 'the trap never moved');
+  assert.ok(Math.abs(botReach(t) - carry) < carry * 0.3,
+    'reach says ' + Math.round(botReach(t)) + ', the trap stops at ' + Math.round(carry));
+  // And the model refuses to promise a flight time it cannot deliver.
+  assert.equal(botFlightTicks(t, carry * 3), 0, 'claimed a trap reaches three times as far as it does');
+});
+
+test('a barrel that points backwards is not counted as output', () => {
+  // A Booster has one gun and four thrusters. Counting all five told it it
+  // out-DPSed everything, and botWinOdds sent it into fights it loses.
+  const g = bare('hard', { react: 9999 });
+  const boost = place(g.spawnBot(), 0, 0), twin = place(g.spawnBot(), 900, 0);
+  setClass(boost, 'Booster');
+  setClass(twin, 'Twin');
+  const fwd = boost.barrels.filter((b) => Math.abs(b.def.angle) < 0.1).length;
+  assert.equal(boost.barrels.length - fwd, 4, 'expected four thrusters on a Booster');
+  assert.ok(botDps(boost) < botDps(twin),
+    'a Booster with one forward gun should not out-DPS a Twin with two');
+});
+
+test('class choice ranks effective barrels, not a headcount', () => {
+  const gun = BOT_BUILDS.filter((b) => !b.ram)[0];
+  assert.ok(botClassScore(byName('Triplet'), gun) > botClassScore(byName('Booster'), gun),
+    'three forward guns should outrank one gun and four thrusters');
+});
+
+console.log('\nSwarms');
+test('shoots the drone that is on it, and the spawner when that is nearer', () => {
+  // Everything with an owner used to be skipped in the scan outright, so no bot
+  // had ever fired at a drone: an Overlord's eight had no answer but running.
+  const g = bare('extreme', { react: 9999 });
+  const t = place(g.spawnBot(), 0, 0);
+  t.addScore(LEVEL_SCORE[30]);
+  const foe = place(g.spawnBot(), 2400, 0);
+  const drone = g.add(new Entity(g, { type: 'drone', x: 500, y: 0, size: 12, damage: 5 }));
+  drone.owner = foe; drone.vx = -8; drone.vy = 0;          // closing on the bot at the origin
+  g.rebuildGrid(); botScan(t, SK.extreme, false);
+  assert.equal(t.aiTarget, drone, 'ignored a drone closing from 500 units');
+
+  // Same drone, owner now the nearer of the two: kill the spawner instead.
+  place(foe, 300, 0);
+  g.rebuildGrid(); botScan(t, SK.extreme, false);
+  assert.equal(t.aiTarget, foe, 'shot the drone while its owner stood closer');
+});
+
+test('bullets and parked traps are dodged, never chased', () => {
+  for (const kind of ['bullet', 'trap']) {
+    const g = bare('extreme', { react: 9999 });
+    const t = place(g.spawnBot(), 0, 0);
+    t.addScore(LEVEL_SCORE[30]);
+    const foe = place(g.spawnBot(), 2400, 0);
+    const p = g.add(new Entity(g, { type: kind, x: 500, y: 0, size: 10, damage: 5 }));
+    p.owner = foe; p.vx = -8; p.vy = 0;
+    g.rebuildGrid(); botScan(t, SK.extreme, false);
+    assert.notEqual(t.aiTarget, p, 'went after a ' + kind);
+  }
+});
+
+console.log('\nClass abilities');
+test('the sniper line gets the awareness its field of view pays for', () => {
+  const sees = (name) => {
+    const g = bare('hard', { react: 9999 });
+    const t = place(g.spawnBot(), 0, 0);
+    setClass(t, name);
+    const foe = place(g.spawnBot(), 1900, 0);
+    g.rebuildGrid(); botScan(t, SK.hard, false);
+    return t.aiTarget === foe;
+  };
+  assert.equal(sees('Tank'), false, 'a Tank should not see 1900 units on Hard');
+  assert.equal(sees('Ranger'), true, "a Ranger's camera covers that and then some");
+});
+
+test('Predator zoom moves the view down the barrel, it does not widen it', () => {
+  const look = (angle) => {
+    const g = bare('hard', { react: 9999 });
+    const t = place(g.spawnBot(), 0, 0);
+    setClass(t, 'Predator');
+    t.angle = angle; t.input.altFire = 1;
+    const foe = place(g.spawnBot(), 2600, 0);           // out past sight, dead ahead
+    g.rebuildGrid(); botScan(t, SK.hard, false);
+    return t.aiTarget === foe;
+  };
+  assert.equal(look(0), true, 'zoomed down the barrel and still missed it');
+  assert.equal(look(Math.PI), false, 'saw behind itself while zoomed the other way');
+});
+
+test('a Stalker holds still to disappear; a Sniper never does', () => {
+  const run = (name) => {
+    const g = bare('extreme', { react: 9999, aimErr: 0, strafe: 0 });
+    const t = place(g.spawnBot(), 0, 0);
+    setClass(t, name);
+    t.aiTarget = place(g.spawnBot(), 1400, 0);
+    t.aiTarget.vx = -12;                                  // walking straight at us
+    g.tick = 1; tickBot(t);
+    return { moved: !!(t.input.up || t.input.down || t.input.left || t.input.right), fire: t.input.fire };
+  };
+  const stalk = run('Stalker');
+  assert.equal(stalk.moved, false, 'a Stalker that keeps walking never goes invisible');
+  assert.equal(stalk.fire, 0, 'and firing undoes it faster than anything else');
+  assert.equal(run('Sniper').fire, 1, 'a Sniper has nothing to hide and should shoot');
+});
+
+test('a Necromancer wants Squares, not the fattest shape on the board', () => {
+  const pickFor = (name) => {
+    const { g, t } = withShapes('hard', 30, ['square', 'pentagon'], 600);
+    setClass(t, name);
+    g.rebuildGrid(); botScan(t, SK.hard, true);
+    return t.aiFarm && t.aiFarm.kind;
+  };
+  assert.equal(pickFor('Necromancer'), 'square', 'a Square is a drone, not a snack');
+  assert.equal(pickFor('Overlord'), 'pentagon', 'anything else should still take the fatter shape');
+});
+
+console.log('\nHabits');
+test('the strafe has no period to read off it', () => {
+  const g = bare('extreme', { react: 9999, aimErr: 0 });
+  const t = place(g.spawnBot(), 0, 0);
+  t.aiTarget = place(g.spawnBot(), 700, 0);
+  const flips = [];
+  let last, since = 0;
+  for (let i = 1; i < 4000; i++) {
+    g.tick = i; tickBot(t); since++;
+    if (last !== undefined && t.strafeDir !== last) { flips.push(since); since = 0; }
+    last = t.strafeDir;
+  }
+  assert.ok(flips.length > 8, 'only ' + flips.length + ' flips in 4000 ticks');
+  assert.ok(new Set(flips).size > 3, 'flipped on a fixed interval: ' + flips.join(','));
+});
+
+test('a maxed bot still declines a fight it plainly loses', () => {
+  // "Nothing left to farm for" used to mean "take every fight", which is how the
+  // strongest tanks on the board ended up with the shortest lives.
+  const g = bare('hard', { react: 9999 });
+  const t = place(g.spawnBot(), 0, 0);
+  t.addScore(LEVEL_SCORE[45]);
+  const foe = place(g.spawnBot(), 1400, 0);
+  foe.addScore(LEVEL_SCORE[45]);
+  // Both fully built, so the odds turn on health alone and nothing else.
+  for (const who of [t, foe])
+    for (let i = 0; i < 80; i++) for (const w of BOT_BUILDS[0].order) if (who.upgradeStat(w)) break;
+  t.health = t.maxHealth * 0.05;                          // a sliver, against a maxed gun
+  assert.equal(botShouldFight(t, foe, SK.hard), false);
+  t.health = t.maxHealth;
+  assert.equal(botShouldFight(t, foe, SK.hard), true, 'and takes it back once healthy');
+});
+
+console.log('\nObjectives');
+// Bots played FFA in all four objective modes: a Dominator is level 75 and a
+// Mothership 140, so botScan's punching-up cull dropped both, and nothing
+// anywhere read g.flags or g.tiles.
+function objBot(mode, level) {
+  const g = new Game(mode, null, { headless: true, botCount: 0, difficulty: 'extreme' });
+  g.wantedShapes = 0;
+  g.entities = g.entities.filter((e) => e.type !== 'shape');
+  const t = g.spawnBot();
+  t.team = g.teams[0];
+  t.addScore(LEVEL_SCORE[level === undefined ? 30 : level]);
+  return { g, t };
+}
+function objective(g, t) { return g.logic.botGoal(g, t); }
+
+test('domination: a grown bot goes for a Dominator it does not own', () => {
+  const { g, t } = objBot('domination');
+  const o = objective(g, t);
+  assert.ok(o && o.e && o.e.isDominator, 'no Dominator picked');
+  assert.notEqual(o.e.team, t.team);
+  g.dominators.forEach((d) => { d.team = t.team; });
+  assert.equal(objective(g, t), null, 'kept attacking one it already holds');
+});
+
+test('domination: a small bot levels first instead of donating', () => {
+  const { g, t } = objBot('domination', 4);
+  assert.equal(objective(g, t), null);
+});
+
+test('mothership: the enemy Mothership is the job', () => {
+  const { g, t } = objBot('mothership');
+  const o = objective(g, t);
+  assert.ok(o && o.e && o.e.isMothership, 'no Mothership picked');
+  assert.notEqual(o.e.team, t.team);
+});
+
+test('breakout: heads for neutral ground touching ground we hold', () => {
+  const { g, t } = objBot('breakout');
+  place(t, 0, 0);
+  const o = objective(g, t);
+  assert.ok(o && o.touch, 'no tile picked');
+  const tile = g.tiles.filter((x) => x.x === o.x && x.y === o.y)[0];
+  assert.ok(tile && tile.team === null, 'picked ground somebody already holds');
+});
+
+// NB: this checks what the bot decides, not that a capture lands — a CTF flag
+// sits 200 units inside the defending base, and baseContact hits anything from
+// the other team for maxHealth/12 a tick and shoves it back out. Driving a level
+// 30 tank straight at one dies at 239 units with the pickup radius at 118, so
+// nobody — bot or player — can currently take a flag. That is an arena layout
+// bug, not an AI one, and it is why ctf is missing from the end-to-end test below.
+test('ctf: walks onto a loose enemy flag, and runs a carried one home', () => {
+  const { g, t } = objBot('ctf');
+  place(t, 0, 0);
+  let o = objective(g, t);
+  assert.ok(o && o.touch, 'no flag picked');
+  const flag = g.flags.filter((f) => f.x === o.x && f.y === o.y)[0];
+  assert.ok(flag && flag.team !== t.team, 'went for its own flag');
+  assert.ok(!o.hard, 'a flag on the ground is not worth ignoring a fight for');
+
+  flag.carrier = t;
+  o = objective(g, t);
+  const home = g.bases.filter((b) => b.team === t.team)[0];
+  assert.ok(o && o.hard && o.x === home.x && o.y === home.y, 'did not run it home');
+});
+
+test('a carried flag keeps the legs going home and the gun on the chaser', () => {
+  const { g, t } = objBot('ctf');
+  place(t, 0, 0);
+  const home = g.bases.filter((b) => b.team === t.team)[0];
+  g.flags.filter((f) => f.team !== t.team)[0].carrier = t;
+  const chaser = place(g.spawnBot(), 0, 900);
+  chaser.team = g.teams[1];
+  t.aiTarget = chaser; t.aiEngaged = chaser;
+  g.tick = 1; tickBot(t);
+  const toHome = Math.atan2(home.y - t.y, home.x - t.x);
+  const moving = Math.atan2(t.input.down - t.input.up, t.input.right - t.input.left);
+  assert.ok(Math.abs(angleDiff(moving, toHome)) < 1.0, 'walked the wrong way with the flag');
+  assert.ok(Math.abs(angleDiff(aimAngle(t), Math.atan2(chaser.y - t.y, chaser.x - t.x))) < 0.6,
+    'stopped covering the tank chasing it');
+});
+
+test('every objective mode actually moves its scoreboard with bots alone', () => {
+  // The end-to-end version: no players, no hand-placed goals, just bots. Each of
+  // these was flat at zero for the whole run before botGoal existed.
+  for (const [mode, read] of [
+    ['domination', (g) => g.dominators.filter((d) => d.team).length],
+    ['mothership', (g) => g.motherships.reduce((a, m) => a + (m.maxHealth - m.health), 0)],
+    ['breakout', (g) => g.tiles.filter((x) => x.team).length]
+  ]) {
+    const g = new Game(mode, null, { headless: true, botCount: 24, difficulty: 'extreme' });
+    for (const t of g.entities.filter((e) => e.type === 'tank' && e.bot)) t.addScore(LEVEL_SCORE[30]);
+    const before = read(g);
+    for (let i = 0; i < 4000; i++) g.step();
+    assert.ok(read(g) > before, mode + ' never moved: ' + before + ' -> ' + read(g));
+  }
 });
 
 console.log('\n' + passed + ' passed\n');
