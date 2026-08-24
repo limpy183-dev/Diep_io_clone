@@ -1,4 +1,4 @@
-// modes.js — the five objective game modes.
+// modes.js — the six objective game modes.
 //
 // Each entry gets init(g) once, tick(g) every frame, and optionally
 // onTankDeath / reset. Loaded after engine.js; Game looks the table up by name.
@@ -9,6 +9,15 @@ function teamLabel(team) { return team ? team.charAt(0).toUpperCase() + team.sli
 function paintTeamColors(e, team) {
   if (team && TEAM_COLORS[team]) { e.fill = TEAM_COLORS[team][0]; e.stroke = TEAM_COLORS[team][1]; }
   else { e.fill = C.neutral; e.stroke = C.neutralS; }
+}
+
+// Tag and Survival both close the field in. Clients only learn the new size from
+// a map-state packet, so every resize has to mark the map dirty.
+function setArenaSize(g, size) {
+  var a = g.arena, h = size / 2;
+  if (a.size === size) return;
+  a.left = -h; a.right = h; a.top = -h; a.bottom = h; a.size = size;
+  g.mapDirty = true;
 }
 
 function winRound(g, text) {
@@ -24,7 +33,11 @@ function clearModeEntities(g) {
     if (e.modeEntity) { e.dead = true; e.deathFrame = 0; }
   }
   g.entities = g.entities.filter(function (e) { return !e.modeEntity; });
+  // Walls are held twice — in entities and in g.walls — and a dead one left in
+  // the second list still blocks spawns and bot line of sight forever.
+  g.walls = g.walls.filter(function (w) { return !w.modeEntity; });
   g.dominators = null; g.tiles = null; g.flags = null; g.motherships = null;
+  g.ctfBarrier = null;
   g.mapDirty = true;
 }
 
@@ -102,7 +115,7 @@ function makeDominator(g, x, y) {
   t.isDominator = true;
   t.modeEntity = true;
   t.protectedUntil = 0;
-  t.minDmg = 1; t.maxDmg = 6;
+  t.minDmg = 1; t.maxDmg = 4;            // §4: boss-tier, not the tank body's 6
   lockTank(t);
   paintTeamColors(t, null);
   t.onKill = function (source) { captureDominator(g, t, source); };
@@ -194,11 +207,7 @@ MODE_LOGIC.tag = {
   tick: function (g) {
     if (--g.nextShrink <= 0) {
       g.nextShrink = TAG.shrinkInterval;
-      var a = g.arena, d = TAG.shrinkAmount;
-      if (a.right - a.left > 4000) {
-        a.left += d; a.right -= d; a.top += d; a.bottom -= d;
-        a.size = a.right - a.left;
-      }
+      if (g.arena.size > 4000) setArenaSize(g, g.arena.size - TAG.shrinkAmount * 2);
     }
     var counts = {}, alive = 0, i, e;
     for (i = 0; i < g.teams.length; i++) counts[g.teams[i]] = 0;
@@ -219,9 +228,11 @@ MODE_LOGIC.tag = {
     }
   },
   reset: function (g) {
-    var h = GAMEMODES.tag.size / 2;
-    g.arena.left = -h; g.arena.right = h; g.arena.top = -h; g.arena.bottom = h; g.arena.size = h * 2;
+    setArenaSize(g, GAMEMODES.tag.size);
     g.nextShrink = TAG.shrinkInterval;
+    // Everyone is on the winning team when the round ends. Clearing the tag lets
+    // the respawn balance the four teams again instead of restarting one-sided.
+    for (var i = 0; i < g.entities.length; i++) if (g.entities[i].type === 'tank') g.entities[i].nextTeam = null;
   }
 };
 
@@ -233,8 +244,9 @@ function makeMothership(g, team, x, y) {
   t.recompute();
   t.maxHealth = MOTHERSHIP.maxHealth;
   t.health = t.maxHealth;
-  t.absorb = 0;                          // ~100% knockback resistance
-  t.push = 24;
+  t.regenPerTick = t.maxHealth / 25000;  // recompute sized this off the pre-override pool
+  // absorb (0.01, ~99% knockback resistance) and push (8) are already what
+  // recompute() read off the def, which is exactly what §4 lists for it.
   t.damagePerTick = 20;
   t.modeEntity = true;
   t.isMothership = true;
@@ -439,6 +451,67 @@ function adjacentToTeam(g, tile, team) {
   return false;
 }
 
+// --- Survival ------------------------------------------------------------
+// One life each: the arena is sized to the tanks still standing, so it closes
+// in on its own as the round thins out, and the shape quota follows the width.
+MODE_LOGIC.survival = {
+  init: function (g) {
+    g.survivalStart = g.tick + SURVIVAL.countdown;
+    g.survivalBots = null;               // the constructor sets botCount *after* init()
+    g.survivalPeak = 0;
+    g.noRespawn = false;
+  },
+  tick: function (g) {
+    if (g.survivalBots === null) g.survivalBots = g.botCount;
+    var i, e, alive = 0, shapes = 0, last = null;
+    for (i = 0; i < g.entities.length; i++) {
+      e = g.entities[i];
+      if (e.dead) continue;
+      if (e.type === 'shape') { shapes++; continue; }
+      if (e.type !== 'tank' || e.modeEntity || e.isCloser) continue;
+      alive++; last = e;
+    }
+    if (g.tick < g.survivalStart) {      // 10 s on the clock before anyone starts
+      var left = g.survivalStart - g.tick;
+      if (left % TPS === 0) g.notify('Round starts in ' + (left / TPS) + '...', TPS);
+      return;
+    }
+    if (!g.noRespawn) {
+      g.noRespawn = true;                // one life: whoever is out stays out
+      g.botCount = 0;                    // ...which means nothing refills either
+      g.notify('Last tank standing wins!', 3 * TPS);
+      g.mapDirty = true;                 // clients read the respawn lock off that packet
+    }
+    if (alive > g.survivalPeak) g.survivalPeak = alive;
+
+    // Close in on the size the survivors call for rather than snapping to it:
+    // a full field of 20 halves in one step otherwise, and everyone arrives at
+    // the new border together.
+    var want = survivalArena(alive);
+    if (want < g.arena.size) setArenaSize(g, Math.max(want, g.arena.size - SURVIVAL.shrinkRate));
+    g.wantedShapes = survivalShapes(g.arena.size);
+    // step() only ever tops shapes *up*, so the surplus a shrinking field leaves
+    // behind has to be swept or the endgame is played inside solid polygons.
+    var cull = Math.min(SURVIVAL.cullRate, shapes - g.wantedShapes);
+    for (i = 0; cull > 0 && i < g.entities.length; i++) {
+      e = g.entities[i];
+      if (e.type === 'shape' && !e.dead) { e.kill(null); cull--; }
+    }
+
+    // survivalPeak keeps an arena nobody has joined yet from declaring a winner
+    // every twelve seconds.
+    if (g.roundEndsAt || alive > 1 || g.survivalPeak < 2) return;
+    winRound(g, last ? (last.name || 'An unnamed tank') + ' is the last tank standing!' : 'Nobody made it.');
+  },
+  reset: function (g) {
+    g.botCount = g.survivalBots || 0;
+    MODE_LOGIC.survival.init(g);
+    setArenaSize(g, GAMEMODES.survival.size);
+    g.wantedShapes = survivalShapes(g.arena.size);
+    g.mapDirty = true;
+  }
+};
+
 // --- Capture the Flag ----------------------------------------------------
 MODE_LOGIC.ctf = {
   init: function (g) {
@@ -447,7 +520,10 @@ MODE_LOGIC.ctf = {
     g.captures = {};
     g.teams.forEach(function (team, side) {
       g.captures[team] = 0;
-      var baseX = side === 0 ? a.left + 2600 : a.right - 2600;
+      // Just outside the base, never in it: a team base kills an enemy tank in
+      // half a second, so a flag standing inside one could never be stolen.
+      var home = baseOf(g, team), inward = side === 0 ? 1 : -1;
+      var baseX = home.x + inward * (home.size + CTF.flagStandoff);
       for (var i = 0; i < CTF.perSide; i++) {
         var f = new Entity(g, {
           type: 'flag', sides: 5, size: CTF.flagSize,
@@ -550,4 +626,4 @@ function baseOf(g, team) {
   return null;
 }
 
-if (typeof module !== 'undefined') module.exports = { MODE_LOGIC: MODE_LOGIC, possess: possess, release: release };
+if (typeof module !== 'undefined') module.exports = { MODE_LOGIC: MODE_LOGIC, possess: possess, release: release, setArenaSize: setArenaSize };

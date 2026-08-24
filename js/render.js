@@ -202,8 +202,9 @@ Renderer.prototype.drawEntity = function (e, t) {
   var p = ipos(e, t);
   var sp = this.toScreen(p.x, p.y);
   var r = p.s * k;
-  // cull
-  var pad = r + 200;
+  // cull. Rects (base/wall/tile) are size x width, and a 2-team base is a
+  // sliver wide and the whole arena tall — culling on size alone hid it.
+  var pad = (e.sides === 2 ? Math.max(p.s, e.width) * k : r) + 200;
   if (sp.x < -pad || sp.y < -pad || sp.x > this.canvas.width + pad || sp.y > this.canvas.height + pad) return;
 
   c.save();
@@ -423,7 +424,9 @@ Renderer.prototype.drawScoreboard = function () {
   for (var i = 0; i < g.leaderboard.length; i++) {
     var t = g.leaderboard[i];
     var by = y + i * 26, bh = 20;
-    var col = t.team && TEAM_COLORS[t.team] ? TEAM_COLORS[t.team][0] : C.scoreBar;
+    // Each row is drawn in that tank's own colour — which online is the only
+    // thing the server sends, and used to be thrown away for a flat green.
+    var col = t.fill || C.scoreBar;
     var frac = Math.min(1, Math.max(0.04, t.score / (max || 1)));
     this.bar(x, by, w, bh, frac, col, null);
     // each entry's tank rides the tip of its own fill
@@ -888,8 +891,15 @@ Renderer.prototype.drawDeathScreen = function () {
   c.font = '16px Ubuntu, Verdana, sans-serif';
   c.fillText('Score: ' + abbrev(p.score) + '     Level: ' + p.level + '     Kills: ' + p.kills, cx, cy + 108);
   c.fillText('Time alive: ' + time, cx, cy + 134);
-  // respawn button
+  // respawn button — Survival gives you one life, so there is nothing to press
   var bw = 240, bh = 54, bx = cx - bw / 2, by = cy + 160;
+  if (g.noRespawn) {
+    this.respawnBtn = null;
+    c.font = 'bold 19px Ubuntu, Verdana, sans-serif'; c.fillStyle = '#CCC';
+    c.fillText('Out of the round — the next one starts shortly', cx, by + bh / 2);
+    c.restore();
+    return;
+  }
   this.respawnBtn = { x: bx, y: by, w: bw, h: bh };
   c.fillStyle = C.blue; c.fillRect(bx, by, bw, bh);
   c.fillStyle = C.blueS; c.fillRect(bx, by + bh - 8, bw, 8);

@@ -221,11 +221,16 @@ var BASE_DRONE_BARREL = {
   bullet: { type: 'drone', sizeRatio: 1, health: 1000, damage: 1, speed: 2.7, scatterRate: 1, lifeLength: -1, absorbtionFactor: 1 }
 };
 
+// Maze: 40 x 40 cells of 635 du, so the arena is 25400 across (§1). The rest is
+// the real generator's own tuning (§9) — see Game.generateMaze.
+var MAZE = { cells: 40, cell: 635, seedBlock: 5, branchCap: 2, turnChance: 0.2, branchChance: 0.2, terminationChance: 0.2 };
+
 var GAMEMODES = {
   ffa:        { name: 'FFA',              teams: null,                               size: 22300, xp: 1, bases: false },
+  survival:   { name: 'Survival',         teams: null,                               size: 22300, xp: 3, bases: false, logic: 'survival', noBoss: true, freshStart: true },
   team2:      { name: '2 Teams',          teams: ['blue', 'red'],                    size: 22300, xp: 1, bases: true },
   team4:      { name: '4 Teams',          teams: ['blue', 'green', 'purple', 'red'], size: 22300, xp: 1, bases: true },
-  maze:       { name: 'Maze',             teams: null,                               size: 22300, xp: 1, bases: false, maze: true, noBoss: true },
+  maze:       { name: 'Maze',             teams: null,                               size: MAZE.cells * MAZE.cell, xp: 1, bases: false, maze: true, noBoss: true },
   domination: { name: 'Domination',       teams: ['blue', 'red'],                    size: 22300, xp: 2, bases: true,  logic: 'domination' },
   tag:        { name: 'Tag',              teams: ['blue', 'green', 'purple', 'red'], size: 22300, xp: 3, bases: false, logic: 'tag', noBoss: true },
   mothership: { name: 'Mothership',       teams: ['blue', 'red'],                    size: 22300, xp: 3, bases: false, logic: 'mothership' },
@@ -251,7 +256,7 @@ var PREDATOR_ZOOM = 1500;
 var MOTHERSHIP = {
   id: 27,
   level: 140,
-  maxHealth: 3000,             // TODO: never published; boss-tier is the closest anchor
+  maxHealth: 7000,             // §9. absorbtionFactor (0.01) and pushFactor (8) come off the def.
   pilotRotation: 5 * 60 * TPS  // pilots rotate every 5 minutes
 };
 
@@ -265,7 +270,8 @@ var BREAKOUT = {
 var CTF = {
   perSide: 10,                 // flags each team defends, and captures needed to win
   barrierTicks: 5 * 60 * TPS,  // the map is split for the first five minutes
-  flagSize: 45
+  flagSize: 45,
+  flagStandoff: 400            // how far clear of the base the flag line stands
 };
 
 var TAG = {
@@ -273,6 +279,16 @@ var TAG = {
   shrinkAmount: 2,
   minOpacity: 0.25             // invisibility is only partial, so nobody can stall forever
 };
+
+// Survival: one life each, and the field is sized to whoever is still standing
+// (§1 arena, §5 shape quota). Both shrink on their own as the round thins out.
+var SURVIVAL = {
+  countdown: 10 * TPS,         // §1 countdown before the round starts
+  shrinkRate: 20,              // du/tick the field closes in by, 500 du/s
+  cullRate: 8                  // shapes swept per tick once the quota drops
+};
+function survivalArena(players) { return Math.floor(25 * Math.sqrt(Math.max(1, players))) * 100; }
+function survivalShapes(width) { return Math.floor(12.5 * Math.ceil(Math.pow(width / 2500, 2))); }
 
 var ROUND_END_DELAY = 12 * TPS;
 

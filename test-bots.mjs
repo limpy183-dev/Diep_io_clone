@@ -1199,7 +1199,7 @@ test('a dead bot comes back one rung down, not from scratch', () => {
   dead.addScore(LEVEL_SCORE[20] - dead.score);
   assert.equal(dead.level, 20);
   dead.kill(null);
-  assert.equal(g.botRespawn.join(), String(respawnLevel(20)));
+  assert.equal(g.botRespawn.map((q) => q.lvl).join(), String(respawnLevel(20)));
   const back = g.spawnBot();
   assert.equal(back.level, respawnLevel(20), 'came back at level ' + back.level);
   assert.ok(back.level > 1 && back.level < 20, 'respawn must cost something, and not everything');

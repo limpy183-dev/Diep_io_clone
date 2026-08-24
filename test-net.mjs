@@ -383,6 +383,25 @@ try {
   assert.match(log2, /CLOSED/, 'server logged the close');
   test('the server exits cleanly once every arena is swept');
 
+  console.log('\nObjective modes over the wire');
+  const domc = makeClient('Dom', 'domination');
+  await waitFor(() => domc.myId !== 0, 6000, 'domination welcome');
+  await waitFor(() => domc.overlay.length > 0, 6000, 'map state');
+  assert.equal(domc.overlay.length, 4, 'four Dominators on the minimap');
+  assert.equal(domc.arena.size, 22300, 'arena size rides the map packet');
+  assert.equal(domc.noRespawn, false, 'and so does the respawn lock');
+  test('MAPSTATE carries the arena, the respawn lock and the objective overlay');
+  domc.close();
+
+  const sv = makeClient('Sole', 'survival');
+  await waitFor(() => sv.myId !== 0, 6000, 'survival welcome');
+  await waitFor(() => sv.noRespawn !== undefined, 6000, 'survival map state');
+  assert.equal(sv.arena.size, 22300, 'full field while the clock runs');
+  assert.equal(sv.noRespawn, false, 'and the lobby is open');
+  test('Survival arenas replicate their countdown state');
+  sv.close();
+  await sleep(200);
+
   console.log('\nDisconnect');
   b.close();
   await sleep(600);

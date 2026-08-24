@@ -32,7 +32,7 @@ npm test
 | `js/tankdefs-extra.js` | Seven tanks not in that dump; patches the table at load |
 | `js/data.js` | Constants, palette, XP curve, shapes, addons, bosses, game modes |
 | `js/engine.js` | 25 Hz simulation: entities, physics, damage, barrels, projectiles, AI, bots |
-| `js/modes.js` | The five objective modes + possession (H) |
+| `js/modes.js` | The six objective modes + possession (H) |
 | `js/protocol.js` | Binary wire format, shared by client and server |
 | `js/net.js` | Client-side world mirror, snapshot interpolation, own-tank prediction |
 | `js/render.js` | Canvas 2D drawing + HUD |
@@ -70,12 +70,17 @@ respawns everyone rather than tearing the arena down.
 
 | Mode | Teams | XP | How you win |
 |---|---|---|---|
+| **Survival** | — | ×3 | Be the last tank standing |
 | **Domination** | 2 | ×2 | Hold all four Dominators |
 | **Tag** | 4 | ×3 | Every living player ends up on your team |
 | **Mothership** | 2 | ×3 | Destroy the enemy Mothership |
 | **Breakout** | 2 | ×2 | Claim the whole 8×8 board |
 | **Capture the Flag** | 2 | ×1 | Capture all 10 enemy flags |
 
+- **Survival** — one life each. A 10 s countdown, then the respawn button goes away and the
+  field closes in on whoever is left: the arena is `⌊25·√players⌋·100` du wide and the shape
+  quota `⌊12.5·⌈(width/2500)²⌉` follows it down, so the last two fight in a 3,500-unit box.
+  A new round hands everyone a fresh level 1.
 - **Domination** — four 6,000 HP Dominators (Destroyer/Gunner/Trapper flavours, taken from the
   real tank table) sit bolted down at the centre. Kill a neutral one to capture it; kill an
   enemy-held one and it reverts to neutral first, so taking ground costs two fights. They never
@@ -83,8 +88,9 @@ respawns everyone rather than tearing the arena down.
   ejecting any pilot.
 - **Tag** — dying to a player moves you onto *their* team; dying to a shape does not. The arena
   slowly shrinks, and invisibility is capped at 25 % opacity so nobody can stall the round out.
-- **Mothership** — one 16-sided, 16-barrelled Mothership per team, immovable, flying itself
+- **Mothership** — one 16-sided, 16-barrelled, 7,000 HP Mothership per team, flying itself
   until a pilot takes over. The wheel passes to the team's highest scorer every 5 minutes.
+  With no bases in this mode, each side spawns around its own Mothership.
 - **Breakout** — you can only claim ground that touches ground you already hold, so the front
   advances rather than teleporting. Camp your own tile for 30 s and it flashes, then collapses
   and kills you.
@@ -95,8 +101,10 @@ respawns everyone rather than tearing the arena down.
 out. Piloting *parks* your own tank rather than destroying it — you keep your score and get it
 back where you left off. Parked tanks have no collider and are never sent to other clients.
 
-The scoreboard adapts: objective modes replace the player list with a per-team tally (Tag shows
-player counts, Breakout territory %, Mothership hull %, CTF captures) using the same packet.
+The scoreboard adapts: objective modes with a per-team tally replace the player list with it
+(Tag shows player counts, Breakout territory %, Mothership hull %, CTF captures) — built once in
+the engine, so offline and online show the same rows. Survival and Domination keep the player
+list; neither shows mode entities on it.
 
 ## Retiring a server
 
@@ -191,8 +199,8 @@ node -e "const fs=require('fs');fs.writeFileSync('js/tankdefs.js','var TANK_DEFS
 - **AI** — one targeting class with retarget cadence, hysteresis, and the cheap
   perpendicular-drift intercept solver, shared by turrets, drones, crashers and bosses.
 - **All 5 bosses**, 45-minute spawn cycle, one-at-a-time rule, 30 000 XP.
-- **All 10 game modes** — FFA, 2 Teams, 4 Teams, Maze (generated walls), Sandbox (+ cheats),
-  plus the five objective modes below. Team bases with drone spawners, enemy-projectile
+- **All 11 game modes** — FFA, 2 Teams, 4 Teams, Maze (40×40 cells of 635 du, walls that eat
+  what is fired at them), Sandbox (+ cheats), plus the six objective modes below. Team bases with drone spawners, enemy-projectile
   dissolve, and rammer ejection.
 - **UI** — scoreboard, score/level bars, stat panel with queueing, upgrade cards, minimap,
   leader arrow, notifications, class-tree overlay, death screen with killer attribution.
@@ -366,6 +374,41 @@ And two the bots were missing:
     against the target already chosen rather than once per candidate. Outside Maze
     and the CTF barrier `walls` is empty and it costs nothing.
 20. **Your own tank waited a round trip.** See *Own tank is predicted*, above.
+
+Then a pass over the objective modes themselves, which turned up seven that made
+three of them unplayable rather than merely wrong:
+
+21. **Tag could not be won.** Dying to a player sets `nextTeam`, and only the human's
+    respawn ever read it — a bot's respawn queue carried a level and nothing else, so
+    every bot was re-balanced onto the emptiest team and each tag was undone within
+    seconds. The queue now carries the team as well, and the mode hook runs *before*
+    the queue entry is written rather than after it. A new round drops the queue, so
+    the next one starts spread over four teams instead of one.
+22. **Breakout deleted its own polygons.** A claimed tile is meant to dissolve enemy
+    fire crossing it; the test for "is this a projectile" was `e.owner !== undefined`,
+    which is true of every entity there is. Every shape standing on claimed ground died
+    on contact, respawned, and died again — the board was bare and the shape spawner ran
+    flat out forever.
+23. **Maze walls bounced bullets.** They were supposed to eat them (§9), and the bots'
+    line-of-sight code was written on the assumption that they did (fix 19). The kill
+    branch was gated on the wall's team differing from the shooter's, and walls are
+    neutral, so it never once fired.
+24. **CTF flags stood inside the base defending them.** A team base kills an enemy tank
+    in about half a second, so no flag could ever be stolen and no round could be won.
+    They now stand 400 du clear of the base edge.
+25. **A mode reset leaked its walls.** Walls live in `entities` *and* `g.walls`; the
+    sweep only cleared the first, so every CTF round left another dead barrier blocking
+    shape spawns and bot sightlines at x=0 for the rest of the arena's life.
+26. **Mothership spawned you in the enemy's half.** The mode has no bases, and the
+    no-base path is a roll anywhere in the outer ring — so half of each team arrived
+    on the wrong side of the map. Each side now spawns around its own Mothership.
+27. **Numbers that had drifted from `DIEP_CONSTANTS.md`:** the Mothership's HP (3,000
+    against a documented 7,000) and its knockback fields, which were being overwritten
+    with hand-picked values after `recompute()` had already read the correct ones off
+    the tank table; the Dominator's damage multiplier (tank-body 6 rather than
+    boss-tier 4); the Maze arena (22,300 against 40×635 = 25,400); and the 2-Teams base
+    width. Offline, the scoreboard also listed Dominators and Motherships as players on
+    nought points, and ignored the per-team tally the online one has always shown.
 
 ## Attribution
 

@@ -99,7 +99,8 @@ function applyMul(t) {
 
 function setLevel(t, lvl) {
   lvl = clampN(Math.round(lvl), 1, MAX_LEVEL);
-  t.score = LEVEL_SCORE[lvl];
+  // Already there? Keep the score they earned past the level floor.
+  if (t.level !== lvl) t.score = LEVEL_SCORE[lvl];
   t.level = lvl;
   t.recompute();
   t.checkUpgrades();
@@ -531,6 +532,20 @@ cmd('bulletsize ammo', {
     return 'Bullet size x' + ctx.tank.bulletSize + ' — already-fired shots keep the old size.';
   }
 });
+cmd('bulletspeed bspeed', {
+  cat: 'cheat', cheat: true, needsTank: true, args: '<multiplier>', help: 'Multiply how fast everything you fire travels.',
+  run: function (ctx, a) {
+    ctx.tank.bulletSpeed = clampN(num(a[0], 1), 0, 50);
+    return 'Bullet speed x' + ctx.tank.bulletSpeed + ' — already-fired shots keep the old speed.';
+  }
+});
+cmd('damage bulletdamage dmg', {
+  cat: 'cheat', cheat: true, needsTank: true, args: '<multiplier>', help: 'Multiply the damage of everything you fire.',
+  run: function (ctx, a) {
+    ctx.tank.bulletDamage = clampN(num(a[0], 1), 0, 10000);
+    return 'Bullet damage x' + ctx.tank.bulletDamage + ' — already-fired shots keep the old damage.';
+  }
+});
 cmd('rainbow chroma', {
   cat: 'cheat', cheat: true, needsTank: true, args: '[on|off]', help: 'Cycle your tank and your shots through every colour.',
   run: function (ctx, a) {
@@ -752,6 +767,17 @@ cmd('killbots purge', {
     var n = 0;
     ctx.game.entities.forEach(function (e) { if (e.type === 'tank' && e.bot && !e.dead) { e.kill(null); n++; } });
     return n + ' bots removed' + (ctx.game.botCount ? ' — they respawn, /bots 0 to stop that.' : '.');
+  }
+});
+cmd('killall wipe', {
+  cat: 'cheat', cheat: true, args: '', help: 'Kill everything on the field but you.',
+  run: function (ctx) {
+    var t = ctx.tank, n = 0;
+    ctx.game.entities.forEach(function (e) {
+      if (e === t || e.dead || e.type === 'wall' || e.type === 'base' || e.type === 'tile' || e.type === 'flag') return;
+      e.kill(t || null); n++;
+    });
+    ctx.broadcast(ctx.name + ' wiped the arena — ' + n + ' entities gone.');
   }
 });
 cmd('freeze', {

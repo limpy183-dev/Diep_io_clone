@@ -147,7 +147,10 @@ function applyKnockback(self, other) {
     ang = Math.abs(c) > Math.abs(s) ? (c > 0 ? 0 : Math.PI) : (s > 0 ? Math.PI / 2 : -Math.PI / 2);
   }
   if (other.isSolidWall) {
-    if (self.owner && other.team !== null && self.team !== other.team) { self.kill(other); return; }
+    // §9: a maze wall eats projectiles rather than bouncing them. The team test
+    // this used to carry never fired — walls are neutral, so every bullet in the
+    // maze skidded off one and kept going.
+    if (self.owner) { self.kill(other); return; }
     mag /= 0.3;
     if (self.type === 'tank') { self.vx *= 0.3; self.vy *= 0.3; }
   }
@@ -261,8 +264,15 @@ Barrel.prototype.shoot = function () {
 
 Barrel.prototype.spawn = function (m, accel, b, d, t, g) {
   var st = t.stats;
-  // /bulletsize lives on the tank, so a turret asks the tank it is bolted to.
-  var bsize = ((t.isTurret && t.parent ? t.parent : t).bulletSize) || 1;
+  // /bulletsize and /damage live on the tank, so a turret asks the tank it is bolted to.
+  var host = t.isTurret && t.parent ? t.parent : t;
+  var bsize = host.bulletSize || 1, bdmg = host.bulletDamage === undefined ? 1 : host.bulletDamage;
+  var bspd = host.bulletSpeed === undefined ? 1 : host.bulletSpeed;
+  // Ownership is the *root* tank, never whatever fired this. canInteract() only
+  // compares one link, so a shot owned by its carrier — a Skimmer/Rocketeer/Glider
+  // missile, a Firework shell, a Factory minion — matched nothing against the tank
+  // that launched the carrier and hit it on the way past.
+  var root = host; while (root.owner) root = root.owner;
   var scatter = (Math.PI / 180) * b.scatterRate * (Math.random() - 0.5) * 10;
   var ang = m.a + scatter;
   var proj = new Entity(g, {
@@ -273,10 +283,10 @@ Barrel.prototype.spawn = function (m, accel, b, d, t, g) {
     // A turret is not an entity, so its shots must be owned by the tank it is
     // bolted to — otherwise canInteract() never matches and they hit their own
     // tank on the way out (and kills go uncredited).
-    team: t.team, owner: t.isTurret ? t.parent : t,
+    team: t.team, owner: root,
     fill: b.color || t.fill, stroke: b.stroke || t.stroke,
     maxHealth: (1.5 * st[S_PEN] + 2) * b.health,
-    damage: (7 + st[S_DAMAGE] * 3) * b.damage,
+    damage: (7 + st[S_DAMAGE] * 3) * b.damage * bdmg,
     absorb: b.absorbtionFactor,
     push: (7 / 3 + st[S_DAMAGE]) * b.damage * b.absorbtionFactor
   });
@@ -356,7 +366,10 @@ Barrel.prototype.spawn = function (m, accel, b, d, t, g) {
       proj.life = 75 * b.lifeLength;
   }
 
-  if (launch) proj.addVelocity(ang, launch);
+  // /bulletspeed scales cruise speed and the muzzle kick together, so a slowed
+  // shot does not still leap out of the barrel.
+  proj.accel *= bspd;
+  if (launch) proj.addVelocity(ang, launch * bspd);
   if (b.type === 'trap') proj.accel = 0;            // traps coast to a stop and stay put
   g.add(proj);
   if (d.droneCount) this.children.push(proj);
@@ -644,20 +657,22 @@ Tank.prototype.onKill = function (source) {
     // death screen, so only the killer hears about it.
     root.notify('You killed ' + (this.name || 'an unnamed tank') + '!', 150);
   }
-  // A bot comes back the way you do: one rung down, not from scratch. Without
-  // this the whole population resets to zero on every death, and at ~200 bot
-  // deaths a minute no arena ever levels up — the leaderboard just churns in the
-  // low hundreds forever. The count top-up in step() spawns the replacement, so
-  // the level waits in a queue for whoever fills the slot.
+  // Ahead of the respawn queue below, which reads what it decides: Tag moves you
+  // onto your killer's team here, and queueing first threw every tag away.
+  var logic = this.game.logic;
+  if (logic && logic.onTankDeath) logic.onTankDeath(this.game, this, source);
+  // A bot comes back the way you do: one rung down, not from scratch, and on the
+  // same side. Without this the whole population resets to zero on every death,
+  // and at ~200 bot deaths a minute no arena ever levels up — the leaderboard
+  // just churns in the low hundreds forever. The count top-up in step() spawns
+  // the replacement, so the slot waits in a queue for whoever fills it.
   if (this.bot) {
     var q = this.game.botRespawn;
-    q.push(respawnLevel(this.level));
+    q.push({ lvl: respawnLevel(this.level), team: this.nextTeam || this.team });
     while (q.length > this.game.botCount) q.shift();   // /bots 0 must not pile up a backlog
   }
   if (this.possessing && typeof release === 'function') release(this.game, this);
   if (this.possessedBy && typeof release === 'function') release(this.game, this.possessedBy);
-  var logic = this.game.logic;
-  if (logic && logic.onTankDeath) logic.onTankDeath(this.game, this, source);
   this.game.orphan(this);
   if (this.isPlayer) {
     this.game.spectate = this.killerEntity;   // offline: render.updateCamera follows it
@@ -2152,7 +2167,7 @@ function Game(modeKey, playerName, opts) {
   if (this.mode.maze) this.generateMaze();
   if (this.mode.bases) this.generateBases();
 
-  // Objective modes (Domination, Tag, Mothership, Breakout, CTF) plug in here.
+  // Objective modes (Survival, Domination, Tag, Mothership, Breakout, CTF) plug in here.
   this.logic = (this.mode.logic && typeof MODE_LOGIC !== 'undefined') ? MODE_LOGIC[this.mode.logic] : null;
   this.roundEndsAt = 0;
   this.mapDirty = true;
@@ -2175,7 +2190,9 @@ Game.prototype.teamOf = function () {
   if (!this.teams) return null;
   var counts = {}, self = this;
   this.teams.forEach(function (t) { counts[t] = 0; });
-  this.entities.forEach(function (e) { if (e.type === 'tank' && !e.dead && counts[e.team] !== undefined) counts[e.team]++; });
+  this.entities.forEach(function (e) {
+    if (e.type === 'tank' && !e.dead && !e.modeEntity && counts[e.team] !== undefined) counts[e.team]++;
+  });
   return this.teams.reduce(function (a, b) { return counts[a] <= counts[b] ? a : b; });
 };
 
@@ -2185,6 +2202,10 @@ Game.prototype.spawnPoint = function (team, anywhere) {
   if (team) {
     var base = this.bases.filter(function (b) { return b.team === team; })[0];
     if (base) return { x: base.x + rand(-base.size * 0.7, base.size * 0.7), y: base.y + rand(-base.width * 0.7, base.width * 0.7) };
+    // Mothership has no bases, and the outer-ring roll below dropped half of
+    // each team into the other one's half of the map.
+    var ms = (this.motherships || []).filter(function (m) { return m.team === team; })[0];
+    if (ms) return { x: ms.x + rand(-1500, 1500), y: ms.y + rand(-1500, 1500) };
   }
   // Scattered bots also keep off each other: half of an even share of the map
   // apiece, re-rolled until it fits. Asking for the full share is perfect
@@ -2224,10 +2245,11 @@ Game.prototype.paintTeam = function (t) {
 };
 
 Game.prototype.spawnBot = function () {
-  var lvl = this.botRespawn.length ? this.botRespawn.shift() : 1;
+  var back = this.botRespawn.length ? this.botRespawn.shift() : null;
   var t = this.spawnTank({
     name: pick(BOT_NAMES) + (Math.random() < 0.4 ? ' ' + ((Math.random() * 99) | 0) : ''),
-    bot: true, score: LEVEL_SCORE[lvl]
+    bot: true, score: LEVEL_SCORE[back ? back.lvl : 1],
+    team: back ? back.team : undefined
   });
   t.autoFire = false;
   t.botRole = pick(BOT_ROLES);
@@ -2312,17 +2334,129 @@ Game.prototype.inWall = function (x, y, pad) {
   return false;
 };
 
+// The real game's map (§9): plant wall seeds on the 40x40 cell grid, random-walk
+// each one outwards with a chance to turn, branch or stop, fill in whatever the
+// walk sealed off from the rest of the arena, then merge the cells into as few
+// rectangles as possible. Nothing is carved out for the nest — diep doesn't.
 Game.prototype.generateMaze = function () {
-  var a = this.arena, step = 500;
-  for (var x = a.left + step; x < a.right - step; x += step) {
-    for (var y = a.top + step; y < a.bottom - step; y += step) {
-      if (Math.random() > 0.16) continue;
-      if (Math.max(Math.abs(x), Math.abs(y)) < a.right / 8) continue;   // keep the nest open
-      var wx = Math.round(x / GRID) * GRID, wy = Math.round(y / GRID) * GRID;
-      var long = Math.random() < 0.5;
+  var a = this.arena, n = MAZE.cells, cell = MAZE.cell;
+  var m = new Uint8Array(n * n);                   // 0 open, 1 wall, 2 reached, 3 placed
+  function get(x, y) { return (x < 0 || y < 0 || x >= n || y >= n) ? 0 : m[y * n + x]; }
+  function set(x, y, v) { m[y * n + x] = v; }
+  function inner(x, y) { return x > 0 && y > 0 && x < n - 1 && y < n - 1; }
+
+  // One seed per block of cells, jittered inside it. Scattering them at random
+  // the way the original does leaves whole quarters of the grid bare.
+  var seeds = [], i, j, b = MAZE.seedBlock;
+  for (var by = 0; by < n; by += b) {
+    for (var bx = 0; bx < n; bx += b) {
+      var sx = bx + Math.floor(Math.random() * b), sy = by + Math.floor(Math.random() * b);
+      if (!inner(sx, sy)) continue;
+      seeds.push({ x: sx, y: sy }); set(sx, sy, 1);
+    }
+  }
+  var cap = seeds.length * MAZE.branchCap;
+
+  // Two wall cells side by side read as a slab rather than a wall, so no cell is
+  // ever allowed to complete a 2x2 block. Crossings and T-junctions still pass.
+  function slabs(x, y) {
+    var was = get(x, y), bad = false;
+    set(x, y, 1);
+    for (var qx = x - 1; qx <= x && !bad; qx++)
+      for (var qy = y - 1; qy <= y; qy++)
+        if (get(qx, qy) === 1 && get(qx + 1, qy) === 1 && get(qx, qy + 1) === 1 && get(qx + 1, qy + 1) === 1) { bad = true; break; }
+    set(x, y, was);
+    return bad;
+  }
+
+  var DIRS = [[-1, 0], [1, 0], [0, -1], [0, 1]];
+  // The two directions square to this one — a turn or a branch picks one of them.
+  function perp(d) {
+    var opts = [];
+    for (var q = 0; q < 4; q++) if (DIRS[q][0] !== d[0] && DIRS[q][1] !== d[1]) opts.push(DIRS[q]);
+    return opts[Math.floor(Math.random() * opts.length)];
+  }
+  for (var s = 0; s < seeds.length; s++) {         // branches are appended as we go
+    var seed = seeds[s], dir = DIRS[Math.floor(Math.random() * 4)], roll = 1;
+    while (roll >= MAZE.terminationChance) {
+      roll = Math.random();
+      // Blocked head-on: try the two turns before giving up, or every wall that
+      // runs into another one dies there and the map thins out.
+      var opts = [dir, perp(dir), perp(dir)], step = null;
+      for (j = 0; j < 3 && !step; j++) {
+        var tx = seed.x + opts[j][0], ty = seed.y + opts[j][1];
+        if (inner(tx, ty) && !slabs(tx, ty)) { dir = opts[j]; step = [tx, ty]; }
+      }
+      if (!step) break;
+      seed.x = step[0]; seed.y = step[1];
+      set(seed.x, seed.y, 1);
+      if (Math.random() <= MAZE.branchChance) {
+        if (seeds.length > cap) continue;          // no runaway tumours
+        var p = perp(dir);
+        seeds.push({ x: seed.x + p[0], y: seed.y + p[1] });
+      } else if (Math.random() <= MAZE.turnChance) dir = perp(dir);
+    }
+  }
+
+  // A few lone blocks out in the open, well clear of everything else.
+  for (i = 0; i < 10; i++) {
+    var bx = Math.floor(Math.random() * n - 1), by = Math.floor(Math.random() * n - 1);
+    if (!inner(bx, by)) continue;
+    var near = false;
+    for (var y2 = by - 3; y2 <= by + 3 && !near; y2++)
+      for (var x2 = bx - 3; x2 <= bx + 3; x2++) if (get(x2, y2) === 1) { near = true; break; }
+    if (!near) set(bx, by, 1);
+  }
+
+  // A walk that curls back on itself seals a pocket off, and a pocket is a room
+  // nobody can enter. The original fills the room in, which is what welds walls
+  // into slabs a tenth of the map wide; knock a door through the side instead.
+  // The border ring never takes a wall, so the corner is always open ground.
+  for (var pass = 0; pass < 400; pass++) {
+    for (i = 0; i < m.length; i++) if (m[i] === 2) m[i] = 0;   // re-flood from scratch
+    var queue = [[0, 0]], head = 0;
+    set(0, 0, 2);
+    while (head < queue.length) {
+      var c = queue[head++], nb = [[c[0] - 1, c[1]], [c[0] + 1, c[1]], [c[0], c[1] - 1], [c[0], c[1] + 1]];
+      for (j = 0; j < 4; j++) {
+        var nx = nb[j][0], ny = nb[j][1];
+        if (nx < 0 || ny < 0 || nx >= n || ny >= n || get(nx, ny) !== 0) continue;
+        set(nx, ny, 2); queue.push([nx, ny]);
+      }
+    }
+    // Any wall cell with open ground on one side and a pocket on the other is a
+    // door. One per pass, picked at random so the holes are not all top-left.
+    var doors = [];
+    for (i = 0; i < m.length; i++) {
+      if (m[i] !== 1) continue;
+      var dx2 = i % n, dy2 = (i - dx2) / n, reached = false, sealed = false;
+      var sides = [get(dx2 - 1, dy2), get(dx2 + 1, dy2), get(dx2, dy2 - 1), get(dx2, dy2 + 1)];
+      for (j = 0; j < 4; j++) { if (sides[j] === 2) reached = true; else if (sides[j] === 0) sealed = true; }
+      if (reached && sealed) doors.push(i);
+    }
+    if (!doors.length) break;
+    m[doors[Math.floor(Math.random() * doors.length)]] = 0;
+  }
+  // Walled in two cells thick, so no single door reaches it: fill it in after all.
+  for (i = 0; i < m.length; i++) if (m[i] === 0) m[i] = 1;
+
+  // Merge: run each wall cell right as far as it goes, then push that run down
+  // while the whole width holds. One entity per block instead of one per cell.
+  for (var gx = 0; gx < n; gx++) {
+    for (var gy = 0; gy < n; gy++) {
+      if (get(gx, gy) !== 1) continue;
+      var cw = 0, ch = 1;
+      while (get(gx + cw, gy) === 1) { set(gx + cw, gy, 3); cw++; }
+      for (;;) {
+        var fits = true;
+        for (i = 0; i < cw; i++) if (get(gx + i, gy + ch) !== 1) { fits = false; break; }
+        if (!fits) break;
+        for (i = 0; i < cw; i++) set(gx + i, gy + ch, 3);
+        ch++;
+      }
       var w = new Entity(this, {
-        type: 'wall', x: wx, y: wy, sides: 2,
-        size: long ? 375 : 125, width: long ? 125 : 375,
+        type: 'wall', x: a.left + (gx + cw / 2) * cell, y: a.top + (gy + ch / 2) * cell, sides: 2,
+        size: cw * cell / 2, width: ch * cell / 2,
         fill: C.box, stroke: C.boxS, maxHealth: Infinity, team: null
       });
       w.isSolidWall = true; w.damageReduction = 0; w.push = 1; w.absorb = 0;
@@ -2334,8 +2468,10 @@ Game.prototype.generateMaze = function () {
 
 Game.prototype.generateBases = function () {
   var a = this.arena, self = this, n = this.teams.length;
+  // §9: half the base region, times 0.6 — 2007 du in a 22300 arena.
+  var half = Math.round(a.size / 2 / (10 / 3) * 0.6);
   var layouts = n === 2
-    ? [{ x: a.left + 1400, y: 0, size: 1400, width: a.bottom }, { x: a.right - 1400, y: 0, size: 1400, width: a.bottom }]
+    ? [{ x: a.left + half, y: 0, size: half, width: a.bottom }, { x: a.right - half, y: 0, size: half, width: a.bottom }]
     : [{ x: a.left + 1800, y: a.top + 1800, size: 1800, width: 1800 }, { x: a.left + 1800, y: a.bottom - 1800, size: 1800, width: 1800 },
        { x: a.right - 1800, y: a.top + 1800, size: 1800, width: 1800 }, { x: a.right - 1800, y: a.bottom - 1800, size: 1800, width: 1800 }];
   this.teams.forEach(function (team, i) {
@@ -2467,7 +2603,7 @@ Game.prototype.tryClaim = function (claimer, shape) {
   shape.fill = shape.shiny ? C.shiny : C.necro; shape.stroke = shape.shiny ? C.shinyS : C.necroS;
   shape.maxHealth = (1.5 * st[S_PEN] + 2) * bd.health;
   shape.health = shape.maxHealth;
-  shape.damagePerTick = (7 + st[S_DAMAGE] * 3) * bd.damage;
+  shape.damagePerTick = (7 + st[S_DAMAGE] * 3) * bd.damage * (owner.bulletDamage === undefined ? 1 : owner.bulletDamage);
   shape.push = 4;
   shape.accel = (20 + BSPEED_GAIN * st[S_BSPEED]) * bd.speed;
   shape.life = Infinity; shape.age = 0;
@@ -2481,7 +2617,9 @@ Game.prototype.baseContact = function (e, base) {
   if (base.team === null) return;                 // unclaimed Breakout tile: inert
   if (e.team === base.team) return;
   // Tiles block enemy fire from outside but let enemy tanks walk in.
-  if (base.isTile) { if (e.owner !== undefined && e.type !== 'tank' && e.type !== 'boss') e.kill(base); return; }
+  // `owner !== undefined` was true of every entity alive, shapes included, so a
+  // claimed tile quietly deleted every polygon standing on it, forever.
+  if (base.isTile) { if (e.type !== 'tank' && e.type !== 'boss' && e.type !== 'shape') e.kill(base); return; }
   if (e.type === 'tank' || e.type === 'boss') {
     e.applyDamage(e.maxHealth / 12, base);
     var ang = Math.atan2(e.y - base.y, e.x - base.x);
@@ -2531,6 +2669,10 @@ Game.prototype.step = function () {
       var t = this.entities[r];
       if (t.type === 'tank' && !t.dead && (t.bot || t.isPlayer) && !t.immobile && !t.isMothership) t.kill(null);
     }
+    // Those deaths queue a level and a team apiece. A new round is a new board:
+    // drop them, so the bots come back at level 1 and Tag re-balances its teams
+    // instead of restarting with everyone still on the winner's side.
+    this.botRespawn.length = 0;
     this.notify('New round!', 60);
   }
 
@@ -2657,10 +2799,22 @@ Game.prototype.spawnBoss = function (index) {
 // With fewer than 10 alive this naturally lists only survivors, which is what
 // the closing scoreboard is meant to show.
 Game.prototype.updateLeaderboard = function () {
-  var list = this.entities.filter(function (e) { return e.type === 'tank' && !e.dead && !e.isCloser; });
+  // Dominators and Motherships are tanks, and used to sit on the scoreboard on
+  // nought points alongside the players.
+  var list = this.entities.filter(function (e) {
+    return e.type === 'tank' && !e.dead && !e.isCloser && !e.modeEntity;
+  });
   list.sort(function (a, b) { return b.score - a.score; });
-  this.leaderboard = list.slice(0, 10);
   this.leader = list[0] || null;
+  // Objective modes with a per-team tally show that in place of the player list,
+  // the same rows the server builds online.
+  var counts = this.teamCounts;
+  this.leaderboard = counts ? this.teams.map(function (team) {
+    return {
+      name: team.charAt(0).toUpperCase() + team.slice(1), score: counts[team] || 0,
+      team: team, tankId: 0, id: 0, fill: TEAM_COLORS[team][0]
+    };
+  }).sort(function (a, b) { return b.score - a.score; }) : list.slice(0, 10);
 };
 
 Game.prototype.onPlayerDeath = function () { /* wired by main.js */ };
@@ -2668,9 +2822,13 @@ Game.prototype.onPlayerDeath = function () { /* wired by main.js */ };
 // `old` lets a server respawn one specific client; locally it defaults to the player.
 Game.prototype.respawnPlayer = function (name, old) {
   if (old === undefined) old = this.player;
-  var lvl = old ? respawnLevel(old.level) : 1;
-  // Tag hands you your killer's colours on respawn.
-  var team = old && old.nextTeam ? old.nextTeam : undefined;
+  if (this.noRespawn) return null;                  // Survival: one life a round
+  // Survival starts every round from scratch; everywhere else you come back one
+  // rung down rather than from nothing.
+  var lvl = old && !this.mode.freshStart ? respawnLevel(old.level) : 1;
+  // You come back on your own side; Tag is the one mode that moves you, onto
+  // whoever tagged you.
+  var team = old ? (old.nextTeam || old.team) : undefined;
   var t = this.spawnTank({ name: name || (old && old.name) || '', isPlayer: true, score: LEVEL_SCORE[lvl], team: team });
   t.checkUpgrades();
   this.spectate = null;

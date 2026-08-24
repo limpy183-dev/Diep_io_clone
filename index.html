@@ -45,12 +45,17 @@
           background: #fff; box-shadow: none; padding: 20px 24px; margin-top: 14px; }
   input::placeholder { color: #A6A6A6; }
   /* Game Mode picker: diep's stacked colour chips. The selected mode is the
-     closed chip; opening fans every mode out beneath it, selected on top. */
-  .modedrop { position: relative; width: 100%; font-size: 22px; z-index: 3; }
-  .modedrop-list { display: flex; flex-direction: column; border-radius: 7px;
+     closed chip; opening fans every mode out beneath it, selected on top.
+     The list always sits out of the flow and the root pins one chip's height,
+     so opening or closing it never shifts the rest of the menu. */
+  .modedrop { --chip-h: 58px; position: relative; width: 100%; height: var(--chip-h);
+              font-size: 22px; z-index: 3; }
+  .modedrop-list { position: absolute; top: 0; left: 0; right: 0; display: flex;
+                   flex-direction: column; border-radius: 7px;
                    overflow: hidden; box-shadow: 0 4px 7px rgba(0,0,0,.32); }
   .modedrop:not(.open) .modedrop-item:not(:first-child) { display: none; }
-  .modedrop-item { padding: 16px 52px 16px 20px; color: #fff; font-weight: bold;
+  .modedrop-item { height: var(--chip-h); padding: 0 52px 0 20px; line-height: var(--chip-h);
+                   color: #fff; font-weight: bold;
                    text-align: left; cursor: pointer;
                    text-shadow: 0 2px 0 rgba(0,0,0,.22);
                    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='3.4' stroke-linecap='round' stroke-linejoin='round'><path d='M5 9l7 7 7-7'/></svg>"),
@@ -64,8 +69,13 @@
   .modedrop.open .modedrop-item:not(:first-child) { padding-right: 20px;
                    background-image: linear-gradient(var(--c1) 0 66%, var(--c2) 66%);
                    background-size: 100% 100%; background-position: 0 0; }
-  .modedrop.open .modedrop-list { position: absolute; top: 0; left: 0; right: 0; }
   .modedrop-item:hover { filter: brightness(1.08); }
+  /* The open list is absolutely positioned but still counts toward #menu's
+     scrollable overflow, which popped a scrollbar and shoved the menu 7px left.
+     Suppress the scroll while it's open; it comes back on close. */
+  #menu:has(.modedrop.open) { overflow: hidden; }
+  /* ...so the fanned-out list scrolls itself when it runs past the viewport. */
+  .modedrop.open .modedrop-list { max-height: 60vh; overflow-y: auto; }
   button { background: linear-gradient(#12A9DD 0 66%, #0D8CB8 66%); color: #fff;
            cursor: pointer; font-size: 24px; text-shadow: 0 2px 0 rgba(0,0,0,.22);
            width: calc(var(--w) * .5); margin-top: 12px; }

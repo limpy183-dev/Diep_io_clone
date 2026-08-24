@@ -418,11 +418,34 @@ test('enemy projectiles dissolve at a base edge, enemy tanks are hurt and ejecte
   g.baseContact(tank, base);
   assert.ok(tank.health < 240 && Math.hypot(tank.vx, tank.vy) > 0, 'damaged and flung');
 });
-test('maze walls snap to the 50-unit grid', () => {
+test('maze walls sit on the cell grid and seal nothing off', () => {
   const g = new Game('maze', 'T');
+  const cell = 635, n = 40;
   assert.ok(g.walls.length > 0);
-  assert.ok(g.walls.every(w => w.x % 50 === 0 && w.y % 50 === 0));
+  const onGrid = (v) => Math.abs(v / cell - Math.round(v / cell)) < 1e-9;
+  assert.ok(g.walls.every(w => onGrid(w.x - w.size - g.arena.left) && onGrid(w.y - w.width - g.arena.top)
+    && onGrid(w.size * 2) && onGrid(w.width * 2)), 'every wall is a whole number of cells');
   assert.equal(g.mode.noBoss, true);
+
+  // Every open cell has to be walkable from every other one: a sealed pocket is
+  // a room with no door, and shapes spawned in it are unreachable score.
+  const open = (i, j) => !g.inWall(g.arena.left + (i + 0.5) * cell, g.arena.top + (j + 0.5) * cell, 0);
+  const seen = new Set(), queue = [[0, 0]];
+  seen.add(0);
+  for (let h = 0; h < queue.length; h++) {
+    const [x, y] = queue[h];
+    for (const [nx, ny] of [[x - 1, y], [x + 1, y], [x, y - 1], [x, y + 1]]) {
+      if (nx < 0 || ny < 0 || nx >= n || ny >= n || seen.has(ny * n + nx) || !open(nx, ny)) continue;
+      seen.add(ny * n + nx); queue.push([nx, ny]);
+    }
+  }
+  let openCells = 0;
+  for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) if (open(i, j)) openCells++;
+  assert.equal(seen.size, openCells, 'every open cell is reachable from the corner');
+
+  // No wall is ever two cells thick: a solid 2x2 reads as a slab, not a wall.
+  for (let i = 0; i < n - 1; i++) for (let j = 0; j < n - 1; j++)
+    assert.ok(open(i, j) || open(i + 1, j) || open(i, j + 1) || open(i + 1, j + 1), `solid 2x2 block at ${i},${j}`);
 });
 
 test('Hexagons exist and actually spawn in the nest', () => {
@@ -578,8 +601,9 @@ test('Firework bursts into 16 shards, on right-click and when the fuse ends', ()
   near(shell.maxHealth, 8, 1e-9, 'published penetration 8');
   near(shell.damagePerTick, 4.9, 1e-9, 'published damage 4.9');
 
-  // count only this shell's shards — bots in the arena are firing too
-  const shardsOf = (game, shell) => game.entities.filter((e) => e.owner === shell).length;
+  // count only this shell's shards — bots in the arena are firing too. Shards are
+  // owned by the *tank* (so they can't hit it), so identify them by their barrel.
+  const shardsOf = (game, shell) => game.entities.filter((e) => e.barrel && e.barrel.parent === shell).length;
   tank.input.altFire = 1;
   g.step();
   assert.equal(shardsOf(g, shell), 16, '16 shards on right-click');
@@ -644,6 +668,29 @@ test('regression: missile barrel recoil propels the missile, not the player', ()
   missile.barrels[0].shoot();
   near(Math.hypot(t.vx, t.vy), 0, 1e-9, 'player is untouched');
   assert.ok(Math.hypot(missile.vx, missile.vy) > 0, 'the missile is what moves');
+});
+test('regression: a carried barrel\'s shots are owned by the tank, not the carrier', () => {
+  // Skimmer/Rocketeer/Glider missiles, Firework shells and Factory minions all
+  // carry barrels. Their shots used to be owned by the carrier, so canInteract()
+  // — which only compares one link — let them hit the tank that launched it.
+  for (const [id, type] of [[54, 'skimmer'], [55, 'rocket'], [64, 'glider'], [65, 'firework'], [52, 'minion']]) {
+    const g = quietGame(), t = g.player;
+    t.level = 45; t.setTank(id); t.recompute(); t.angle = 0;
+    let n = g.entities.length;
+    t.barrels.forEach((b) => b.shoot());
+    const carrier = g.entities.slice(n).find((e) => e.type === type);
+    assert.ok(carrier, type + ' launched');
+    carrier.statsOwner = t; carrier.stats = t.stats; carrier.reloadTime = t.reloadTime; carrier.scaleFactor = 1;
+    n = g.entities.length;
+    carrier.barrels[0].shoot();
+    const shot = g.entities[n];
+    assert.equal(shot.owner, t, type + ' shot is owned by the tank');
+    assert.equal(ctx.canInteract(shot, t), false, type + ' shot ignores its own tank');
+    shot.x = t.x; shot.y = t.y;
+    const hp = t.health;
+    if (ctx.canInteract(shot, t) && ctx.collides(shot, t)) handleCollision(shot, t);
+    assert.equal(t.health, hp, type + ' shot deals no damage to its own tank');
+  }
 });
 test('every added tank runs 200 ticks of live fire without NaN', () => {
   for (const id of [63, 61, 62, 64, 65, 59, 66]) {
@@ -739,8 +786,9 @@ test('Mothership: one per team, 16 sides, destroying one ends it', () => {
   assert.equal(g.motherships[0].team, 'blue');
   assert.equal(g.motherships[1].team, 'red');
   assert.equal(g.motherships[0].sides, 16);
-  assert.equal(g.motherships[0].maxHealth, 3000);
-  assert.equal(g.motherships[0].absorb, 0, 'immovable');
+  assert.equal(g.motherships[0].maxHealth, 7000, '§9');
+  assert.equal(g.motherships[0].absorb, 0.01, '§4: ~99% knockback resistance, off its own def');
+  assert.equal(g.motherships[0].push, 8, '§4: pushes at the entity default');
   assert.equal(g.motherships[0].barrels.length, 16);
 
   g.motherships[0].applyDamage(1e9, null);
@@ -772,7 +820,9 @@ test('Breakout: you can only claim ground touching ground you already hold', () 
   assert.equal(adjacent.team, 'blue', 'claimed after the dwell time');
 });
 test('Breakout: camping your own tile collapses it and kills you', () => {
-  const g = new Game('breakout', 'T');
+  const g = new Game('breakout', 'T', { botCount: 0 });
+  g.entities = g.entities.filter((e) => e.type !== 'shape');   // the camp is the test, not the farm
+  g.wantedShapes = 0;
   const home = g.tiles.find((t) => t.col === 0 && t.row === 4);
   const t = g.player;
   t.team = 'blue'; t.protectedUntil = 0;
@@ -811,6 +861,143 @@ test('CTF: the barrier drops after five minutes', () => {
   assert.ok(g.notifications.some((n) => /barrier is down/.test(n.text)));
 });
 
+test('Survival: a countdown, then one life each and no way back in', () => {
+  const g = new Game('survival', 'T', { botCount: 6 });
+  assert.equal(g.mode.xp, 3);
+  assert.equal(g.noRespawn, false, 'the lobby is open while the clock runs');
+  g.player.protectedUntil = 0;
+  g.player.applyDamage(1e9, null);
+  assert.ok(g.respawnPlayer('T', g.player), 'and you can come back into it');
+  assert.equal(g.player.level, 1, 'a Survival round always starts from scratch');
+  for (let i = 0; i <= ctx.SURVIVAL.countdown; i++) g.step();
+  assert.equal(g.noRespawn, true, 'one life once the round is running');
+  assert.equal(g.botCount, 0, 'and nothing refills either');
+  assert.equal(g.respawnPlayer('T', g.player), null, 'no way back in');
+});
+test('Survival: the field and the shape quota close in on whoever is left', () => {
+  const g = new Game('survival', null, { headless: true, botCount: 8 });
+  for (let i = 0; i <= ctx.SURVIVAL.countdown; i++) g.step();
+  const wide = g.arena.size;
+  for (const t of g.entities.filter((e) => e.type === 'tank' && e.bot).slice(0, 6)) t.kill(null);
+  for (let i = 0; i < 200; i++) g.step();
+  assert.ok(g.arena.size < wide, 'arena closed ' + wide + ' -> ' + g.arena.size);
+  assert.equal(g.wantedShapes, ctx.survivalShapes(g.arena.size), 'quota tracks the width');
+  const shapes = g.entities.filter((e) => e.type === 'shape' && !e.dead).length;
+  assert.ok(shapes <= g.wantedShapes + ctx.SURVIVAL.cullRate, 'surplus swept: ' + shapes + ' for ' + g.wantedShapes);
+});
+test('Survival: the last tank standing takes it, and the next round starts clean', () => {
+  const g = new Game('survival', null, { headless: true, botCount: 4 });
+  for (let i = 0; i <= ctx.SURVIVAL.countdown; i++) g.step();
+  const bots = g.entities.filter((e) => e.type === 'tank' && e.bot);
+  bots[0].addScore(ctx.LEVEL_SCORE[20] - bots[0].score);
+  for (const t of bots.slice(1)) t.kill(null);
+  g.step();
+  assert.ok(g.roundEndsAt > 0, 'round scheduled to end');
+  assert.ok(g.notifications.some((n) => /last tank standing/.test(n.text)));
+  for (let i = 0; i < 400 && g.roundEndsAt; i++) g.step();
+  assert.equal(g.noRespawn, false, 'the lobby reopens');
+  assert.equal(g.botCount, 4, 'and the field refills');
+  assert.equal(g.arena.size, ctx.GAMEMODES.survival.size, 'at full size again');
+  let live = [];
+  for (let i = 0; i < 60 && live.length < 4; i++) {
+    g.step();
+    live = g.entities.filter((e) => e.type === 'tank' && e.bot && !e.dead);
+  }
+  assert.equal(live.length, 4, 'the field refilled');
+  assert.ok(live.every((t) => t.level === 1), 'and everyone starts over at 1, not a rung down from last round');
+});
+
+test('Tag: a tagged bot comes back on its killer team, not on the smallest one', () => {
+  // Only the human ever kept a tag: the respawn queue carried a level and
+  // nothing else, so every bot was re-balanced onto the emptiest team and the
+  // mode could not be won.
+  const g = new Game('tag', null, { headless: true, botCount: 4 });
+  const bots = g.entities.filter((e) => e.type === 'tank' && e.bot);
+  const victim = bots[0], killer = bots[1];
+  victim.team = 'blue'; killer.team = 'purple';
+  victim.protectedUntil = 0;
+  victim.applyDamage(1e9, killer);
+  assert.equal(g.botRespawn[g.botRespawn.length - 1].team, 'purple', 'the tag rides the queue');
+  assert.equal(g.spawnBot().team, 'purple');
+});
+test('Tag: a new round hands the colours back out instead of restarting one-sided', () => {
+  const g = new Game('tag', 'T', { botCount: 6 });
+  for (const e of g.entities) if (e.type === 'tank') { e.team = 'green'; e.nextTeam = 'green'; }
+  g.roundEndsAt = g.tick + 1;
+  g.step(); g.step();
+  assert.equal(g.player.nextTeam, null, 'you are nobody tag any more');
+  assert.equal(g.botRespawn.length, 0, 'and no bot is queued to come back green');
+  for (let i = 0; i < 60; i++) g.step();
+  const teams = new Set(g.entities.filter((e) => e.type === 'tank' && e.bot && !e.dead).map((e) => e.team));
+  assert.ok(teams.size > 1, 'the field is spread over the four teams again: ' + [...teams]);
+});
+
+test('Maze: 40 cells of 635 du, and its walls eat what is fired at them', () => {
+  const g = new Game('maze', 'T', { botCount: 0 });
+  assert.equal(g.arena.size, 25400, 'section 1: 40 cells x 635 du');
+  const wall = g.walls[0];
+  const t = g.player;
+  t.mouse.x = wall.x + 3000; t.mouse.y = wall.y;
+  t.input.fire = 1;
+  let fired = 0, past = 0;
+  for (let i = 0; i < 60; i++) {
+    t.x = wall.x - wall.size - 150; t.y = wall.y; t.vx = 0; t.vy = 0;
+    g.step();
+    for (const e of g.entities) {
+      if (e.type !== 'bullet' || e.dead) continue;
+      fired++;
+      if (e.x > wall.x) past++;
+    }
+  }
+  assert.ok(fired > 0, 'it fired');
+  assert.equal(past, 0, 'nothing gets through a maze wall');
+});
+
+test('Breakout: a claimed tile stops enemy fire and leaves the polygons alone', () => {
+  // `owner !== undefined` is true of every entity there is, so a claimed tile
+  // used to delete every shape standing on it, over and over, forever.
+  const g = new Game('breakout', 'T', { botCount: 0 });
+  const tile = g.tiles.find((t) => t.team === 'blue');
+  const shape = g.entities.find((e) => e.type === 'shape');
+  shape.x = tile.x; shape.y = tile.y;
+  const bullet = g.add(mk(g, { type: 'bullet', x: tile.x, y: tile.y, size: 10, team: 'red', maxHealth: 50 }));
+  bullet.owner = g.player;
+  g.step();
+  assert.equal(shape.dead, false, 'a polygon is not incoming fire');
+  assert.equal(bullet.dead, true, 'enemy fire dissolves on it');
+});
+
+test('CTF: the flags stand clear of the base, so an enemy can reach one alive', () => {
+  const g = new Game('ctf', 'T', { botCount: 0 });
+  const base = g.bases.find((b) => b.team === 'blue');
+  const flag = g.flags.find((f) => f.team === 'blue');
+  assert.ok(Math.abs(flag.x - base.x) > base.size,
+    'a base kills an enemy tank in half a second, so a flag inside one can never be stolen');
+  const red = g.spawnTank({ name: 'R', team: 'red' });
+  red.protectedUntil = 0;
+  for (let i = 0; i < 25 && !flag.carrier; i++) { red.x = flag.x; red.y = flag.y; g.step(); }
+  assert.equal(flag.carrier, red, 'it took the flag');
+  assert.equal(red.dead, false, 'and lived');
+});
+test('a mode reset takes its walls with it', () => {
+  const g = new Game('ctf', 'T', { botCount: 0 });
+  assert.equal(g.walls.length, 1, 'the barrier');
+  g.logic.reset(g);
+  assert.equal(g.walls.length, 1, 'the dead one does not linger, blocking spawns and sightlines');
+  assert.ok(g.walls.every((w) => !w.dead));
+});
+
+test('objective modes show the team tally, and Dominators stay off the scoreboard', () => {
+  const d = new Game('domination', 'T', { botCount: 3 });
+  for (let i = 0; i < 30; i++) d.step();
+  assert.ok(!d.leaderboard.some((e) => e.isDominator), 'a Dominator is not a player on nought points');
+  const b = new Game('breakout', 'T', { botCount: 3 });
+  for (let i = 0; i < 30; i++) b.step();
+  assert.equal(b.leaderboard.map((r) => r.name).sort().join(), 'Blue,Red', 'territory held, not players');
+  assert.equal(b.leaderboard[0].score, b.teamCounts[b.leaderboard[0].name.toLowerCase()]);
+  assert.ok(b.leader && b.leader.type === 'tank', 'the leader arrow still points at a tank');
+});
+
 test('possession parks your tank and hands the inputs over', () => {
   const g = new Game('domination', 'T');
   const dom = g.dominators[0];
@@ -842,7 +1029,7 @@ test('possession is refused across teams and released on death', () => {
 });
 
 test('every objective mode runs 400 ticks without NaN or crashes', () => {
-  for (const mode of ['domination', 'tag', 'mothership', 'breakout', 'ctf']) {
+  for (const mode of ['survival', 'domination', 'tag', 'mothership', 'breakout', 'ctf']) {
     const g = new Game(mode, 'T');
     for (let i = 0; i < 400; i++) g.step();
     assert.ok(g.entities.every((e) => Number.isFinite(e.x) && Number.isFinite(e.y)), mode + ': no NaN positions');
@@ -1053,6 +1240,33 @@ test('/firerate divides the reload, /bulletsize multiplies what comes out', () =
   runCommand(c, '/bulletsize 5');
   assert.ok(Math.abs(shot() - plain * 5) < 1e-6, 'shots five times the size');
 });
+test('/bulletspeed multiplies how fast shots travel', () => {
+  const g = new Game('sandbox', 'Me', { botCount: 0 });
+  const c = cmdCtx(g), t = g.player;
+  const rnd = Math.random; Math.random = () => 0;   // scatter would blur the muzzle speed
+  const shot = () => { t.barrels[0].shoot(); const p = g.entities[g.entities.length - 1];
+                       return { accel: p.accel, v: Math.hypot(p.vx, p.vy) }; };
+  const plain = shot();
+  runCommand(c, '/bulletspeed 4');
+  const fast = shot();
+  assert.ok(Math.abs(fast.accel - plain.accel * 4) < 1e-6, 'cruise speed x4');
+  assert.ok(Math.abs(fast.v - plain.v * 4) < 1e-6, 'muzzle kick scales too');
+  runCommand(c, '/bulletspeed 0');
+  const dead = shot();
+  assert.equal(dead.accel, 0);
+  assert.equal(dead.v, 0, 'shots drop out of the barrel');
+  Math.random = rnd;
+});
+test('/damage multiplies bullet damage', () => {
+  const g = new Game('sandbox', 'Me', { botCount: 0 });
+  const c = cmdCtx(g), t = g.player;
+  const dmg = () => { t.barrels[0].shoot(); return g.entities[g.entities.length - 1].damagePerTick; };
+  const plain = dmg();
+  runCommand(c, '/damage 7');
+  assert.ok(Math.abs(dmg() - plain * 7) < 1e-6, 'shots seven times the damage');
+  runCommand(c, '/damage 0');
+  assert.equal(dmg(), 0, 'harmless shots');
+});
 test('/botspawn random scatters over the map with a gap between them', () => {
   const g = new Game('ffa', 'Me', { botCount: 0 });
   const c = cmdCtx(g);
@@ -1086,6 +1300,18 @@ test('/botspawn takes a gap and no bot cap', () => {
   runCommand(c, '/killbots');
   runCommand(c, '/botspawn 200 50');                  // used to cap at 60
   assert.equal(g.entities.filter(e => e.type === 'tank' && e.bot && !e.dead).length, 200);
+});
+test('/killall clears the field but leaves the caller and the walls', () => {
+  const g = new Game('sandbox', 'Me', { botCount: 0 });
+  const c = cmdCtx(g);
+  runCommand(c, '/cheats on');
+  runCommand(c, '/botspawn 5');
+  runCommand(c, '/spawn square 5');
+  const walls = g.entities.filter(e => e.type === 'wall' && !e.dead).length;
+  runCommand(c, '/killall');
+  assert.equal(g.entities.filter(e => (e.type === 'tank' || e.type === 'shape') && !e.dead && e !== c.tank).length, 0);
+  assert.ok(!c.tank.dead, 'caller survives');
+  assert.equal(g.entities.filter(e => e.type === 'wall' && !e.dead).length, walls, 'walls untouched');
 });
 test('bots spawned at match start are spread over the whole map with gaps', () => {
   const g = new Game('ffa', 'Me');
@@ -1323,6 +1549,20 @@ test('missiles and minions carry diep barrel definitions', () => {
   assert.equal(G('MINION_BARREL').size, 85);
   assert.equal(G('MINION_BARREL').width, 50.4);
   assert.equal(G('MINION_BARREL').bullet.speed, 0.8);
+});
+
+console.log('\nRender — cull');
+vm.runInContext(readFileSync(new URL('js/render.js', import.meta.url), 'utf8'), ctx, { filename: 'js/render.js' });
+test('a 2-team base survives the cull from the far end of the arena', () => {
+  const g = new Game('team2', 'T', { botCount: 0 });
+  const base = g.bases[0];
+  let painted = 0;   // stub canvas: did anything actually get painted?
+  const stub = { fill() { painted++; }, rect() {}, beginPath() {}, closePath() {}, save() {}, restore() {}, stroke() {} };
+  const r = new ctx.Renderer({ width: 1920, height: 1080, getContext: () => stub }, g);
+  r.cam = { x: base.x, y: g.arena.top * 0.8, fov: 0.35 };   // hugging the top of our own half
+  base.px = base.x; base.py = base.y; base.pa = base.angle; base.psize = base.size;
+  r.drawEntity(base, 1);
+  assert.ok(painted > 0, 'base was culled even though it spans the whole arena height');
 });
 
 console.log(`\n${passed} passed\n`);

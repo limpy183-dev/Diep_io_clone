@@ -108,6 +108,9 @@ NetGame.prototype.read = function (b) {
 
 // Objective overlay for the minimap: tiles, dominators, motherships, flags.
 NetGame.prototype.readMapState = function (b) {
+  var size = b.rf32(), h = size / 2, a = this.arena;
+  a.left = -h; a.right = h; a.top = -h; a.bottom = h; a.size = size;
+  this.noRespawn = !!b.ru8();
   var n = b.ru16(), out = [];
   for (var i = 0; i < n; i++) {
     out.push({

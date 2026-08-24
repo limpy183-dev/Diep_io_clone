@@ -683,6 +683,7 @@
   // diep's stacked colour chips — one hue per mode, shaded a step darker on the bottom third
   var MODE_COLORS = {
     ffa:        ['#00E3DF', '#00BDB9'],
+    survival:   ['#E8B85C', '#C29847'],
     team2:      ['#8AE85C', '#71C247'],
     team4:      ['#F14E54', '#CC3E44'],
     maze:       ['#FFDE43', '#D9BC33'],
