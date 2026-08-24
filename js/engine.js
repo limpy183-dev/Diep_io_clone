@@ -874,17 +874,190 @@ Boss.prototype.onKill = function (source) {
 var BOT_NAMES = ['Zephyr', 'Nova', 'Vex', 'Kilo', 'Onyx', 'Rift', 'Sable', 'Juno', 'Pyre', 'Quill', 'Drift', 'Ember',
   'Halo', 'Lynx', 'Mako', 'Nyx', 'Orbit', 'Prism', 'Quasar', 'Rogue', 'Slate', 'Talon', 'Umbra', 'Vault', 'Wraith'];
 
-// Full 8-stat orders. The tail matters: a bot at level 45 holds 33 points and
-// a short list leaves the remainder unspendable forever, so every build ranks
-// all eight. Stats a class cannot take (a Smasher's bullet stats, max 0) are
-// refused by upgradeStat and fall through to the next entry on their own.
-// `ram` marks a body-damage build, which decides the class it upgrades into.
+// ---------------------------------------------------------------- builds
+// What kind of tank a class is, read off its own barrels rather than a hand-kept
+// list, so a tank added to tankdefs-extra.js classifies itself. The smasher
+// family is the one that cannot be read off a barrel it does not have: they are
+// exactly the classes whose postAddon carries body guards, or whose bullet stats
+// are capped at zero. Auto 3 and Auto 5 also carry no barrels and are *not*
+// rammers — their guns are the turrets.
+var KIND_BIT = { ram: 1, drone: 2, trap: 4, snipe: 8, gun: 16 };
+var BOT_KIND = [];
+function botKind(d) {
+  if (!d) return 'gun';
+  if (BOT_KIND[d.id]) return BOT_KIND[d.id];
+  var k;
+  if (!d.barrels.length) {
+    k = ((ADDONS[d.postAddon] || {}).guards || d.stats[S_DAMAGE].max === 0) ? 'ram' : 'gun';
+  } else {
+    var b = d.barrels[0].bullet.type;
+    // fieldFactor below 1 is a real zoom-out, and diep only pays it to the
+    // classes meant to shoot from outside the other tank's screen.
+    k = BOT_HOMING[b] ? 'drone' : b === 'trap' ? 'trap' : d.fieldFactor <= 0.9 ? 'snipe' : 'gun';
+  }
+  return (BOT_KIND[d.id] = k);
+}
+
+// How many classes of each kind sit at or below a class in the tree. Counted
+// rather than flagged, because a branch that leads to one drone tank and a branch
+// that leads to six are not the same offer: Twin reaches a Battleship eventually,
+// Sniper reaches the entire Overseer tree, and a bot that wants drones should be
+// taking the Sniper. Reachable two ways counts twice, which is fair — it is.
+var KIND_LIST = ['ram', 'drone', 'trap', 'snipe', 'gun'];
+var KINDS_BELOW = [];
+function botKindsBelow(id) {
+  if (KINDS_BELOW[id]) return KINDS_BELOW[id];
+  var d = TANK_DEFS[id];
+  if (!d) return [0, 0, 0, 0, 0];
+  var c = KINDS_BELOW[id] = [0, 0, 0, 0, 0];    // seeded before recursing: the tree
+  c[KIND_LIST.indexOf(botKind(d))]++;           // is a DAG, but a cycle would hang
+  var u = d.upgrades || [];
+  for (var i = 0; i < u.length; i++) {
+    var s = botKindsBelow(u[i]);
+    for (var j = 0; j < 5; j++) c[j] += s[j];
+  }
+  return c;
+}
+
+// Classes below `id` that this build is for.
+function botBelow(build, id) {
+  var c = botKindsBelow(id), n = 0;
+  for (var i = 0; i < 5; i++) if (build.mask & KIND_BIT[KIND_LIST[i]]) n += c[i];
+  return n;
+}
+
+// Rear-facing recoil per tick: what a Booster actually moves on. This is why the
+// ram builds are not only a Smasher thing — the whole Tri-Angle line rams on its
+// own recoil, and nothing in the class table says so except the geometry.
+var BOT_THRUST = [];
+function botThrust(d) {
+  if (BOT_THRUST[d.id] !== undefined) return BOT_THRUST[d.id];
+  var th = 0;
+  for (var i = 0; i < d.barrels.length; i++) {
+    var b = d.barrels[i];
+    th += Math.max(0, -Math.cos(b.angle || 0)) * (b.recoil || 0) / (b.reload || 1);
+  }
+  return (BOT_THRUST[d.id] = th);
+}
+
+// Priority inside a build: most-wanted stat first, ties broken by the community's
+// own stat-by-stat testing — penetration over damage, body damage over max health,
+// and the early points of regen and move speed (which are the effective ones) over
+// the last points of bullet speed (which are nearly free to skip).
+var GUN_PRIO = [S_PEN, S_DAMAGE, S_RELOAD, S_BSPEED, S_SPEED, S_HEALTH, S_BODY, S_REGEN];
+var RAM_PRIO = [S_BODY, S_HEALTH, S_SPEED, S_REGEN, S_PEN, S_DAMAGE, S_RELOAD, S_BSPEED];
+
+// A build is a *target*, not a priority list, and that is the whole change here.
+// A strict ordering can only ever say "max these four", so it has exactly four
+// corners of the stat space to land on — 4/2/4/4/6/6/6/1 and 2/3/2/5/7/7/7/0,
+// both standard builds, were unreachable, and every bot on the field converged
+// on one of the same handful of tanks.
+//
+// `pts` is written in the notation the wiki, the build calculator and every guide
+// use, which is the wire order reversed:
+//   HealthRegen / MaxHealth / BodyDamage / BulletSpeed / Penetration / Damage / Reload / MoveSpeed
+// `kinds` is the classes it is for. `ram` is still the hard split, because a role
+// commits to body damage or to a gun before it ever sees a class.
+function bld(name, ram, kinds, pts) {
+  if (typeof pts === 'string') pts = pts.split('/').map(Number).reverse();
+  var prio = ram ? RAM_PRIO : GUN_PRIO, mask = 0;
+  kinds.split(' ').forEach(function (k) { mask |= KIND_BIT[k] || 0; });
+  var order = [0, 1, 2, 3, 4, 5, 6, 7].sort(function (a, b) {
+    return (pts[b] - pts[a]) || (prio.indexOf(a) - prio.indexOf(b));
+  });
+  return { name: name, ram: ram, kinds: kinds, mask: mask, pts: pts, order: order };
+}
+
+// The builds the game is actually played with, lifted from the community build
+// tables rather than invented. Three archetypes run through them: glass cannons
+// (0/0/0/X/X/X/X/X — defence is offence), rammers (X/X/X/0/0/0/X/X), and bullet
+// smashers, which drop bullet speed to push a wall of slow shots ahead of them.
+// Every entry sums to 33, the level-45 budget; a class that caps a stat lower
+// spills the remainder down the same order, so none of them strands a point.
 var BOT_BUILDS = [
-  { ram: 0, order: [S_PEN, S_DAMAGE, S_RELOAD, S_BSPEED, S_HEALTH, S_SPEED, S_BODY, S_REGEN] },
-  { ram: 1, order: [S_BODY, S_HEALTH, S_SPEED, S_REGEN, S_PEN, S_DAMAGE, S_RELOAD, S_BSPEED] },
-  { ram: 0, order: [S_RELOAD, S_DAMAGE, S_PEN, S_SPEED, S_HEALTH, S_BSPEED, S_REGEN, S_BODY] },
-  { ram: 0, order: [S_HEALTH, S_PEN, S_DAMAGE, S_REGEN, S_BODY, S_RELOAD, S_SPEED, S_BSPEED] }
+  // --- glass cannon: all four bullet stats maxed, the single most common build
+  bld('Glass Cannon',   0, 'gun snipe trap',  '0/1/2/7/7/7/7/2'),
+  bld('Auto Gunner',    0, 'gun',             '3/2/0/7/7/7/7/0'),
+  bld('Sprayer',        0, 'gun',             '2/1/0/7/7/7/7/2'),
+  bld('Spread Shot',    0, 'gun',             '2/0/0/7/7/7/7/3'),
+  bld('Gunner Trapper', 0, 'trap snipe',      '0/2/3/7/7/7/7/0'),
+  bld('Stalker',        0, 'snipe',           '1/0/2/7/7/7/7/2'),
+  bld('Predator',       0, 'snipe',           '0/2/0/7/7/7/7/3'),
+  // --- bullet smasher: bullet speed traded away for a wall you can ram behind
+  bld('Bullet Wall',    0, 'gun',             '2/3/2/5/7/7/7/0'),
+  bld('Max Pen',        0, 'gun trap',        '3/4/5/0/7/7/7/0'),
+  bld('Fighter',        0, 'gun',             '0/3/4/0/7/7/7/5'),
+  bld('Trap Wall',      0, 'trap',            '7/5/0/0/7/7/7/0'),
+  bld('Octo',           0, 'gun',             '2/1/2/7/5/7/7/2'),
+  // --- long guns: bullet speed is range, and range is the whole sniper line
+  bld('Marksman',       0, 'snipe',           '3/1/3/7/7/7/5/0'),
+  bld('Skirmisher',     0, 'snipe gun',       '2/1/2/7/7/7/0/7'),
+  bld('Destroyer',      0, 'gun',             '4/1/2/7/7/7/5/0'),
+  // --- drones: reload only sets respawn on a capped swarm, so it goes to legs
+  bld('Drone Speed',    0, 'drone',           '3/2/0/7/7/7/0/7'),
+  bld('Drone Swarm',    0, 'drone',           '0/1/2/7/7/7/2/7'),
+  bld('Battleship',     0, 'drone',           '2/3/0/7/7/7/0/7'),
+  bld('Necromancer',    0, 'drone',           '2/0/2/7/7/7/7/1'),
+  bld('Overtrapper',    0, 'drone trap',      '3/1/3/5/7/7/7/0'),
+  bld('Drone Fortress', 0, 'drone gun',       '5/3/4/7/7/7/0/0'),
+  // --- bruisers: enough body to answer a rammer without giving up the gun
+  bld('Bruiser',        0, 'gun trap',        '0/7/7/5/5/5/4/0'),
+  bld('Hybrid',         0, 'gun snipe',       '4/2/4/4/6/6/6/1'),
+  // --- rammers: the smasher line, where bullet stats are capped at zero anyway
+  bld('Smasher',        1, 'ram',             '3/10/10/0/0/0/0/10'),
+  bld('Landmine',       1, 'ram',             '10/10/10/0/0/0/0/3'),
+  bld('Speed Ram',      1, 'ram',             '7/8/8/0/0/0/0/10'),
+  bld('Ram Hybrid',     1, 'ram',             '3/8/7/2/2/4/0/7'),
+  // --- recoil rammers: a gun class that rams by firing away from where it goes
+  bld('Recoil Ram',     1, 'gun',             '7/7/7/0/0/0/7/5'),
+  bld('Boost Ram',      1, 'gun',             '5/7/7/0/0/0/7/7'),
+  bld('Booster',        1, 'gun',             '7/7/7/0/2/0/3/7'),
+  bld('Trap Ram',       1, 'trap',            '7/7/7/0/2/2/3/5')
 ];
+
+// Not everyone copies a build off a wiki. `wild` is how far this bot strays from
+// the one it picked: zero for most of them, a couple of traded points for some,
+// and a third of the build rearranged for the few who make their own up.
+function botVary(b, wild) {
+  if (wild <= 0) return b;
+  var pts = b.pts.slice(), n = Math.round(wild * 14), i, from, to;
+  for (i = 0; i < n; i++) {
+    from = (Math.random() * 8) | 0; to = (Math.random() * 8) | 0;
+    if (from !== to && pts[from] > 0 && pts[to] < 10) { pts[from]--; pts[to]++; }
+  }
+  return bld(b.name + '*', b.ram, b.kinds, pts);
+}
+
+// Which of the builds this bot likes suits the tank it is driving now. Asked
+// again on every class it takes, because that is what a player does: the drone
+// build comes out when the Overseer does, not at spawn.
+//
+// It gives up on a build only when the branch it is standing on cannot reach it
+// any more, and that is the whole subtlety here. Asking "which of these fits the
+// tank I am in" at spawn answers "the bullet one" every time — a level-1 Tank is
+// a gun class — so a bot that wanted drones would drop the drone build before it
+// ever saw the Sniper that leads to one, and the entire field would end up
+// shooting bullets. Its first pick is its plan; the rest are what it settles for.
+function botPickBuild(t) {
+  var likes = t.botLikes, i;
+  if (!likes || !likes.length) return t.build || pick(BOT_BUILDS);
+  var here = KIND_BIT[botKind(TANK_DEFS[t.tankId])] || 0;
+  var fits = function (b) { return (b.mask & here) || botBelow(b, t.tankId); };
+  var b = (t.build && likes.indexOf(t.build) >= 0) ? t.build : likes[0];
+  if (fits(b)) return b;
+  for (i = 0; i < likes.length; i++) if (fits(likes[i])) return likes[i];
+  return b;
+}
+
+// Spend one point. Targets first, in the build's own order; once every target is
+// met — a class caps a stat lower, or the build was mutated down under 33 — the
+// same order runs again unbounded, so no bot ever strands a point it holds.
+function botSpend(t) {
+  var b = t.build, o = b.order, i;
+  for (i = 0; i < 8; i++) if (t.stats[o[i]] < b.pts[o[i]] && t.upgradeStat(o[i])) return true;
+  for (i = 0; i < 8; i++) if (t.upgradeStat(o[i])) return true;
+  return false;
+}
 
 // Difficulty is one flat bag of numbers, so a custom difficulty is nothing more
 // than a lerp between `easy` and `extreme` — see botSkill().
@@ -1009,16 +1182,28 @@ function botBarrelFacing(d) {
   return Math.max(0, Math.cos(d.angle || 0));
 }
 
+// What this tank shoots with. Auto 3 and Auto 5 carry no barrels of their own —
+// their guns are the turrets — and reading barrels alone priced a five-gun tank
+// as a body and sent it charging in at zero range like a Smasher. Cached on the
+// tank because the turret list is rebuilt on every class change.
+function botGuns(t) {
+  if (t.barrels && t.barrels.length) return t.barrels;
+  if (!t.turrets || !t.turrets.length) return null;
+  if (!t.aiGuns) t.aiGuns = t.turrets.map(function (u) { return u.barrel; });
+  return t.aiGuns;
+}
+
 // Roughly what this tank puts out per tick. Only ever used as a ratio between
 // candidate targets, so the collision multipliers that scale every one of them
 // equally are left out.
 function botDps(t) {
   // Drones and traps are candidates too now, and they carry neither — they hit
   // with the body, same as a rammer.
-  if (!t.barrels || !t.barrels.length || !t.stats) return Math.max(1, t.damagePerTick);
+  var g = botGuns(t);
+  if (!g || !t.stats) return Math.max(1, t.damagePerTick);
   var dps = 0, dmg = 7 + t.stats[S_DAMAGE] * 3;
-  for (var i = 0; i < t.barrels.length; i++) {
-    var b = t.barrels[i];
+  for (var i = 0; i < g.length; i++) {
+    var b = g[i];
     dps += botBarrelFacing(b.def) * dmg * b.def.bullet.damage * (b.def.pellets || 1) / b.period();
   }
   return Math.max(0.02, dps);          // floor only guards the divide
@@ -1110,7 +1295,7 @@ function botShouldFight(t, tgt, sk) {
 // can go and still arrive while the target is roughly where you aimed: one
 // second of flight. That is the range bots actually fight at.
 function botReach(t) {
-  var b = t.barrels && t.barrels[0];
+  var g = botGuns(t), b = g && g[0];
   if (!b || !t.stats) return 0;
   var bd = b.def.bullet;
   var cruise = (20 + BSPEED_GAIN * t.stats[S_BSPEED]) * bd.speed;
@@ -1158,7 +1343,10 @@ function botAim(t, goal, sk) {
 // Cached on every class change: both answers are read every tick.
 function botClassify(t) {
   var d = TANK_DEFS[t.tankId];
-  t.rammer = d.barrels.length === 0;
+  t.aiGuns = null;                                // turret list is rebuilt per class
+  // A rammer is a class with no gun at all, which is not the same as a class with
+  // no barrels: Auto 3 and Auto 5 have five between them, mounted on turrets.
+  t.rammer = botKind(d) === 'ram';
   t.aiDrone = d.barrels.some(function (b) { return !!BOT_HOMING[b.bullet.type]; });
   t.claimsSquares = !!d.flags.canClaimSquares;    // Necromancer: a Square is a drone
   t.zoomer = !!d.flags.zoomAbility;               // Predator: right-click moves the camera
@@ -1168,12 +1356,25 @@ function botClassify(t) {
   t.sightScale = 1 / (d.fieldFactor || 1);
 }
 
-// Does this class suit the stat build the bot committed to at spawn? A rammer
-// build upgrading into a Sniper wastes both halves of itself.
+// Full credit for a class that is what the build wants, half for one that opens
+// the branch it lives on. Without the second half a drone build could never get
+// to a drone: nothing at level 15 is a drone tank, so it would take the Twin
+// with the most barrels every time and never see an Overseer.
+function botFit(d, build) {
+  if (build.mask & (KIND_BIT[botKind(d)] || 0)) return 12;
+  var n = botBelow(build, d.id);
+  return n ? Math.min(9, 2 + n) : 0;            // capped under 12: here beats later
+}
+
+// Does this class suit the stat build the bot committed to? A rammer build
+// upgrading into a Sniper wastes both halves of itself — and so does a drone
+// build on a Penta Shot, which is the half this used to miss.
 function botClassScore(d, build) {
   if (!d) return -Infinity;
-  var ram = d.barrels.length === 0;
-  if (build.ram) return (ram ? 12 : 0) + d.speed * 2 + d.maxHealth * 0.02;
+  var fit = botFit(d, build);
+  // A ram build is not only a Smasher thing: the Tri-Angle line rams on its own
+  // recoil, so thrust counts and a Booster is a real answer to a ram roll.
+  if (build.ram) return fit + botThrust(d) * 3 + d.speed * 2 + d.maxHealth * 0.02;
   // Effective barrels, not a headcount: the same facing weight botDps uses. A
   // headcount ranked a Booster's four thrusters and a Quad Tank's three side
   // guns as real output, so gun builds kept upgrading into classes that shoot
@@ -1183,7 +1384,7 @@ function botClassScore(d, build) {
   // ponytail: still a proxy — it prices where a barrel points, not how hard it
   // hits. Real per-class DPS needs a drone model (a drone's worth is its time
   // alive, not its spawn reload), which is a bigger job with no ground truth.
-  return (ram ? -12 : 6 + Math.min(n, 6)) + d.maxHealth * 0.01;
+  return (botKind(d) === 'ram' ? -12 : 6 + Math.min(n, 6)) + fit + d.maxHealth * 0.01;
 }
 
 // What a bot is willing to spend on a shape — health above the reserve it keeps
@@ -1492,7 +1693,7 @@ function botDodge(t, sk, mv) {
 
 function tickBot(t) {
   var g = t.game, sk = t.botSkill || g.botSkill || BOT_SKILL.medium, i = t.input, k;
-  if (!t.build || !t.build.order) t.build = pick(BOT_BUILDS);
+  if (!t.build || !t.build.pts) t.build = pick(BOT_BUILDS);
   if (t.aiTankId !== t.tankId) { botClassify(t); t.aiTankId = t.tankId; }   // upgrades, /clone, /class
   // Let go on distance and nothing else. Reading the engagement off botThreatens
   // every tick meant it blinked out the moment you released fire or turned a few
@@ -1837,25 +2038,56 @@ function tickBot(t) {
   } else t.ambush = 0;
 
   // spend points and take upgrades
-  if (t.statsAvailable > 0) {
-    for (k = 0; k < t.build.order.length; k++) if (t.upgradeStat(t.build.order[k])) break;
-  }
+  if (t.statsAvailable > 0) botSpend(t);
   if (t.pendingUpgrades.length) {
-    var choice;
+    var choice, best = -Infinity, pool = [], sc = [];
+    for (k = 0; k < t.pendingUpgrades.length; k++) {
+      sc[k] = botClassScore(TANK_DEFS[t.pendingUpgrades[k]], t.build);
+      if (sc[k] > best) best = sc[k];
+    }
+    // Taking the upgrade is not the only move. Smasher is a level-30 upgrade
+    // hanging straight off the basic Tank, so a bot that takes anything at 15 can
+    // never reach one — which is why, before this, not one bot in the arena ever
+    // became a Smasher, whatever build it rolled. If the class this build wants is
+    // on the branch it is standing on but is not open yet, hold and keep levelling.
+    //
+    // Deliberately outside the roll below. That roll is re-taken every tick, so
+    // over the fifteen levels it takes to reach the Smasher the unluckiest tick
+    // always wins and the bot blind-picks a Twin within a second of waiting. This
+    // is a threshold instead, the same way ambushing and the Predator zoom are:
+    // planning a branch is something a bot either does or does not do.
+    if (sk.sense >= 0.4 && botWaitsFor(t, best)) return;
     if (Math.random() < sk.sense) {
       // Everything close to the best, not the strict best: the score is a rough
-      // proxy, and 28 bots all converging on one class reads as broken. The
-      // margin is under the rammer bonus, so a body build still goes body.
-      var best = -Infinity, pool = [], sc = [];
-      for (k = 0; k < t.pendingUpgrades.length; k++) {
-        sc[k] = botClassScore(TANK_DEFS[t.pendingUpgrades[k]], t.build);
-        if (sc[k] > best) best = sc[k];
-      }
-      for (k = 0; k < t.pendingUpgrades.length; k++) if (sc[k] >= best - 2) pool.push(t.pendingUpgrades[k]);
+      // proxy, and 28 bots all converging on one class reads as broken. It prices
+      // where a barrel points, not how hard it hits, so a Destroyer's one enormous
+      // gun reads as worse than a Gunner's four small ones and the whole branch
+      // under it — Annihilator, Hybrid, Skimmer, Rocketeer, Glider, Firework —
+      // went unplayed. An experimenter's margin is wider, which is what an
+      // experimenter is; it is still nowhere near the 24 points between a gun
+      // class and a body one, so nobody wanders into a Smasher holding a Sniper.
+      var margin = 2 + (t.botWild || 0) * 6;
+      for (k = 0; k < t.pendingUpgrades.length; k++) if (sc[k] >= best - margin) pool.push(t.pendingUpgrades[k]);
       choice = pick(pool);
     } else choice = pick(t.pendingUpgrades);
     t.upgradeTo(choice);
+    // New class, so the build is worth asking again — the drone build comes out
+    // when the Overseer does. Points already spent stay spent, same as a player's.
+    t.build = botPickBuild(t);
   }
+}
+
+// Is something better than `best` one branch away and a few levels off? Only
+// asked about this class's own upgrade list, so it can never hold out for a
+// class it has already made unreachable.
+function botWaitsFor(t, best) {
+  var ups = TANK_DEFS[t.tankId].upgrades || [];
+  for (var i = 0; i < ups.length; i++) {
+    var d = TANK_DEFS[ups[i]];
+    if (!d || d.flags.devOnly || t.level >= d.levelRequirement) continue;
+    if (botClassScore(d, t.build) > best + 2) return true;
+  }
+  return false;
 }
 
 // ---------------------------------------------------------------- game
@@ -1964,7 +2196,22 @@ Game.prototype.spawnBot = function () {
   // A Brawler that rolled a bullet build is a Brawler in name only, so the role
   // picks the build rather than the other way round.
   var want = BOT_BUILDS.filter(function (b) { return t.botRole.ram < 0 || b.ram === t.botRole.ram; });
-  t.build = pick(want.length ? want : BOT_BUILDS);
+  if (!want.length) want = BOT_BUILDS;
+  // Taste, not a build: one to three the bot likes, and it runs whichever fits
+  // whatever class it ends up in. That is what stops the field looking like four
+  // tanks copied twenty times — a bot that likes drones and traps plays an
+  // Overlord this life and a Tri-Trapper the next, off the same personality.
+  // wild is its appetite for going off-meta: zero for a bit over half of them,
+  // then a flat tail out to a build of its own making.
+  var wild = Math.max(0, Math.random() * 2.2 - 1.2);
+  var picked = [];
+  for (var n = 1 + ((Math.random() * 3) | 0); n > 0; n--) {
+    var b = pick(want);
+    if (picked.indexOf(b) === -1) picked.push(b);
+  }
+  t.botWild = wild;
+  t.botLikes = picked.map(function (p) { return botVary(p, wild); });
+  t.build = botPickBuild(t);
   // Points and classes are spent one per tick by tickBot, so a level 14 spawn
   // sorts itself out inside a second — checkUpgrades only opens the first door.
   t.checkUpgrades();

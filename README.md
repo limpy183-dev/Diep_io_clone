@@ -56,7 +56,7 @@ authoritative one, then broadcasts the result. Three flavours:
 - **Local** (`/help`, `/clear`, `/mute`, `/fps`, `/ping`, …) never leave the browser.
 - **World** (`/me`, `/roll`, `/w`, `/players`, `/nick`, …) run wherever the world is.
 - **Cheats** (`/god`, `/max`, `/class`, `/tp`, `/boss`, `/nuke`, `/army`, `/rain`, `/disco`,
-  `/timewarp`, `/view`, … 47 of them) are gated on `ctx.sandbox`: always allowed
+  `/timewarp`, `/view`, … 50 of them) are gated on `ctx.sandbox`: always allowed
   offline, online only inside a Sandbox arena. The gate is checked by whoever owns the world, so a client cannot cheat
   its way past it. `/help` lists everything, `/cheats` lists just those.
 
@@ -181,15 +181,23 @@ node -e "const fs=require('fs');fs.writeFileSync('js/tankdefs.js','var TANK_DEFS
   dissolve, and rammer ejection.
 - **UI** — scoreboard, score/level bars, stat panel with queueing, upgrade cards, minimap,
   leader arrow, notifications, class-tree overlay, death screen with killer attribution.
-- **Chat** — top-left overlay, arena-wide online, 74 slash commands including a cheat set
+- **Chat** — top-left overlay, arena-wide online, 76 slash commands including a cheat set
   that only unlocks offline or in a Sandbox arena. See above.
-- **28 bots** with build orders and class choices, so the leaderboard is alive. *Play
+- **28 bots** with real builds and class choices, so the leaderboard is alive. *Play
   Offline* opens a difficulty picker first — Easy through Extreme, or Custom, which
   exposes the six skill dials (aim, reflexes, dodging, footwork, aggression, game sense)
   and the bot count. The setting is also reachable from the menu's *change* link and from
   `/difficulty <name>` in chat. Bots lead their shots, strafe, dodge incoming fire, pick
   targets on threat rather than proximity, retreat when hurt, and space themselves by
   their own weapon's reach — how much of that they do is what the difficulty sets.
+- **31 builds**, taken from the community build tables rather than invented, covering the
+  three archetypes players actually run: glass cannons, rammers and bullet smashers, plus
+  the drone, trap and sniper variants. Each bot rolls a *taste* at spawn — one to three
+  builds it likes — and runs whichever fits the class it ends up in, so a bot that likes
+  drones plays an Overlord one life and a Battleship the next. It also rolls how far it
+  strays from the book: most copy a build exactly, some trade a couple of points, a few
+  make their own up. Classes are chosen to serve the build and to reach the branch it
+  lives on, including waiting out the level-15 upgrade when what it wants opens at 30.
 
 ## Deliberately not built
 

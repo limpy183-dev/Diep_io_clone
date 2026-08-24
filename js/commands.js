@@ -672,6 +672,25 @@ function botCensus(g) {
   if (!total) return 'nobody.';
   return Object.keys(n).sort().map(function (k) { return n[k] + ' ' + k; }).join(', ') + '.';
 }
+// Same argument as the role census: a build nobody can see is decoration, and
+// this is the one question you cannot answer by looking at the arena — two bots
+// on the same class can be running completely different spreads.
+cmd('botbuilds bb', {
+  cat: 'cheat', cheat: true, help: 'What the bots out there are building, most common first.',
+  run: function (ctx) {
+    var n = {}, total = 0;
+    ctx.game.entities.forEach(function (e) {
+      if (e.type !== 'tank' || !e.bot || e.dead || !e.build) return;
+      n[e.build.name] = (n[e.build.name] || 0) + 1; total++;
+    });
+    if (!total) return 'No bots out there. /botspawn <n> first.';
+    var keys = Object.keys(n).sort(function (a, b) { return n[b] - n[a] || (a < b ? -1 : 1); });
+    return total + ' bots, ' + keys.length + ' builds — ' + keys.slice(0, 12).map(function (k) {
+      return n[k] + ' ' + k;
+    }).join(', ') + (keys.length > 12 ? ', +' + (keys.length - 12) + ' more.' : '.')
+      + '  A * is a bot that went off the book.';
+  }
+});
 cmd('difficulty diff', {
   cat: 'cheat', cheat: true, args: '<name>', help: 'How good the bots are: ' + BOT_DIFFICULTIES.join(', ') + '.',
   run: function (ctx, a, rest) {

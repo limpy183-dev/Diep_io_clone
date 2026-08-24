@@ -353,6 +353,35 @@
     flushQueue();
   }
 
+  // ------------------------------------------- background play
+  // A hidden tab has its timers throttled to 1 Hz, then to 1/min after five
+  // minutes, which starves the sim pump. Worker timers are exempt, so when the
+  // toggle is on the pump ticks from a worker instead of setInterval.
+  var bgPlay = false, simWorker = null;
+  try { bgPlay = localStorage.getItem('ta_bgplay') === '1'; } catch (e) { /* private mode */ }
+
+  function simWork() {
+    if (simWorker !== null) return simWorker;
+    try {
+      var src = 'var t=0;onmessage=function(e){clearInterval(t);if(e.data)t=setInterval(function(){postMessage(0)},e.data)}';
+      simWorker = new Worker(URL.createObjectURL(new Blob([src], { type: 'text/javascript' })));
+      simWorker.onmessage = function () { simPump(); };
+    } catch (e) { simWorker = 0; }   // blob workers are blocked on file://
+    return simWorker;
+  }
+
+  function startSimTimer() {
+    stopSimTimer();
+    if (online) return;
+    if (bgPlay && simWork()) simWorker.postMessage(MSPT);
+    else simTimer = setInterval(simPump, MSPT);
+  }
+
+  function stopSimTimer() {
+    if (simTimer) { clearInterval(simTimer); simTimer = 0; }
+    if (simWorker) simWorker.postMessage(0);
+  }
+
   function frame(now) {
     if (!running) return;
     requestAnimationFrame(frame);
@@ -433,8 +462,7 @@
     if (!online) CHAT.system('Press T or Enter to chat. Type /help for commands, /cheats for the rest.');
     running = true; last = 0; acc = 0; netAcc = 0; closedAt = 0;
     simLast = 0;
-    if (simTimer) clearInterval(simTimer);
-    simTimer = online ? 0 : setInterval(simPump, MSPT);
+    startSimTimer();
     requestAnimationFrame(frame);
   }
 
@@ -576,6 +604,20 @@
   document.getElementById('settingsBtn').addEventListener('click', function () { settings.classList.add('open'); });
   document.getElementById('set-back').addEventListener('click', function () { settings.classList.remove('open'); });
 
+  var bgBtn = document.getElementById('bgplay');
+  function paintBgPlay() {
+    bgBtn.textContent = 'Background Play: ' + (bgPlay ? 'On' : 'Off');
+    bgBtn.classList.toggle('alt', bgPlay);
+    bgBtn.classList.toggle('ghost', !bgPlay);
+  }
+  bgBtn.addEventListener('click', function () {
+    bgPlay = !bgPlay;
+    try { localStorage.setItem('ta_bgplay', bgPlay ? '1' : '0'); } catch (e) { /* private mode */ }
+    paintBgPlay();
+    if (running) startSimTimer();
+  });
+  paintBgPlay();
+
   window.addEventListener('keydown', function (e) {
     if (settings.classList.contains('open')) {
       if (e.key === 'Escape') { settings.classList.remove('open'); e.preventDefault(); }
@@ -613,7 +655,7 @@
 
   function leave() {
     running = false;
-    if (simTimer) { clearInterval(simTimer); simTimer = 0; }
+    stopSimTimer();
     if (net) { net.close(); net = null; }
     online = false;
     CHAT.hide();

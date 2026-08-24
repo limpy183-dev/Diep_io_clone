@@ -14,6 +14,7 @@ const { botScan, botDps, botShouldFight, SHAPES, BOT_SKILL: SK } = ctx;
 const { botAimedAt, botShootingAt, botThreatens, botWinOdds, angleDiff, TANK_DEFS: DEFS } = ctx;
 const { botClear2, botFarmBudget, SHAPES: SH, respawnLevel, Shape: Sh, REGEN_HP_WAIT } = ctx;
 const { BOT_ROLES, botContact, botCanTank, botRole, CONTACT_TOUCHES, botClassify } = ctx;
+const { botKind, botPickBuild } = ctx;
 
 // A role is rolled at spawn and shifts what a bot wants. Every test that is not
 // about roles is measuring the AI itself, so pin the neutral one here and let
@@ -117,6 +118,116 @@ test('class choice follows the build the bot committed to', () => {
   const gunner = TANK_DEFS.filter(Boolean).filter((d) => d.barrels.length > 1)[0];
   assert.ok(botClassScore(smasher, ram) > botClassScore(gunner, ram), 'ram build should want the smasher');
   assert.ok(botClassScore(gunner, gun) > botClassScore(smasher, gun), 'gun build should not');
+});
+
+test('every build is a legal 33-point spread that ranks all eight stats', () => {
+  // 33 is the level-45 budget. Ranking all eight is what stops a class that caps
+  // a stat lower from stranding the remainder for the rest of the game.
+  for (const b of BOT_BUILDS) {
+    const sum = b.pts.reduce((a, c) => a + c, 0);
+    assert.equal(sum, 33, b.name + ' spends ' + sum + ', not 33');
+    assert.equal(b.pts.length, 8, b.name + ' is not eight stats');
+    assert.equal([...b.order].sort((x, y) => x - y).join(''), '01234567', b.name + ' order is not a permutation');
+    assert.ok(b.mask > 0, b.name + ' is for no class at all');
+  }
+});
+
+test('a bot builds to its target, not just top-down', () => {
+  // The whole reason builds are targets: a strict priority list can only ever say
+  // "max these four", so a real build like 2/3/2/5/7/7/7/0 was unreachable.
+  const g = bare('hard');
+  const partial = BOT_BUILDS.filter((b) => !b.ram && b.pts.some((p) => p > 0 && p < 7))[0];
+  assert.ok(partial, 'the table should carry builds with part-filled stats');
+  const t = g.spawnBot();
+  t.botLikes = [partial];
+  t.build = partial;
+  t.addScore(LEVEL_SCORE[45]);
+  for (let i = 0; i < 300; i++) { g.tick++; tickBot(t); }
+  // It may have taken a class since; only the stats its class can still hold are
+  // the ones the target speaks to.
+  for (let s = 0; s < 8; s++) {
+    const cap = Math.min(t.build.pts[s], TANK_DEFS[t.tankId].stats[s].max);
+    assert.ok(t.stats[s] >= cap, t.build.name + ' stat ' + s + ': ' + t.stats[s] + ' < target ' + cap);
+  }
+  assert.equal(t.statsAvailable, 0, 'and it still spent everything');
+});
+
+test('a class is read by what it shoots with, not by whether it has barrels', () => {
+  // Auto 3 and Auto 5 carry no barrels — their guns are turrets — and calling
+  // them rammers sent a five-gun tank charging to point-blank with no body damage.
+  const byName = (n) => TANK_DEFS.filter(Boolean).filter((d) => d.name === n)[0];
+  assert.equal(botKind(byName('Auto 5')), 'gun', 'Auto 5 has five guns');
+  assert.equal(botKind(byName('Auto Smasher')), 'ram', 'the Auto Smasher really is a body');
+  assert.equal(botKind(byName('Smasher')), 'ram');
+  assert.equal(botKind(byName('Overlord')), 'drone');
+  assert.equal(botKind(byName('Tri-Trapper')), 'trap');
+  assert.equal(botKind(byName('Ranger')), 'snipe');
+  const g = bare('hard');
+  const t = g.spawnBot();
+  t.setTank(TANK_DEFS.filter(Boolean).filter((d) => d.name === 'Auto 5')[0].id);
+  botClassify(t);
+  assert.equal(t.rammer, false, 'so it does not charge like one');
+  assert.ok(botReach(t) > 500, 'and it knows how far its turrets shoot: ' + botReach(t));
+});
+
+test('a bot that wants a Smasher waits for one instead of taking a Twin', () => {
+  // Smasher is a level-30 upgrade hanging off the basic Tank, so anything taken
+  // at 15 locks it out for the rest of the life. Before this, no bot ever became
+  // one — the ram builds all ended up on whatever tier 2 they were handed.
+  // Extreme, because Hard blind-picks a quarter of its upgrades on purpose and
+  // this is a test about the deliberate choice, not about the dice.
+  const g = bare('extreme');
+  const smash = BOT_BUILDS.filter((b) => b.ram && b.kinds === 'ram')[0];
+  const t = g.spawnBot();
+  t.botLikes = [smash];
+  t.botWild = 0;
+  t.build = smash;
+  t.addScore(LEVEL_SCORE[15]);
+  for (let i = 0; i < 60; i++) { g.tick++; tickBot(t); }
+  assert.equal(TANK_DEFS[t.tankId].name, 'Tank', 'it should still be holding at 15');
+  t.addScore(LEVEL_SCORE[30] - t.score);
+  for (let i = 0; i < 60; i++) { g.tick++; tickBot(t); }
+  assert.equal(TANK_DEFS[t.tankId].name, 'Smasher', 'and cash it in at 30');
+});
+
+test('a preference survives spawn instead of collapsing onto bullets', () => {
+  // A level-1 Tank is a gun class, so "which of my builds fits the tank I am in"
+  // answers "the bullet one" every time — and a bot that wanted drones would drop
+  // the drone build before it ever saw the Sniper that leads to one.
+  const g = bare('hard');
+  const drone = BOT_BUILDS.filter((b) => b.kinds === 'drone')[0];
+  const bullet = BOT_BUILDS.filter((b) => b.kinds === 'gun')[0];
+  const t = g.spawnBot();
+  t.botLikes = [drone, bullet];
+  t.build = null;
+  assert.equal(botPickBuild(t), drone, 'first choice is the plan');
+  // ...and it gives the plan up only once the branch it is on cannot reach it.
+  t.setTank(TANK_DEFS.filter(Boolean).filter((d) => d.name === 'Penta Shot')[0].id);
+  assert.equal(botPickBuild(t), bullet, 'a Penta Shot will never make a drone');
+});
+
+test('the field does not converge on a handful of tanks', () => {
+  // The complaint the build table exists to answer: four stat orders and a barrel
+  // count put every bot in the arena on the same few classes.
+  const g = bare('hard');
+  const seen = {};
+  const N = 90;
+  for (let i = 0; i < N; i++) {
+    const t = rawSpawnBot.call(g);
+    for (let lvl = 2; lvl <= 45; lvl++) {
+      t.addScore(LEVEL_SCORE[lvl] - t.score);
+      for (let n = 0; n < 3; n++) { g.tick++; tickBot(t); }
+    }
+    const k = TANK_DEFS[t.tankId].name;
+    seen[k] = (seen[k] || 0) + 1;
+    assert.equal(t.statsAvailable, 0, k + ' stranded points on ' + t.build.name);
+    g.entities = g.entities.filter((e) => e !== t);          // keep the arena empty
+  }
+  const names = Object.keys(seen), top = Math.max(...names.map((k) => seen[k]));
+  assert.ok(names.length >= 12, 'only ' + names.length + ' classes in ' + N + ' lives: ' + names.join(', '));
+  assert.ok(top / N < 0.25, 'one class took ' + Math.round(100 * top / N) + '% of the field');
+  const kinds = new Set(names.map((k) => botKind(TANK_DEFS.filter(Boolean).filter((d) => d.name === k)[0])));
+  assert.equal(kinds.size, 5, 'every kind of tank should get played, saw: ' + [...kinds].join(', '));
 });
 
 console.log('\nAim');
@@ -1363,7 +1474,14 @@ test('every objective mode actually moves its scoreboard with bots alone', () =>
     const g = new Game(mode, null, { headless: true, botCount: 24, difficulty: 'extreme' });
     for (const t of g.entities.filter((e) => e.type === 'tank' && e.bot)) t.addScore(LEVEL_SCORE[30]);
     const before = read(g);
-    for (let i = 0; i < 4000; i++) g.step();
+    // Stop the moment it moves rather than always burning the full budget. A
+    // fixed 4000 ticks failed about one run in three on nothing but dice — an
+    // arena where the bots spent the first minute killing each other instead
+    // reached 5,900 of a Dominator's 6,000 HP and ran out of clock. Faster in
+    // the common case and no longer a coin flip in the slow one; what is being
+    // asserted is that the mode progresses at all, not that it does so inside
+    // exactly 160 seconds.
+    for (let i = 0; i < 12000 && read(g) <= before; i++) g.step();
     assert.ok(read(g) > before, mode + ' never moved: ' + before + ' -> ' + read(g));
   }
 });

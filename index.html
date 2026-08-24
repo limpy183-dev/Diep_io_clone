@@ -162,6 +162,9 @@
                 margin-top: 14px; padding: 12px 0 2px; background: #CDCDCD;
                 box-shadow: 0 -10px 12px -6px rgba(205,205,205,.98); }
   .pk-actions button { width: 150px; }
+  .pk-toggle { display: flex; flex-direction: column; align-items: center; gap: 5px; margin-top: 16px; }
+  .pk-toggle button { width: auto; margin-top: 0; font-size: 16px; padding: 11px 18px; }
+  .pk-toggle small { color: #666; font-size: 12px; }
   .ghost { background: #8A8A8A; }
   #pk-play { background: #00E16E; width: 220px; }
 </style>
@@ -218,6 +221,10 @@
         Sandbox only: <b>K</b> level up &middot; <b>\</b> cycle class &middot; <b>;</b> god mode
       </div>
       <p id="hint"></p>
+      <div class="pk-toggle">
+        <button id="bgplay" class="ghost">Background Play: Off</button>
+        <small>keep the offline game running while the tab sits in the background</small>
+      </div>
       <div class="pk-actions">
         <button id="set-back" class="ghost">Back</button>
       </div>
