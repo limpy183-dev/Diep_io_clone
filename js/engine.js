@@ -198,6 +198,11 @@ Barrel.prototype.period = function () {
 Barrel.prototype.tick = function (shooting) {
   var d = this.def;
   this.recoilAnim *= 0.8;
+  // Necromancer's two barrels never fire: its drones are reanimated Squares and
+  // nothing else. They are declared droneCount 0, which used to fall straight
+  // past the child cap below and let left-click mint free, permanent,
+  // controllable drones out of thin air — an unbounded army for no shapes.
+  if (d.bullet.type === 'necrodrone') return;
   if (d.droneCount) {
     this.children = this.children.filter(function (c) { return !c.dead; });
     if (this.children.length >= this.maxDrones()) { this.cycle = this.period(); return; }
@@ -1691,6 +1696,39 @@ function botDodge(t, sk, mv) {
   });
 }
 
+// Line of sight against maze walls. Bots used to shoot straight through them:
+// the bullet dies on the wall, so the shot is pure noise plus a muzzle flash
+// telling the other side of the corridor exactly where they are. Asked only
+// about the one thing already picked, so it costs one wall sweep per bot per
+// tick rather than one per candidate, and nothing at all outside Maze and the
+// CTF barrier, where g.walls is empty. Segment vs AABB by slab clipping.
+function botLOS(t, e) {
+  var w = t.game.walls;
+  if (!w.length) return true;
+  var dx = e.x - t.x, dy = e.y - t.y;
+  for (var i = 0; i < w.length; i++) {
+    var r = w[i], lo = 0, hi = 1, a, b, k;
+    if (dx === 0) { if (Math.abs(t.x - r.x) > r.size) continue; }
+    else {
+      a = (r.x - r.size - t.x) / dx; b = (r.x + r.size - t.x) / dx;
+      if (a > b) { k = a; a = b; b = k; }
+      if (a > lo) lo = a;
+      if (b < hi) hi = b;
+      if (lo > hi) continue;
+    }
+    if (dy === 0) { if (Math.abs(t.y - r.y) > r.width) continue; }
+    else {
+      a = (r.y - r.width - t.y) / dy; b = (r.y + r.width - t.y) / dy;
+      if (a > b) { k = a; a = b; b = k; }
+      if (a > lo) lo = a;
+      if (b < hi) hi = b;
+      if (lo > hi) continue;
+    }
+    return false;
+  }
+  return true;
+}
+
 function tickBot(t) {
   var g = t.game, sk = t.botSkill || g.botSkill || BOT_SKILL.medium, i = t.input, k;
   if (!t.build || !t.build.pts) t.build = pick(BOT_BUILDS);
@@ -2015,7 +2053,7 @@ function tickBot(t) {
   // Barrels snap to the mouse in the same tick, so there is never a swing to
   // wait out: anything with a barrel and a target shoots. Rammers hold fire
   // because they have no barrel to fire.
-  i.fire = (goal && !t.rammer) ? 1 : 0;
+  i.fire = (goal && !t.rammer && botLOS(t, goal)) ? 1 : 0;
   // Drone classes shove their drones off something that got on top of them.
   // Predator holds the zoom while it has no fight, which is the only stretch
   // where a camera 1500 units down the barrel buys it anything.

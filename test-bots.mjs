@@ -14,7 +14,7 @@ const { botScan, botDps, botShouldFight, SHAPES, BOT_SKILL: SK } = ctx;
 const { botAimedAt, botShootingAt, botThreatens, botWinOdds, angleDiff, TANK_DEFS: DEFS } = ctx;
 const { botClear2, botFarmBudget, SHAPES: SH, respawnLevel, Shape: Sh, REGEN_HP_WAIT } = ctx;
 const { BOT_ROLES, botContact, botCanTank, botRole, CONTACT_TOUCHES, botClassify } = ctx;
-const { botKind, botPickBuild } = ctx;
+const { botKind, botPickBuild, botLOS } = ctx;
 
 // A role is rolled at spawn and shifts what a bot wants. Every test that is not
 // about roles is measuring the AI itself, so pin the neutral one here and let
@@ -1379,6 +1379,55 @@ test('a maxed bot still declines a fight it plainly loses', () => {
   assert.equal(botShouldFight(t, foe, SK.hard), false);
   t.health = t.maxHealth;
   assert.equal(botShouldFight(t, foe, SK.hard), true, 'and takes it back once healthy');
+});
+
+console.log('\nLine of sight');
+// A bullet dies on a maze wall, so firing through one is pure noise plus a
+// muzzle flash saying where you are. Slab clipping, so the diagonal cases are
+// the ones worth pinning: a corner-to-corner line that misses the box used to
+// be the easy false positive.
+const wallAt = (x, y, halfW, halfH) => ({ x, y, size: halfW, width: halfH });
+const seer = (walls, x, y) => ({ x, y, game: { walls } });
+
+test('a wall between two tanks blocks the shot; empty ground does not', () => {
+  const w = [wallAt(0, 0, 100, 400)];
+  assert.equal(botLOS(seer(w, -500, 0), { x: 500, y: 0 }), false, 'straight through it');
+  assert.equal(botLOS(seer(w, -500, 900), { x: 500, y: 900 }), true, 'clear of it');
+  assert.equal(botLOS(seer([], -500, 0), { x: 500, y: 0 }), true, 'no walls at all');
+});
+
+test('a line that passes the corner of a wall is not blocked by its slabs', () => {
+  // Down the y = x diagonal, past a box sitting off it. The line crosses the
+  // box's x slab at y in [-100, 100] and its y slab at x in [300, 500], so the
+  // two intervals never overlap — testing the axes independently would call
+  // this a hit, and the clip is what says otherwise.
+  assert.equal(botLOS(seer([wallAt(0, 400, 100, 100)], -600, -600), { x: 600, y: 600 }), true, 'misses the box');
+  assert.equal(botLOS(seer([wallAt(0, 0, 100, 100)], -600, -600), { x: 600, y: 600 }), false, 'through the box');
+});
+
+test('a wall behind the target does not block it', () => {
+  const w = [wallAt(400, 0, 100, 400)];
+  assert.equal(botLOS(seer(w, -500, 0), { x: 0, y: 0 }), true, 'the wall is past the target');
+  assert.equal(botLOS(seer(w, -500, 0), { x: 800, y: 0 }), false, 'the wall is between them');
+});
+
+test('a bot holds fire at something it cannot see through a maze wall', () => {
+  const g = new Game('maze', null, { headless: true, botCount: 0, difficulty: 'extreme' });
+  g.wantedShapes = 0;
+  g.entities = g.entities.filter((e) => e.type !== 'shape');
+  const w = g.walls[0];
+  const t = place(g.spawnBot(), w.x - w.size - 220, w.y);
+  const mark = place(g.spawnBot(), w.x + w.size + 220, w.y);
+  t.team = 'blue'; mark.team = 'red';
+  mark.input.up = 0;
+  t.aiTarget = mark; t.aiEngaged = mark;
+  tickBot(t);
+  assert.equal(t.input.fire, 0, 'held fire through the wall');
+  // Same bot, same target, wall taken away: the trigger comes straight back.
+  g.walls = [];
+  t.aiTarget = mark; t.aiEngaged = mark;
+  tickBot(t);
+  assert.equal(t.input.fire, 1, 'fires once the wall is gone');
 });
 
 console.log('\nObjectives');

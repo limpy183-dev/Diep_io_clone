@@ -155,10 +155,14 @@ var CHAT = (function () {
     run: function () { return Math.round(CHAT.fps) + ' fps'; }
   });
   cmd('ping', {
-    cat: 'info', local: true, args: '', help: 'Report the gap between server snapshots.',
+    cat: 'info', local: true, args: '', help: 'Report your round trip to the server.',
     run: function (ctx) {
       if (!ctx.online) return 'Offline — the simulation is running in this tab.';
-      return 'Snapshots landing every ' + Math.round(ctx.game.packetDt || MSPT) + ' ms (server ticks every ' + MSPT + ' ms).';
+      // The real round trip, measured off the input the server just acknowledged
+      // back to us. Snapshot cadence is a different number and worth both.
+      var rtt = ctx.game.ping;
+      return (rtt ? Math.round(rtt) + ' ms round trip. ' : '') +
+        'Snapshots landing every ' + Math.round(ctx.game.packetDt || MSPT) + ' ms (server ticks every ' + MSPT + ' ms).';
     }
   });
 

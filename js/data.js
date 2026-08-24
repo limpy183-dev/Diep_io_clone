@@ -48,8 +48,10 @@ var TEAM_COLORS = {
   purple: [C.purple, C.purpleS]
 };
 
-// stat bar colours, indexed in UI order (top to bottom)
-var STAT_COLORS = ['#E8B478', '#E070E0', '#A878E8', '#6EA8E8', '#E8D878', '#E87878', '#8AE878', '#78E8E0'];
+// stat bar colours, indexed in UI order (top to bottom): Health Regen, Max
+// Health, Body Damage, Bullet Speed, Bullet Penetration, Bullet Damage, Reload,
+// Movement Speed. Read off the real client (DIEP_CONSTANTS.md 3.1).
+var STAT_COLORS = ['#FCAD76', '#F943FF', '#8543FF', '#437FFF', '#FFDE43', '#FF4343', '#82FF43', '#43FFF9'];
 // upgrade card colour cycle
 var CARD_COLORS = ['#00B2E1', '#00E16E', '#F14E54', '#FFDE43', '#4F42B5', '#BF7FF5', '#F177DD', '#C0C0C0'];
 

@@ -34,14 +34,16 @@ npm test
 | `js/engine.js` | 25 Hz simulation: entities, physics, damage, barrels, projectiles, AI, bots |
 | `js/modes.js` | The five objective modes + possession (H) |
 | `js/protocol.js` | Binary wire format, shared by client and server |
-| `js/net.js` | Client-side world mirror + snapshot interpolation |
+| `js/net.js` | Client-side world mirror, snapshot interpolation, own-tank prediction |
 | `js/render.js` | Canvas 2D drawing + HUD |
 | `js/commands.js` | The chat command table, shared by client and server |
 | `js/chat.js` | Chat overlay (DOM) + the client half of the command dispatch |
 | `js/main.js` | Input, fixed-timestep loop, menu |
 | `server.js` | Authoritative game server (also serves the static files) |
-| `test.mjs` | 73 simulation tests |
-| `test-net.mjs` | 38 network tests against a live server |
+| `test.mjs` | 100 simulation tests |
+| `test-net.mjs` | 50 network tests against a live server |
+| `test-bots.mjs` | 75 bot-AI tests |
+| `test-wheel.mjs` | class-tree wheel geometry |
 
 ## Chat and commands
 
@@ -129,6 +131,19 @@ points the player's level actually permits.
 The renderer is shared verbatim. `js/net.js` rebuilds a *Game-shaped* object from
 snapshots, so `render.js` cannot tell an online match from an offline one — there
 is no networked-vs-local branching anywhere in the drawing code.
+
+**Your own tank is predicted.** Everything else on screen is the server's word,
+interpolated between the last two snapshots. Waiting a full round trip to watch your
+own tank answer a key is the one thing that made this feel unlike the real game, so
+the client runs the same three lines of `Tank` movement locally as well: every input
+packet carries a sequence number, the server echoes back the last one it applied, and
+each snapshot rewinds your tank to the position that input produced and replays the
+inputs the server has not seen yet. A disagreement — a wall, a knockback, a move the
+server refused — is settled by the replay inside one snapshot rather than by the
+client insisting. Prediction switches itself off whenever your keys are not what moves
+the thing the camera is on: piloting a Dominator, or watching someone with `/view`.
+The echoed sequence number also gives a real round-trip figure, which is what `/ping`
+now reports.
 
 **Wire format.** A typical view is ~150 entities at 25 Hz. As JSON that is roughly
 1.2 Mbps; packed into the binary format in `js/protocol.js` it is about 390 kbps.
@@ -299,6 +314,58 @@ Building the close sequence caught the worst of the networking bugs:
    as `'Arena closed: No players can joi'`. The cap is now the format's real 255-byte
    ceiling, and it stops on a character boundary so a multi-byte character is never split.
    Name limits live in the server's `sanitize()`, where they belong.
+
+A parity-and-hardening pass over the finished game found six more, and closed five
+gaps that had never been built at all:
+
+10. **Necromancer could mint drones out of nothing.** Its two barrels are declared
+    `droneCount: 0`, which fell straight past the child cap in `Barrel.tick` — so
+    holding fire spawned permanent, controllable necro drones with no cap and no
+    Squares consumed. The class exists to reanimate Squares and nothing else, so
+    those barrels now never fire; `tryClaim` is the only thing that makes a drone,
+    and it has always respected the `11 + reloadStat` cap.
+11. **`/cheats on` opened a public arena.** The gate was written as Sandbox-only
+    online, but the switch itself was not gated: any player in a live FFA match
+    could hand `/god`, `/nuke` and forty-odd others to everyone in it. Online it
+    now refuses; offline the arena is yours and the switch stays.
+12. **A full server bricked the Play button.** The join was answered with a notice
+    and then nothing — socket open, no arena, no tank, and no close event to send
+    the client back to the menu. It now says why and hangs up, and the client
+    reports the reason instead of "Disconnected from server".
+13. **A stalled client grew the server's memory without limit.** Snapshots were
+    queued onto the socket at 25 a second whether or not it was draining. A
+    snapshot is whole-world state, so one is now skipped rather than queued when
+    the send buffer is more than a megabyte behind — leaving `client.seen`
+    untouched with it, so the next snapshot still carries the creates that one
+    would have.
+14. **Notification lifetimes were lost in transit.** `notify(text, ticks)` carries
+    its own duration; the wire dropped it and the client guessed 100 ticks at
+    everything, so a 40-tick toggle and a 7.5-second capture banner sat on screen
+    for the same four seconds. The duration now ships with the text.
+15. **The upgrade panel could not be re-opened.** Collapsing it hid the cards until
+    a *new* tier unlocked, so collapsing at level 15 read as a lost upgrade. The
+    collapse now leaves its tab behind.
+
+Three things that were simply wrong on screen:
+
+16. **The hit flash was white.** Every entity blended toward `#FFFFFF` on damage,
+    which washed a Square out to the same colour as a shiny one. It is red.
+17. **Ubuntu was never actually loaded.** Every font string in the DOM and on the
+    canvas asked for it and silently fell back to Verdana. One `<link>`; offline
+    it falls back exactly as before, so nothing depends on the fetch.
+18. **The stat-bar colours had drifted.** `DIEP_CONSTANTS.md` lists all eight off
+    the real client and `data.js` carried desaturated near-misses of them — right
+    order, wrong hues. Replaced with the documented values.
+
+And two the bots were missing:
+
+19. **Bots fired through maze walls.** Nothing in the target scan asked whether the
+    shot could reach — the bullet died on the wall, so it was pure noise plus a
+    muzzle flash telling the other side of the corridor where they were. `botLOS`
+    clips the segment against the wall boxes, and it runs once per bot per tick
+    against the target already chosen rather than once per candidate. Outside Maze
+    and the CTF barrier `walls` is empty and it costs nothing.
+20. **Your own tank waited a round trip.** See *Own tank is predicted*, above.
 
 ## Attribution
 

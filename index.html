@@ -4,6 +4,11 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
 <title>Tank Arena</title>
+<!-- Every font string in the DOM and on the canvas asks for Ubuntu; without this
+     it silently fell back to Verdana, which is the single biggest visual gap.
+     Offline it just falls back again, so nothing depends on the fetch. -->
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Ubuntu:wght@400;700&display=swap">
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body { width: 100%; height: 100%; overflow: hidden; background: #CDCDCD;
@@ -33,18 +38,34 @@
                   text-shadow: 0 1px 0 rgba(255,255,255,.18); }
 
   /* diep shades the bottom third of every field a step darker, over a soft drop shadow */
-  input, select, button { font: inherit; font-weight: bold; border: none;
-                          border-radius: 7px; padding: 16px 20px; outline: none;
-                          box-shadow: 0 4px 7px rgba(0,0,0,.32); }
+  input, button { font: inherit; font-weight: bold; border: none;
+                  border-radius: 7px; padding: 16px 20px; outline: none;
+                  box-shadow: 0 4px 7px rgba(0,0,0,.32); }
   input { width: var(--w); text-align: left; font-size: 26px; color: #333;
           background: #fff; box-shadow: none; padding: 20px 24px; margin-top: 14px; }
   input::placeholder { color: #A6A6A6; }
-  select { color: #17323a; cursor: pointer; width: 100%;
-           font-size: 22px; appearance: none; text-overflow: ellipsis;
-           background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23245' stroke-width='3.4' stroke-linecap='round'><path d='M5 9l7 7 7-7'/></svg>"),
-                             linear-gradient(#7BE3DF 0 66%, #63C8C4 66%);
-           background-repeat: no-repeat, no-repeat;
-           background-position: right 16px center, 0 0; background-size: 26px, 100% 100%; }
+  /* Game Mode picker: diep's stacked colour chips. The selected mode is the
+     closed chip; opening fans every mode out beneath it, selected on top. */
+  .modedrop { position: relative; width: 100%; font-size: 22px; z-index: 3; }
+  .modedrop-list { display: flex; flex-direction: column; border-radius: 7px;
+                   overflow: hidden; box-shadow: 0 4px 7px rgba(0,0,0,.32); }
+  .modedrop:not(.open) .modedrop-item:not(:first-child) { display: none; }
+  .modedrop-item { padding: 16px 52px 16px 20px; color: #fff; font-weight: bold;
+                   text-align: left; cursor: pointer;
+                   text-shadow: 0 2px 0 rgba(0,0,0,.22);
+                   background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='3.4' stroke-linecap='round' stroke-linejoin='round'><path d='M5 9l7 7 7-7'/></svg>"),
+                                     linear-gradient(var(--c1) 0 66%, var(--c2) 66%);
+                   background-repeat: no-repeat, no-repeat;
+                   background-position: right 16px center, 0 0;
+                   background-size: 24px, 100% 100%; }
+  .modedrop.open .modedrop-item:first-child { background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='3.4' stroke-linecap='round' stroke-linejoin='round'><path d='M5 15l7-7 7 7'/></svg>"),
+                                     linear-gradient(var(--c1) 0 66%, var(--c2) 66%); }
+  /* one layer instead of two here, so the chevron's 24px size/offset must go too */
+  .modedrop.open .modedrop-item:not(:first-child) { padding-right: 20px;
+                   background-image: linear-gradient(var(--c1) 0 66%, var(--c2) 66%);
+                   background-size: 100% 100%; background-position: 0 0; }
+  .modedrop.open .modedrop-list { position: absolute; top: 0; left: 0; right: 0; }
+  .modedrop-item:hover { filter: brightness(1.08); }
   button { background: linear-gradient(#12A9DD 0 66%, #0D8CB8 66%); color: #fff;
            cursor: pointer; font-size: 24px; text-shadow: 0 2px 0 rgba(0,0,0,.22);
            width: calc(var(--w) * .5); margin-top: 12px; }
@@ -181,7 +202,7 @@
   <h1>DIEP<em>.IO</em></h1>
   <p class="sub">shoot polygons &middot; level up &middot; pick a class &middot; survive</p>
   <div class="row">
-    <label class="field"><span>Game Mode</span><select id="mode"></select></label>
+    <label class="field"><span>Game Mode</span><div id="mode" class="modedrop"></div></label>
     <label class="field"><span>Server</span>
       <input id="server" class="server" placeholder="ws://localhost:8137" autocomplete="off"></label>
   </div>

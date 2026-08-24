@@ -8,7 +8,7 @@
   var canvas = document.getElementById('game');
   var menu = document.getElementById('menu');
   var nameInput = document.getElementById('name');
-  var modeSelect = document.getElementById('mode');
+  var modeSelect = null; // built by buildModeDrop() below; exposes .value
   var serverInput = document.getElementById('server');
   var playBtn = document.getElementById('play');
   var onlineBtn = document.getElementById('playOnline');
@@ -264,6 +264,7 @@
     var lay = renderer.upgradeLayout(), i;
     function inside(r) { return r && x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h; }
     if (lay) {
+      if (inside(lay.reopen)) { renderer.upgradeHidden = false; return true; }
       for (i = 0; i < lay.cards.length; i++) if (inside(lay.cards[i])) { doUpgrade(lay.cards[i].id); return true; }
       if (inside(lay.close) || inside(lay.ignore)) { renderer.upgradeHidden = true; return true; }
       if (inside(lay.panel)) return true;             // panel swallows its own clicks
@@ -315,9 +316,10 @@
   // geometry is canvas pixels, the overlay is CSS pixels.
   function chatTop() {
     var lay = renderer.upgradeLayout();
-    if (!lay) return 12;
+    var box = lay && (lay.panel || lay.reopen);
+    if (!box) return 12;
     var dpr = canvas.width / window.innerWidth;
-    return Math.round((lay.panel.y + lay.panel.h) / dpr) + 6;
+    return Math.round((box.y + box.h) / dpr) + 6;
   }
 
   // The offline sim runs off its own clock, pumped from both rAF and an interval:
@@ -400,7 +402,10 @@
       var w = mouseWorld();
       p.mouse.x = w.x; p.mouse.y = w.y;
       netAcc += dt;
-      if (netAcc >= MSPT) { netAcc = 0; net.sendInput(localInput, p.mouse, cheats); }
+      // Carry the remainder instead of dropping it: zeroing here ran the input
+      // clock slow, and prediction steps once per packet, so a slow input clock
+      // is a slow local tank.
+      if (netAcc >= MSPT) { netAcc = Math.min(netAcc - MSPT, MSPT); net.sendInput(localInput, p.mouse, cheats); }
       flushQueue();
       net.clientTick();
       var a = net.alpha();
@@ -675,11 +680,69 @@
   } catch (e) { /* ignore */ }
   if (!serverInput.value) serverInput.value = defaultServer();
 
-  Object.keys(GAMEMODES).forEach(function (k) {
-    var o = document.createElement('option');
-    o.value = k; o.textContent = GAMEMODES[k].name;
-    modeSelect.appendChild(o);
-  });
+  // diep's stacked colour chips — one hue per mode, shaded a step darker on the bottom third
+  var MODE_COLORS = {
+    ffa:        ['#00E3DF', '#00BDB9'],
+    team2:      ['#8AE85C', '#71C247'],
+    team4:      ['#F14E54', '#CC3E44'],
+    maze:       ['#FFDE43', '#D9BC33'],
+    domination: ['#FF8A3D', '#DB7330'],
+    tag:        ['#F177DD', '#CD5FBA'],
+    mothership: ['#12A9DD', '#0D8CB8'],
+    breakout:   ['#4F42B5', '#403599'],
+    ctf:        ['#7B9BD9', '#6482BD'],
+    sandbox:    ['#BF7FF5', '#A063D6']
+  };
+
+  function buildModeDrop() {
+    var root = document.getElementById('mode');
+    var list = document.createElement('div');
+    list.className = 'modedrop-list';
+    root.appendChild(list);
+
+    var value = 'ffa';
+    try { value = localStorage.getItem('ta_mode') || 'ffa'; } catch (e) { /* ignore */ }
+    if (!GAMEMODES[value]) value = 'ffa';
+
+    function makeItem(k) {
+      var el = document.createElement('div');
+      el.className = 'modedrop-item';
+      el.textContent = GAMEMODES[k].name;
+      var c = MODE_COLORS[k] || ['#8A8A8A', '#6E6E6E'];
+      el.style.setProperty('--c1', c[0]);
+      el.style.setProperty('--c2', c[1]);
+      el.addEventListener('click', function (e) {
+        e.stopPropagation();
+        if (root.classList.contains('open')) {
+          if (el === list.firstChild) {
+            root.classList.remove('open'); // header chip just collapses
+          } else {
+            value = k;
+            try { localStorage.setItem('ta_mode', k); } catch (err) { /* ignore */ }
+            root.classList.remove('open');
+            render();
+          }
+        } else {
+          root.classList.add('open');
+        }
+      });
+      return el;
+    }
+
+    function render() {
+      var keys = Object.keys(GAMEMODES);
+      keys.sort(function (a, b) { return (a === value ? 0 : 1) - (b === value ? 0 : 1); });
+      list.innerHTML = '';
+      keys.forEach(function (k) { list.appendChild(makeItem(k)); });
+    }
+
+    document.addEventListener('click', function () { root.classList.remove('open'); });
+    render();
+
+    return { get value() { return value; } };
+  }
+
+  modeSelect = buildModeDrop();
 
   loadDiff();
   buildPicker();

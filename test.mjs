@@ -992,10 +992,12 @@ test('a tank killed by an orphaned bullet is credited to an unnamed tank', () =>
 // The command table is browser script too, so it drops into the same context.
 vm.runInContext(readFileSync(new URL('js/commands.js', import.meta.url), 'utf8'), ctx, { filename: 'js/commands.js' });
 const { runCommand, cheatsOK } = ctx;
-const cmdCtx = (g) => {
+// `online` is the shared-arena flag, not "is there a socket": it is what stops
+// one player opening cheats for everyone else, so the tests take it either way.
+const cmdCtx = (g, online = false) => {
   const said = [];
   const view = { at: null };
-  return { game: g, tank: g.player, online: true, name: 'Me', said, view,
+  return { game: g, tank: g.player, online, name: 'Me', said, view,
     get sandbox() { return cheatsOK(g); },
     setView: (e) => { view.at = e; },
     say: (t) => said.push(t), broadcast: (t) => said.push(t) };
@@ -1013,6 +1015,15 @@ test('cheats are shut in a normal arena until /cheats on opens it', () => {
   assert.equal(g.player.godMode, true);
   runCommand(c, '/cheats off');
   assert.equal(cheatsOK(g), false);
+});
+test('/cheats on cannot open a shared online arena', () => {
+  const g = new Game('ffa', 'Me', { botCount: 0 });
+  const c = cmdCtx(g, true);
+  runCommand(c, '/cheats on');
+  assert.match(c.said.pop(), /Sandbox-only/);
+  assert.equal(cheatsOK(g), false);
+  runCommand(c, '/god');
+  assert.ok(!g.player.godMode);
 });
 test('a Sandbox is always open and will not be shut', () => {
   const g = new Game('sandbox', 'Me', { botCount: 0 });

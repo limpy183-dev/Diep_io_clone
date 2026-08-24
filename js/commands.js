@@ -156,7 +156,8 @@ function runCommand(ctx, raw) {
   var args = rest ? rest.split(/\s+/) : [];
   var c = COMMANDS[key];
   if (!c) return ctx.say('Unknown command /' + key + ' — try /help');
-  if (c.cheat && !ctx.sandbox) return ctx.say('/' + c.name + ' is a cheat — cheats are off here. Run /cheats on to turn them on for this arena.');
+  if (c.cheat && !ctx.sandbox) return ctx.say('/' + c.name + ' is a cheat — cheats are off here. ' +
+    (ctx.online ? 'Online they only work in a Sandbox arena.' : 'Run /cheats on to turn them on for this arena.'));
   if (c.needsTank && (!ctx.tank || ctx.tank.dead)) return ctx.say('You have to be alive for /' + c.name + '.');
   var out;
   try { out = c.run(ctx, args, rest); }
@@ -257,13 +258,19 @@ cmd('cheats', {
   cat: 'info', args: '[on|off]', help: 'List the cheat commands, or turn them on for this arena.',
   run: function (ctx, a) {
     if (a.length) {
+      // One player must not be able to hand /god and /nuke to a public arena.
+      // Offline the arena is yours, so the switch stays; online it is a shared
+      // match and Sandbox is the only room cheats belong in.
+      if (ctx.online) return 'Cheats are Sandbox-only online. Join a Sandbox arena, or play offline.';
       if (ctx.game.mode.sandbox) return 'This is a Sandbox — cheats are always on here.';
       ctx.game.cheatsOn = onOff(a[0], ctx.game.cheatsOn);
       ctx.broadcast(ctx.name + ' turned cheats ' + (ctx.game.cheatsOn ? 'ON for this arena' : 'OFF'));
       return;
     }
     return 'CHEATS: ' + helpList('cheat') +
-      '\n' + (ctx.sandbox ? 'Cheats are enabled here.' : 'Cheats are off — /cheats on turns them on for this arena.');
+      '\n' + (ctx.sandbox ? 'Cheats are enabled here.'
+        : ctx.online ? 'Cheats only work in a Sandbox arena online.'
+        : 'Cheats are off — /cheats on turns them on for this arena.');
   }
 });
 cmd('keys controls', {
@@ -873,7 +880,7 @@ cmd('view spectate watch', {
 // Same camera as /view, but the target is re-picked by whoever owns the world
 // (main.js offline, tickArena online), so the crown changing hands drags the
 // camera with it.
-cmd('viewleader watchleader king vl', {
+cmd('viewleader viewtop watchleader king vl vt', {
   cat: 'cheat', cheat: true, args: '[off]',
   help: 'Watch whoever is #1, and keep watching whoever takes the lead off them.',
   run: function (ctx, a) {

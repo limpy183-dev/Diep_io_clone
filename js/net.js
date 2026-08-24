@@ -26,6 +26,11 @@ function NetGame(url, name, mode, hooks) {
   this.byId = new Map();
   this.overlay = [];
   this.myId = 0;
+  // own-tank prediction: see predictTick/reconcile below
+  this.seq = 0;
+  this.hist = [];
+  this.pred = null;
+  this.predPrev = null;
   this.lastPacket = 0;
   this.pingSentAt = 0;
   this.ping = 0;
@@ -83,9 +88,12 @@ NetGame.prototype.read = function (b) {
   if (op === SV.UPDATE) return this.readUpdate(b);
   if (op === SV.NOTIFY) {
     var txt = b.rstr();
-    // remember why we are about to be dropped, so the menu can say so
-    if (/closed/i.test(txt)) this.closeNotice = txt;
-    this.notifications.push({ text: txt, ttl: 100 });
+    var ttl = b.remaining() >= 2 ? b.ru16() : 100;
+    // remember why we are about to be dropped, so the menu can say so. A full
+    // server hangs up straight after this line, and "Disconnected from server"
+    // is not an answer anyone can act on.
+    if (/closed|full/i.test(txt)) this.closeNotice = txt;
+    this.notifications.push({ text: txt, ttl: ttl });
     return;
   }
   if (op === SV.DEATH) return this.readDeath(b);
@@ -128,11 +136,14 @@ NetGame.prototype.readWelcome = function (b) {
   }
   this.player.dead = false;
   this.player.killedBy = null;
+  this.pred = this.predPrev = null;
+  this.hist.length = 0;
   this.byId.clear();
   if (this.hooks.onReady) this.hooks.onReady();
 };
 
 function rgb(r, g, b) { return '#' + ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1); }
+function nowMs() { return typeof performance !== 'undefined' ? performance.now() : Date.now(); }
 
 NetGame.prototype.readDeath = function (b) {
   var p = this.player;
@@ -154,10 +165,11 @@ NetGame.prototype.readUpdate = function (b) {
   this.myId = b.ru32();
   var fov = b.rf32();
   var camX = b.ri16(), camY = b.ri16();
+  var ack = b.ru16();
   var p = this.player;
   p.fov = fov;
 
-  var alive = b.ru8();
+  var flags = b.ru8(), alive = flags & 1, driving = !!(flags & 2), svx = 0, svy = 0;
   if (alive) {
     p.dead = false;
     p.score = b.ru32();
@@ -173,6 +185,7 @@ NetGame.prototype.readUpdate = function (b) {
     p.autoSpin = !!b.ru8();
     p.spawnTick = b.ru32();
     p.kills = b.ru8();
+    svx = b.ri16() / 64; svy = b.ri16() / 64;
     p.scaleFactor = Math.pow(1.01, p.level - 1);
     // drop queued points the server has already granted
     while (p.queued.length && p.statsAvailable === 0) p.queued.shift();
@@ -219,6 +232,11 @@ NetGame.prototype.readUpdate = function (b) {
   // mirror our own tank's transform onto the HUD player object
   var mine = this.byId.get(this.myId);
   if (mine) {
+    if (driving) {
+      this.reconcile(mine, svx, svy, ack);
+      mine.px = this.predPrev.x; mine.py = this.predPrev.y;
+      mine.x = this.pred.x; mine.y = this.pred.y;
+    } else { this.pred = this.predPrev = null; this.hist.length = 0; }
     p.px = p.x; p.py = p.y; p.pa = p.angle;
     p.x = mine.x; p.y = mine.y; p.angle = mine.angle; p.size = mine.size;
     p.fill = mine.fill; p.stroke = mine.stroke;
@@ -228,7 +246,7 @@ NetGame.prototype.readUpdate = function (b) {
   if (this.leader && this.leader.id === this.myId) this.leader = null;
 
   this.entities = Array.from(this.byId.values());
-  var now = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+  var now = nowMs();
   // Track how far apart snapshots actually land. A server running a hair slow
   // than MSPT leaves the lerp pinned at 1 for the tail of every tick, which
   // reads as a stutter on every other tank.
@@ -359,6 +377,81 @@ NetGame.prototype.update = function (b) {
   this.readTurretAngles(b, e);
 };
 
+// --- own-tank prediction -------------------------------------------------
+// The client still owns nothing. But waiting a full round trip to watch your own
+// tank answer a key is the single thing that made this feel unlike diep, so the
+// three lines of Tank movement run locally as well: every input is stamped with
+// a sequence number and kept, every snapshot rewinds our own tank to the exact
+// position the server acknowledged, and the inputs it had not seen yet are
+// replayed on top. A disagreement is resolved by that replay, never by the
+// client insisting — so a wall, a knockback or a rejected move corrects itself
+// within one snapshot instead of sticking.
+//
+// Prediction is only ever run for our own tank: piloting a Dominator or watching
+// someone with /view clears it (the `driving` bit in the snapshot), because our
+// keys are not what moves the thing the camera is on.
+
+// The same formula Tank.recompute() uses. Everything it reads is already on the
+// wire for the HUD, so nothing extra is sent for it.
+NetGame.prototype.ownSpeed = function () {
+  var p = this.player, d = p.def || TANK_DEFS[0];
+  return d.speed * 2.55 * Math.pow(1.07, p.stats[S_SPEED]) / Math.pow(1.015, p.level - 1);
+};
+
+// One tick of Tank.tick + applyPhysics, movement only. Nothing else in a tick
+// can move the tank without the server also telling us about it.
+function stepPred(s, mx, my, speed) {
+  if (mx || my) {
+    var m = Math.sqrt(mx * mx + my * my);
+    s.vx += mx / m * speed; s.vy += my / m * speed;
+  }
+  if (Math.sqrt(s.vx * s.vx + s.vy * s.vy) < 0.01) { s.vx = 0; s.vy = 0; }
+  s.x += s.vx; s.y += s.vy;
+  s.vx -= s.vx * 0.1; s.vy -= s.vy * 0.1;
+}
+
+// Called once per input packet, from the same 25 Hz slot that sends it.
+NetGame.prototype.predictTick = function (input) {
+  if (!this.pred) return;
+  var mx = (input.right ? 1 : 0) - (input.left ? 1 : 0);
+  var my = (input.down ? 1 : 0) - (input.up ? 1 : 0);
+  this.hist.push({ seq: this.seq, mx: mx, my: my, at: nowMs() });
+  // A few seconds of inputs is far more than any playable round trip; past that
+  // the connection is gone and the ring is only there to stop it growing.
+  if (this.hist.length > 150) this.hist.shift();
+  stepPred(this.pred, mx, my, this.ownSpeed());
+};
+
+// Rewind to the acknowledged position, then replay what the server has not seen.
+NetGame.prototype.reconcile = function (mine, svx, svy, ack) {
+  var h = this.hist, i;
+  // u16 wraps; anything within half the range behind the newest seq is "already
+  // applied", which keeps the drop correct across the wrap.
+  while (h.length && ((this.seq - h[0].seq) & 65535) >= ((this.seq - ack) & 65535)) {
+    var done = h.shift();
+    // The acked input is a real round trip: sent at done.at, and here it is
+    // coming back. pingSentAt/ping had been declared and never written.
+    if (done.seq === ack) {
+      var rtt = nowMs() - done.at;
+      this.pingSentAt = done.at;
+      this.ping = this.ping ? this.ping * 0.8 + rtt * 0.2 : rtt;
+    }
+  }
+  this.srv = { x: mine.x, y: mine.y };          // last acknowledged truth, for tests and /ping
+  this.predPrev = this.pred || { x: mine.x, y: mine.y };
+  var s = { x: mine.x, y: mine.y, vx: svx, vy: svy };
+  var speed = this.ownSpeed();
+  for (i = 0; i < h.length; i++) stepPred(s, h[i].mx, h[i].my, speed);
+  // Teleported, killed, or shoved somewhere the replay cannot account for: take
+  // the server's word for it rather than sliding there over several snapshots.
+  if (Math.abs(s.x - this.predPrev.x) + Math.abs(s.y - this.predPrev.y) > 400) {
+    this.predPrev = { x: mine.x, y: mine.y };
+    s.x = mine.x; s.y = mine.y; s.vx = svx; s.vy = svy;
+    h.length = 0;
+  }
+  this.pred = s;
+};
+
 // --- outbound ------------------------------------------------------------
 NetGame.prototype.sendInput = function (input, mouse, extra) {
   if (!this.connected) return;
@@ -372,10 +465,13 @@ NetGame.prototype.sendInput = function (input, mouse, extra) {
   if (extra && extra.suicide) bits |= IN.SUICIDE;
   if (extra && extra.god) bits |= IN.GOD;
   if (extra && extra.levelup) bits |= IN.LEVELUP;
+  this.seq = (this.seq + 1) & 65535;
   var b = new Buf(16);
   b.u8(OP.INPUT); b.u16(bits);
   b.i16(clamp16(mouse.x)); b.i16(clamp16(mouse.y));
+  b.u16(this.seq);
   this.ws.send(b.bytes());
+  this.predictTick(input);
 };
 function clamp16(v) { return Math.max(-32768, Math.min(32767, Math.round(v || 0))); }
 
@@ -415,8 +511,7 @@ NetGame.prototype.clientTick = function () {
 // ponytail: single-snapshot lerp (~40ms behind). A multi-snapshot buffer would
 // ride out jitter better; add one if packet loss becomes visible.
 NetGame.prototype.alpha = function () {
-  var now = (typeof performance !== 'undefined' ? performance.now() : Date.now());
-  return Math.max(0, Math.min(1, (now - this.lastPacket) / (this.packetDt || MSPT)));
+  return Math.max(0, Math.min(1, (nowMs() - this.lastPacket) / (this.packetDt || MSPT)));
 };
 
 NetGame.prototype.close = function () { this.failed = true; if (this.ws) try { this.ws.close(); } catch (e) {} };

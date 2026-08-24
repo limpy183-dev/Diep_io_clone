@@ -240,7 +240,17 @@ function hex(h) {
   return v;
 }
 
+// A client that cannot keep up gets its snapshot skipped rather than queued.
+// Without this a stalled socket — a closed laptop, a phone on a train — grows
+// an unbounded send buffer at 25 snapshots a second until the process runs out
+// of memory. A snapshot is whole-world state, so dropping one costs nothing as
+// long as `seen` is left alone with it: the next one then still carries the
+// creates for everything this client never received. Nothing else sent to a
+// client is periodic, so this is the only place the check belongs.
+const SEND_BACKLOG = 1 << 20;   // 1 MB queued is already about two seconds behind
+
 function sendUpdate(client, arena) {
+  if (client.ws.bufferedAmount > SEND_BACKLOG) { client.dropped = (client.dropped || 0) + 1; return; }
   const g = arena.game, t = client.tank;
   const ctrl = cameraOf(client);
   if (ctrl && !ctrl.dead) { client.camX = ctrl.x; client.camY = ctrl.y; }
@@ -265,10 +275,16 @@ function sendUpdate(client, arena) {
   b.u32(ctrl ? ctrl.id : 0);                      // the entity the camera rides
   b.f32(fovOf(client));
   b.i16(Math.round(client.camX)); b.i16(Math.round(client.camY));
+  // Last input this client sent that we have actually applied. The client rewinds
+  // its own tank to the position below and replays everything after this seq,
+  // which is what makes moving feel local instead of a round trip away.
+  b.u16(client.inputSeq || 0);
 
-  // your own tank's HUD state
+  // your own tank's HUD state. Bit 1 says the camera is on your own tank rather
+  // than a Dominator you are piloting or someone you are watching — prediction
+  // is only ever correct for the thing your own keys are driving.
   const alive = t && !t.dead;
-  b.u8(alive ? 1 : 0);
+  b.u8((alive ? 1 : 0) | (alive && ctrl === t ? 2 : 0));
   if (alive) {
     b.u32(Math.max(0, Math.round(t.score)));
     b.u8(t.level);
@@ -281,6 +297,10 @@ function sendUpdate(client, arena) {
     b.u8(t.autoSpin ? 1 : 0);
     b.u32(t.spawnTick);
     b.u8(Math.min(255, t.kills));
+    // Velocity, so the replay starts from the same state the server did. A tank
+    // tops out around 50 du/t, so 1/64 units is far finer than it needs to be.
+    b.i16(Math.max(-32768, Math.min(32767, Math.round(t.vx * 64))));
+    b.i16(Math.max(-32768, Math.min(32767, Math.round(t.vy * 64))));
   }
 
   // /view: the build of whoever you are watching, so the client can draw their
@@ -439,9 +459,9 @@ function handleChat(client, raw) {
   chatAll(arena, 0, ctxName(client), text, client.tank.fill, client.tank);
 }
 
-function sendNotify(client, text) {
+function sendNotify(client, text, ttl) {
   const b = new Buf(300);
-  b.u8(SV.NOTIFY); b.str(text);
+  b.u8(SV.NOTIFY); b.str(text); b.u16(Math.max(1, Math.min(65535, Math.round(ttl || 100))));
   send(client, b.bytes());
 }
 
@@ -482,9 +502,9 @@ function tickArena(a) {
 
   for (const c of a.clients) {
     if (!c.alive) continue;
-    for (const n of fresh) sendNotify(c, n.text);
+    for (const n of fresh) sendNotify(c, n.text, n.ttl);
     if (c.tank && c.tank.notes) {
-      for (const n of c.tank.notes) if (!n.sent) { n.sent = true; sendNotify(c, n.text); }
+      for (const n of c.tank.notes) if (!n.sent) { n.sent = true; sendNotify(c, n.text, n.ttl); }
     }
     if (g.mapDirty) sendMapState(c, g);
     if (c.followLeader) {                         // /viewleader: whoever is #1 right now
@@ -539,6 +559,7 @@ wss.on('connection', (ws, req) => {
     const who = ctxName(client);
     if (client.tank && !client.tank.dead) client.tank.kill(null);
     if (client.tank) client.tank.client = null;
+    if (client.dropped) console.log(`[slow] ${who} had ${client.dropped} snapshots skipped`);
     if (client.arena) {
       client.arena.clients.delete(client);
       chatAll(client.arena, 3, null, `${who} left`, '#85E8A0');
@@ -555,7 +576,14 @@ function handle(client, b) {
     const name = sanitize(b.rstr());
     const mode = b.rstr();
     const arena = getArena(mode);
-    if (arena.clients.size >= MAX_PLAYERS_PER_ARENA) { sendNotify(client, 'Server full'); return; }
+    if (arena.clients.size >= MAX_PLAYERS_PER_ARENA) {
+      // Say why, then hang up. Leaving the socket open left the client connected
+      // to nothing: no tank, no snapshots, and no close event to send it back to
+      // the menu. ws flushes what is queued before the close frame goes out.
+      sendNotify(client, 'Server full — this arena is at capacity, try again in a moment');
+      try { client.ws.close(); } catch (e) { /* already gone */ }
+      return;
+    }
     client.arena = arena;
     arena.clients.add(client);
     arena.idle = 0;
@@ -586,6 +614,7 @@ function handle(client, b) {
       c.input.right = bits & IN.RIGHT ? 1 : 0;
       c.input.altFire = bits & IN.ALTFIRE ? 1 : 0;
       c.mouse.x = clampCoord(mx, client.arena.game); c.mouse.y = clampCoord(my, client.arena.game);
+      if (b.remaining() >= 2) client.inputSeq = b.ru16();
       t.selfDestruct = !!(bits & IN.SUICIDE);
       // Sandbox-only cheats, enforced here rather than trusted from the client.
       if (cheatsOK(client.arena.game)) {

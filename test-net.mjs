@@ -103,6 +103,42 @@ try {
   assert.ok(dx > 0 && Math.abs(dx) > Math.abs(dy) * 3, `dx ${Math.round(dx)} vs dy ${Math.round(dy)}`);
   test('travel follows the pressed axis, not the idle one');
 
+  // ---- own-tank prediction ----------------------------------------------
+  // The client runs the same movement locally so a key press shows up in the
+  // same frame instead of a round trip later, then rewinds to whatever the
+  // server acknowledged and replays the rest. Two things have to hold: the
+  // replay must not run away from the server, and the acks must actually be
+  // consumed — if the seq window were wrong the unacked ring would fill to its
+  // 150 cap and every snapshot would replay from the start of the match.
+  console.log('\nClient prediction');
+  if (a.player.dead) { a.respawn(); await waitFor(() => !a.player.dead, 6000, 'Alice respawning'); }
+  await waitFor(() => a.pred && a.srv, 6000, 'prediction to start');
+  test('driving your own tank turns prediction on');
+
+  const ax0 = a.player.x, toward = a.player.x > 0 ? { left: 1 } : { right: 1 };
+  const until = Date.now() + 1500;
+  while (Date.now() < until) {
+    a.sendInput(toward, { x: a.player.x + (toward.right ? 500 : -500), y: a.player.y }, {});
+    await sleep(40);
+  }
+  assert.ok(Math.abs(a.player.x - ax0) > 100, `the tank moved (${Math.round(a.player.x - ax0)} units)`);
+  test('a predicted tank moves on local input');
+
+  assert.ok(a.hist.length < 25, `unacked input backlog stayed small (${a.hist.length})`);
+  test('the server ack drains the replay buffer');
+
+  assert.ok(a.ping > 0 && a.ping < 2000, `round trip measured off the ack (${Math.round(a.ping)} ms)`);
+  test('the ack doubles as a round-trip measurement');
+
+  near(a.pred.x, a.srv.x, 200, 'prediction tracks the server on x');
+  near(a.pred.y, a.srv.y, 200, 'prediction tracks the server on y');
+  test('the replay stays converged with the authority');
+
+  // Let go and the two must meet, not merely stay close.
+  for (let i = 0; i < 30; i++) { a.sendInput({}, { x: a.player.x + 500, y: a.player.y }, {}); await sleep(40); }
+  near(a.pred.x, a.srv.x, 12, 'stopped: prediction settles onto the server position');
+  test('releasing the keys converges prediction back onto the server');
+
   console.log('\nServer-side validation');
   // Spam far more upgrades than could ever be legal. The level keeps rising as
   // shapes drift in, so assert the invariant rather than a fixed number.
@@ -176,30 +212,35 @@ try {
   assert.equal(said(a, /God mode ON/).length, 0, 'and definitely not applied');
   test('cheats are refused in a non-sandbox arena');
 
+  // Online, /cheats on must not open a shared arena: one player would be handing
+  // /god and /nuke to everyone in it. Sandbox is the only room they belong in.
   await chatty(a, '/cheats on');
+  assert.ok(said(a, /Sandbox-only/).length, '/cheats on refused on a public arena');
   await chatty(a, '/god');
-  assert.ok(said(a, /God mode ON/).length, '/cheats on opens a normal arena');
-  test('/cheats on enables cheats in a multiplayer arena');
-
-  const meNow = () => a.entities.find((e) => e.id === a.myId);
-  const scale0 = meNow().scaleFactor, size0 = meNow().size;
-  await chatty(a, '/size 4');
-  await waitFor(() => meNow().size > size0 * 3, 6000, 'the bigger body to arrive');
-  near(meNow().scaleFactor, scale0 * 4, 0.05, 'barrel scale followed the body over the wire');
-  near(meNow().size / meNow().scaleFactor, size0 / scale0, 1, 'body and barrels stay in proportion');
-  test('/size scales the barrels as well as the body, online');
-
-  await chatty(a, '/rainbow on');
-  await waitFor(() => meNow().rainbow, 6000, 'the rainbow flag');
-  test('/rainbow reaches the client as an entity flag');
-  await chatty(a, '/size 1');
-  await chatty(a, '/rainbow off');
+  assert.equal(said(a, /God mode ON/).length, 0, 'and it stayed shut');
+  test('/cheats on cannot open a shared online arena');
 
   // Sandbox is a small arena full of bots; Carol may well be dead by now, and a
   // cheat on a corpse is refused by design.
   if (c.player.dead) { c.respawn(); await waitFor(() => !c.player.dead, 6000, 'Carol respawning'); }
   await chatty(c, '/god');
   assert.ok(said(c, /God mode ON/).length, 'cheat applied in sandbox');
+
+  const meNow = () => c.entities.find((e) => e.id === c.myId);
+  const scale0 = meNow().scaleFactor, size0 = meNow().size;
+  await chatty(c, '/size 4');
+  await waitFor(() => meNow().size > size0 * 3, 6000, 'the bigger body to arrive');
+  // Against the level, not against a frozen reading: a Sandbox tank keeps
+  // levelling while the test runs and recompute() folds 1.01^(L-1) into both.
+  near(meNow().scaleFactor / Math.pow(1.01, meNow().level - 1), 4, 0.05, 'barrel scale followed the body over the wire');
+  near(meNow().size / meNow().scaleFactor, size0 / scale0, 1, 'body and barrels stay in proportion');
+  test('/size scales the barrels as well as the body, online');
+
+  await chatty(c, '/rainbow on');
+  await waitFor(() => meNow().rainbow, 6000, 'the rainbow flag');
+  test('/rainbow reaches the client as an entity flag');
+  await chatty(c, '/size 1');
+  await chatty(c, '/rainbow off');
   await chatty(c, '/class booster');
   await waitFor(() => c.player.def && c.player.def.name === 'Booster', 4000, 'class cheat applying');
   test('/god and /class apply server-side in a Sandbox arena');

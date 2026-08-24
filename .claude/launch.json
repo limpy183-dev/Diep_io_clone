@@ -1,12 +1,7 @@
 {
   "version": "0.0.1",
+  "autoPort": true,
   "configurations": [
-    {
-      "name": "tank-arena",
-      "runtimeExecutable": "npm",
-      "runtimeArgs": ["start"],
-      "port": 8137,
-      "autoPort": true
-    }
+    { "name": "tank-arena-ui", "runtimeExecutable": "node", "runtimeArgs": ["server.js"], "port": 8137, "autoPort": true }
   ]
 }

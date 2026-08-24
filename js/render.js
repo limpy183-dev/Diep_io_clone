@@ -219,7 +219,11 @@ Renderer.prototype.drawEntity = function (e, t) {
     fill = hueHex((Date.now() / 2600 + (e.id % 64) / 64) % 1);
     stroke = mixHex(fill, '#000000', 0.25);
   }
-  if (e.hurtFlash > 0) { fill = mixHex(fill, '#FFFFFF', 0.55); stroke = mixHex(stroke, '#FFFFFF', 0.35); }
+  // Hit flash. Red, not white — white washes a Square out to the same colour as
+  // a shiny one. The exact curve was never worked out, so it is a flat tint for
+  // the four ticks applyDamage sets: online hurtFlash arrives as one flag bit,
+  // so there is no per-tick value to ramp against anyway.
+  if (e.hurtFlash > 0) { fill = mixHex(fill, '#FF0000', 0.5); stroke = mixHex(stroke, '#FF0000', 0.3); }
 
   if (e.type === 'wall' || e.type === 'base' || e.type === 'tile') {
     var tl = this.toScreen(p.x - e.size, p.y - e.width), br = this.toScreen(p.x + e.size, p.y + e.width);
@@ -641,7 +645,10 @@ Renderer.prototype.upgradeLayout = function () {
   if (!p || p.dead || !p.pendingUpgrades.length) { this.upgradeSig = ''; return null; }
   var sig = p.pendingUpgrades.join(',');
   if (sig !== this.upgradeSig) { this.upgradeSig = sig; this.upgradeHidden = false; }
-  if (this.upgradeHidden) return null;
+  // Collapsed, but the cards are still owed: leave the tab behind so they can be
+  // opened again. Without it, collapsing at level 15 hid the choice until the
+  // next tier unlocked one, which reads as a lost upgrade.
+  if (this.upgradeHidden) return { hidden: true, cards: [], reopen: { x: 16, y: 10, w: 58, h: 58 } };
 
   var n = p.pendingUpgrades.length, cols = Math.min(2, n), rows = Math.ceil(n / cols);
   var size = 116, gap = 12, pad = 14, close = 58, head = close + 20;
@@ -682,6 +689,19 @@ Renderer.prototype.uiButton = function (r, rad) {
 Renderer.prototype.drawUpgrades = function () {
   var l = this.upgradeLayout(), c = this.ctx;
   if (!l) return;
+  if (l.hidden) {                                 // just the re-open tab
+    var t = l.reopen, tx = t.x + t.w / 2, ty = t.y + t.h / 2;
+    c.save();
+    this.uiButton(t, 8);
+    c.lineWidth = 5; c.strokeStyle = '#3A3A3A'; c.lineCap = 'round'; c.lineJoin = 'round';
+    c.beginPath();
+    c.moveTo(tx + 2, ty - 15); c.lineTo(tx + 15, ty - 15); c.lineTo(tx + 15, ty + 15); c.lineTo(tx + 2, ty + 15);
+    c.stroke();
+    c.beginPath(); c.moveTo(tx + 6, ty); c.lineTo(tx - 15, ty); c.stroke();
+    c.beginPath(); c.moveTo(tx - 7, ty - 9); c.lineTo(tx - 16, ty); c.lineTo(tx - 7, ty + 9); c.stroke();
+    c.restore();
+    return;
+  }
   var rot = performance.now() / 3000;             // slow clockwise spin
   c.save();
   this.uiButton(l.close, 8);
