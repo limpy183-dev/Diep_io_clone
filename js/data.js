@@ -94,8 +94,8 @@ var SHAPES = {
   crasherS: { health: 10,   size: 35 * Math.SQRT1_2,  sides: 3, damage: 2, score: 15,   fill: C.crasher,  stroke: C.crasherS,  absorb: 2,    push: 8,  speed: 26 },
   crasherL: { health: 30,   size: 55 * Math.SQRT1_2,  sides: 3, damage: 2, score: 25,   fill: C.crasher,  stroke: C.crasherS,  absorb: 0.1,  push: 12, speed: 26.4 }
 };
-// bullet-speed stat gain per point (diep uses 3; lower = flatter upgrade curve)
-var BSPEED_GAIN = 1.5;
+// bullet-speed stat gain per point. diep's value: terminal speed = (20 + 3P) * M du/t.
+var BSPEED_GAIN = 3;
 // Share of a tank's score that goes to whoever killed it. The share is the one
 // figure in here with no published source behind it, so it is a knob rather than
 // a constant: under 1 so a kill is a reward and not a transfer, and so score
@@ -132,27 +132,31 @@ var TURRET = { barrelLen: 1.1, barrelWidth: 0.588, base: 0.5, dist: 0.8 };
 var TURRET_BARREL = {
   angle: 0, offset: 0, size: 55, width: 29.4, delay: 0.01, reload: 1, recoil: 0.3,
   isTrapezoid: false, trapezoidDirection: 0, addon: null,
-  // scatterRate 0: the turret solves an exact intercept, so spread would just undo it
-  bullet: { type: 'bullet', sizeRatio: 1, health: 1, damage: 0.3, speed: 1.2, scatterRate: 0, lifeLength: 1, absorbtionFactor: 1 }
+  // scatterRate 1 is diep's. interceptAim still solves exactly; the spread is applied on
+  // top of the solution, which is also what diep's turrets do.
+  bullet: { type: 'bullet', sizeRatio: 1, health: 1, damage: 0.3, speed: 1.2, scatterRate: 1, lifeLength: 1, absorbtionFactor: 1 }
 };
 var PASSIVE_ROTATION = 0.01;
 
 // --- missiles ----------------------------------------------------------
-// Measured flight times. These are absolute, not derived from lifeLength: the
-// projectile's own lifeLength drives its barrels, not how long the missile lives.
-var MISSILE_LIFE = { skimmer: 5 * TPS, rocket: 4 * TPS, glider: 5 * TPS };
+// diep's Skimmer/Rocket are plain Bullets that happen to carry barrels, so their
+// life is the ordinary 75 * lifeLength off the firing barrel (Skimmer 1.3 -> 97.5t,
+// Rocketeer 1 -> 75t). Only the Glider, which diep has no equivalent of, is listed.
+var MISSILE_LIFE = { glider: 5 * TPS };
 
 // Barrels carried BY a projectile. Rendered in the team colour, unlike normal barrels.
 var MISSILE_BARRELS = {
+  // diep SkimmerBarrelDefinition, twice, second rotated by PI.
   skimmer: [
-    { angle: Math.PI / 2, offset: 0, size: 70, width: 42, delay: 0, reload: 0.5, recoil: 0, isTrapezoid: false, trapezoidDirection: 0, addon: null,
-      bullet: { type: 'bullet', sizeRatio: 1, health: 0.3, damage: 0.5, speed: 1.5, scatterRate: 1, lifeLength: 0.75, absorbtionFactor: 1 } },
-    { angle: -Math.PI / 2, offset: 0, size: 70, width: 42, delay: 0, reload: 0.5, recoil: 0, isTrapezoid: false, trapezoidDirection: 0, addon: null,
-      bullet: { type: 'bullet', sizeRatio: 1, health: 0.3, damage: 0.5, speed: 1.5, scatterRate: 1, lifeLength: 0.75, absorbtionFactor: 1 } }
+    { angle: 0, offset: 0, size: 70, width: 42, delay: 0, reload: 0.35, recoil: 0, isTrapezoid: false, trapezoidDirection: 0, addon: null,
+      bullet: { type: 'bullet', sizeRatio: 1, health: 0.3, damage: 3 / 5, speed: 1.1, scatterRate: 1, lifeLength: 0.25, absorbtionFactor: 1 } },
+    { angle: Math.PI, offset: 0, size: 70, width: 42, delay: 0, reload: 0.35, recoil: 0, isTrapezoid: false, trapezoidDirection: 0, addon: null,
+      bullet: { type: 'bullet', sizeRatio: 1, health: 0.3, damage: 3 / 5, speed: 1.1, scatterRate: 1, lifeLength: 0.25, absorbtionFactor: 1 } }
   ],
+  // diep RocketBarrelDefinition. recoil 3.3 at reload 0.15 is the whole engine.
   rocket: [
-    { angle: Math.PI, offset: 0, size: 70, width: 42, delay: 0, reload: 0.3, recoil: 3, isTrapezoid: true, trapezoidDirection: 0, addon: null,
-      bullet: { type: 'bullet', sizeRatio: 1, health: 0.3, damage: 0.5, speed: 1, scatterRate: 3, lifeLength: 0.4, absorbtionFactor: 1 } }
+    { angle: Math.PI, offset: 0, size: 70, width: 36, delay: 0, reload: 0.15, recoil: 3.3, isTrapezoid: true, trapezoidDirection: 0, addon: null,
+      bullet: { type: 'bullet', sizeRatio: 1, health: 0.3, damage: 3 / 5, speed: 1.5, scatterRate: 5, lifeLength: 0.1, absorbtionFactor: 1 } }
   ],
   // Glider: two rear barrels 35 degrees apart (so +/- 17.5 from straight back).
   glider: [

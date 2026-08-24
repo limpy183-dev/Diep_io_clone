@@ -280,11 +280,16 @@ Barrel.prototype.spawn = function (m, accel, b, d, t, g) {
   proj.noDmgIndicator = true;
   proj.hiddenHealthbar = true;
 
+  // Muzzle speed. Every projectile leaves at its own terminal speed + 30 minus a
+  // scatter draw; the types that differ override this below.
+  var launch = accel + 30 - Math.random() * b.scatterRate;
+
   switch (b.type) {
     case 'drone': case 'swarm': case 'minion':
       proj.minDmg = 1; proj.maxDmg = 1;
       proj.onlySameOwnerCollision = true;
-      proj.accel = (b.type === 'minion' ? accel / 3 : accel) * 2;
+      proj.accel = accel;
+      launch /= 3;                                  // drones dribble out, then accelerate
       proj.push = 4;
       proj.controllable = !!d.canControlDrones;
       proj.life = b.lifeLength === -1 ? Infinity : 88 * b.lifeLength;
@@ -292,20 +297,28 @@ Barrel.prototype.spawn = function (m, accel, b, d, t, g) {
       if (b.type === 'minion') { proj.sides = 1; proj.barrels = [new Barrel(proj, MINION_BARREL, 0)]; proj.statsOwner = t; }
       break;
     case 'necrodrone':
-      proj.minDmg = 1; proj.maxDmg = 1;
+      proj.minDmg = 1; proj.maxDmg = 4;            // a claimed square hits like a shape
       proj.type = 'necro'; proj.sides = 4;
       proj.fill = C.necro; proj.stroke = C.necroS;
       proj.onlySameOwnerCollision = true;
       proj.push = 4;
       proj.controllable = true;
-      proj.accel = accel * 2;
+      proj.accel = accel;
+      launch = 0;                                   // a reanimated square starts dead still
       proj.life = Infinity;
       proj.scoreReward = 10;
       proj.noDmgIndicator = false;
       break;
     case 'trap':
       proj.minDmg = 0.25; proj.maxDmg = 1;
-      proj.noOwnTeamCollision = true;
+      // Traps are bullets with the engine off, launched at half speed, so they coast
+      // out about ten times their muzzle speed and stop.
+      launch = accel / 2 + 30 - Math.random() * b.scatterRate;
+      proj.canEscapeArena = true;
+      // For the first eighth of its life a trap only collides with the same owner's
+      // projectiles: that is the window you can shoot your own fresh traps through.
+      proj.onlySameOwnerCollision = true;
+      proj.armAt = (75 * b.lifeLength) >> 3;
       proj.isStar = true;
       proj.life = 75 * b.lifeLength;
       break;
@@ -338,7 +351,7 @@ Barrel.prototype.spawn = function (m, accel, b, d, t, g) {
       proj.life = 75 * b.lifeLength;
   }
 
-  proj.addVelocity(ang, accel + 30 - Math.random() * b.scatterRate);
+  if (launch) proj.addVelocity(ang, launch);
   if (b.type === 'trap') proj.accel = 0;            // traps coast to a stop and stay put
   g.add(proj);
   if (d.droneCount) this.children.push(proj);
@@ -357,10 +370,11 @@ function burstFirework(p) {
   p.kill(null);
 }
 
+// diep MinionBarrelDefinition. recoil 1 is real: a firing minion shoves itself back.
 var MINION_BARREL = {
-  angle: 0, offset: 0, size: 55, width: 42, delay: 0, reload: 2, recoil: 0,
+  angle: 0, offset: 0, size: 85, width: 50.4, delay: 0, reload: 1, recoil: 1,
   isTrapezoid: false, trapezoidDirection: 0, addon: null,
-  bullet: { type: 'bullet', sizeRatio: 1, health: 0.7, damage: 0.5, speed: 0.9, scatterRate: 1, lifeLength: 1, absorbtionFactor: 1 }
+  bullet: { type: 'bullet', sizeRatio: 1, health: 0.4, damage: 0.4, speed: 0.8, scatterRate: 1, lifeLength: 1, absorbtionFactor: 1 }
 };
 
 // ---------------------------------------------------------------- turret
@@ -496,7 +510,9 @@ Tank.prototype.recompute = function () {
   this.reloadTime = 15 * Math.pow(0.914, st[S_RELOAD]);
   this.damagePerTick = 5 + st[S_BODY] + (def.bodyDamage || 0);
   this.absorb = def.absorbtionFactor;
-  this.push = def.absorbtionFactor;
+  // absorbtionFactor is how hard you are *pushed*; pushFactor is how hard you push,
+  // and diep leaves every tank on the entity default of 8.
+  this.push = 8;
   this.fov = 0.55 * def.fieldFactor / Math.pow(1.01, (L - 1) / 2);
   // bonusPoints is the /points cheat; the floor keeps an over-spent build (also
   // a cheat) from wrapping to 255 when it goes out on the wire as a u8.
@@ -682,7 +698,7 @@ Shape.prototype.tick = function () {
       this.maintainVelocity(this.angle, this.speed);
     } else {
       this.angle += this.rot;
-      this.maintainVelocity(this.orbitAngle, this.speed / 2);
+      this.maintainVelocity(this.orbitAngle, SHAPE_VELOCITY);   // idles like any other shape
       this.orbitAngle += this.orbitRate;
     }
     return;
@@ -718,11 +734,15 @@ function tickProjectile(p) {
   switch (p.type) {
     case 'trap':
       p.angle += 0.02;
+      // arms: stops ignoring everyone but its owner, starts ignoring its own team
+      if (p.armAt !== undefined && p.age >= p.armAt) {
+        p.onlySameOwnerCollision = false; p.noOwnTeamCollision = true; p.armAt = undefined;
+      }
       break;
 
     case 'drone': case 'necro': case 'swarm': case 'minion': {
       if (!owner || owner.dead) { p.kill(null); return; }
-      var tx, ty, speed = p.accel;
+      var tx, ty, head, speed = p.accel;
       if (p.controllable && owner.input.fire) { tx = owner.mouse.x; ty = owner.mouse.y; }
       else if (p.controllable && owner.input.altFire) { tx = p.x * 2 - owner.mouse.x; ty = p.y * 2 - owner.mouse.y; }
       else {
@@ -732,17 +752,24 @@ function tickProjectile(p) {
         if (g.tick % 2 === p.id % 2) p.dTarget = g.findTarget(p, range, true, owner);
         if (p.dTarget && !p.dTarget.dead) { tx = p.dTarget.x; ty = p.dTarget.y; }
         else {
-          // idle orbit around the owner
-          var d = Math.hypot(p.x - owner.x, p.y - owner.y);
-          if (d < 400) {
-            p.orbit = (p.orbit || Math.atan2(p.y - owner.y, p.x - owner.x)) + 0.01 + 0.012 * (d / 400);
-            tx = owner.x + Math.cos(p.orbit) * owner.size * 1.2 * 3;
-            ty = owner.y + Math.sin(p.orbit) * owner.size * 1.2 * 3;
-            speed = p.accel / 6 + p.accel / 2;
-          } else { tx = owner.x; ty = owner.y; speed = p.accel / 3 * 2; }
+          // diep's two-phase idle cycle: swing out to a point tangent to the owner,
+          // and once you have arrived, free-wheel at a sixth thrust with the heading
+          // precessing, until you drift back outside the 400 du resting radius.
+          var dx = p.x - owner.x, dy = p.y - owner.y;
+          var unitDist = (dx * dx + dy * dy) / 160000;          // resting radius squared
+          if (unitDist <= 1 && p.restCycle) {
+            head = p.angle + 0.01 + 0.012 * unitDist;
+            speed = p.accel / 6;
+          } else {
+            var off = Math.atan2(dy, dx) + Math.PI / 2;
+            tx = owner.x + Math.cos(off) * owner.size * 1.2;
+            ty = owner.y + Math.sin(off) * owner.size * 1.2;
+            if (unitDist < 0.5) speed = p.accel / 3;
+            p.restCycle = (tx - p.x) * (tx - p.x) + (ty - p.y) * (ty - p.y) <= 4 * owner.size * owner.size;
+          }
         }
       }
-      var ang = Math.atan2(ty - p.y, tx - p.x);
+      var ang = head === undefined ? Math.atan2(ty - p.y, tx - p.x) : head;
       p.angle = ang;
       p.maintainVelocity(ang, speed);
       if (p.type === 'minion' && p.barrels) {
@@ -785,7 +812,7 @@ function Boss(game, spec) {
     type: 'boss', x: rand(game.arena.left * 0.6, game.arena.right * 0.6), y: rand(game.arena.top * 0.6, game.arena.bottom * 0.6),
     sides: spec.sides, size: spec.sides === 1 ? spec.size : spec.size * Math.SQRT1_2,
     fill: spec.fill, stroke: spec.stroke, team: null,
-    maxHealth: BOSS_HEALTH, damage: BOSS_DAMAGE, score: BOSS_SCORE, absorb: 0.05, push: 12
+    maxHealth: BOSS_HEALTH, damage: BOSS_DAMAGE, score: BOSS_SCORE, absorb: 0.05, push: 8
   });
   this.spec = spec;
   this.bossIndex = BOSSES.indexOf(spec);   // clients rebuild barrels from the same table
@@ -956,11 +983,11 @@ function botFlightTicks(t, d) {
   var life = 75 * (bd.lifeLength === -1 || !bd.lifeLength ? 1 : bd.lifeLength);
   // fireBarrel zeroes accel on a trap, so a trap never holds cruise — it coasts
   // down under friction and parks. Stepping one as if it were a bullet said a
-  // maxed Trapper threw its trap 49577 units when it actually stops at 1115,
+  // maxed Trapper threw its trap 49577 units when it actually stops at 705,
   // which is why every Trapper in the game stood a thousand units off leading a
-  // shot that was never going to arrive.
+  // shot that was never going to arrive. A trap also leaves at half muzzle speed.
   var coast = bd.type === 'trap';
-  var v = cruise + 30 - (bd.scatterRate || 0) / 2, x = 0;
+  var v = (coast ? cruise / 2 : cruise) + 30 - (bd.scatterRate || 0) / 2, x = 0;
   for (var n = 1; n <= life; n++) {
     if (!coast) v += cruise * 0.1;     // maintainVelocity
     x += v;
@@ -1089,9 +1116,10 @@ function botReach(t) {
   var cruise = (20 + BSPEED_GAIN * t.stats[S_BSPEED]) * bd.speed;
   if (bd.type !== 'trap') return cruise * 25 + 250;
   // A trap is the other case: it never gets a second of flight because it stops
-  // long before one. Its reach is simply where it comes to rest.
+  // long before one. Its reach is simply where it comes to rest, and it leaves the
+  // barrel at half muzzle speed.
   var life = 75 * (bd.lifeLength === -1 || !bd.lifeLength ? 1 : bd.lifeLength);
-  var v = cruise + 30, x = 0;
+  var v = cruise / 2 + 30, x = 0;
   for (var n = 1; n <= life && v >= 1; n++) { x += v; v -= v * 0.1; }
   return x;
 }
@@ -2147,13 +2175,16 @@ Game.prototype.tryClaim = function (claimer, shape) {
   shape.team = owner.team; shape.owner = owner; shape.barrel = barrel;
   shape.controllable = true;
   shape.onlySameOwnerCollision = true;
-  shape.minDmg = 1; shape.maxDmg = 1;
+  // Same entity a necrodrone barrel would have produced, so it gets the same numbers.
+  // (diep also scales a claimed shape's damage and health by its own damage/2, but
+  // only Squares can be claimed and a Square's is 2, so the factor is 1.)
+  shape.minDmg = 1; shape.maxDmg = 4;
   shape.fill = shape.shiny ? C.shiny : C.necro; shape.stroke = shape.shiny ? C.shinyS : C.necroS;
   shape.maxHealth = (1.5 * st[S_PEN] + 2) * bd.health;
   shape.health = shape.maxHealth;
   shape.damagePerTick = (7 + st[S_DAMAGE] * 3) * bd.damage;
   shape.push = 4;
-  shape.accel = ((20 + BSPEED_GAIN * st[S_BSPEED]) * bd.speed) / 3;
+  shape.accel = (20 + BSPEED_GAIN * st[S_BSPEED]) * bd.speed;
   shape.life = Infinity; shape.age = 0;
   shape.scoreReward = shape.shiny ? 1000 : 10;
   barrel.children.push(shape);

@@ -601,11 +601,15 @@ test('Glider missiles carry two rear barrels 35 degrees apart', () => {
   const spread = Math.abs(m.barrels[0].def.angle - m.barrels[1].def.angle);
   near(spread * 180 / Math.PI, 35, 0.1, 'degrees apart');
 });
-test('missile lifetimes match the measured figures', () => {
-  const L = G('MISSILE_LIFE');
-  near(L.skimmer / 25, 5, 0.01, 'Skimmer ~5s');
-  near(L.rocket / 25, 4, 0.01, 'Rocketeer ~4s');
-  near(L.glider / 25, 5, 0.01, 'Glider ~5s');
+test('missile lifetimes: Skimmer/Rocket use diep 75*lifeLength, Glider is our own', () => {
+  for (const [id, type, ticks] of [[54, 'skimmer', 97.5], [55, 'rocket', 75]]) {
+    const g = new Game('sandbox', 'T');
+    fireAll(g, id);
+    const m = g.entities.filter((e) => e.type === type)[0];
+    assert.ok(m, type + ' launched');
+    near(m.life, ticks, 1e-9, type + ' life');
+  }
+  near(G('MISSILE_LIFE').glider / 25, 5, 0.01, 'Glider ~5s');
 });
 test('Auto Tank is the basic Tank plus a turret, with the published turret bullet', () => {
   const g = new Game('sandbox', 'T');
@@ -1235,6 +1239,79 @@ test('offline, the stat panel borrows the watched build and stays read-only', ()
   g.player.dead = false;
   runCommand(c, '/view off');
   assert.equal(owner(), g.player, 'and /view off gives it back');
+});
+
+// Every number below is diep's own, and nothing else in the suite would notice if
+// one drifted — the sim would just play slightly wrong. See DIEP_CONSTANTS.md.
+console.log('\nDiep reference values');
+const A = (P, M) => (20 + 3 * P) * M;                 // terminal speed, du/tick
+const fireOne = (id, P, type) => {
+  const g = new Game('sandbox', 'T'), t = g.player;
+  t.level = 45; t.setTank(id); t.stats = [0, 0, 0, 0, P, 0, 0, 0]; t.recompute();
+  t.angle = 0; t.vx = 0; t.vy = 0;
+  const before = g.entities.length;
+  t.barrels.forEach((b) => b.shoot());
+  return { g, t, p: g.entities.slice(before).find((e) => e.type === type) };
+};
+test('the generated tank table still matches data/tankdefs.json', () => {
+  const dump = JSON.parse(readFileSync(new URL('data/tankdefs.json', import.meta.url), 'utf8'));
+  for (const o of dump.filter(Boolean)) {
+    const t = G(`TANK_DEFS[${o.id}]`);
+    assert.equal(t.name, o.name);
+    o.barrels.forEach((b, i) =>
+      assert.equal(JSON.stringify(t.barrels[i].bullet), JSON.stringify(b.bullet), `${o.name} barrel ${i}`));
+  }
+});
+test('bullet terminal speed is (20 + 3P) * barrel speed, and it launches 30 above it', () => {
+  for (const [id, M] of [[0, 1], [6, 1.5], [10, 0.7]]) for (const P of [0, 7]) {
+    const { p } = fireOne(id, P, 'bullet');
+    near(p.accel, A(P, M), 1e-9, `tank ${id} P=${P} terminal`);
+    const v = Math.hypot(p.vx, p.vy), s = p.barrel.def.bullet.scatterRate;
+    assert.ok(v >= A(P, M) + 30 - s && v <= A(P, M) + 30, `tank ${id} P=${P} muzzle: ${v}`);
+    near(p.life, 75 * p.barrel.def.bullet.lifeLength, 1e-9, 'life');
+  }
+});
+test('drones cruise at A and dribble out at a third of muzzle speed; necro squares start still', () => {
+  const { p: d } = fireOne(11, 7, 'drone');           // Overseer, 0.8
+  near(d.accel, A(7, 0.8), 1e-9, 'drone terminal is A, not 2A');
+  const v = Math.hypot(d.vx, d.vy);
+  assert.ok(v >= (A(7, 0.8) + 29) / 3 && v <= (A(7, 0.8) + 30) / 3, `drone muzzle: ${v}`);
+  assert.equal(d.push, 4);
+  const { p: n } = fireOne(17, 7, 'necro');           // Necromancer, 0.72
+  near(n.accel, A(7, 0.72), 1e-9, 'necro terminal');
+  near(Math.hypot(n.vx, n.vy), 0, 1e-9, 'necro muzzle');
+  assert.equal(n.maxDmg, 4, 'a claimed square hits like the shape it was');
+});
+test('a trap leaves at half muzzle speed, coasts ~10x that, and arms an eighth of the way in', () => {
+  const { g, p } = fireOne(31, 7, 'trap');            // Trapper, 2.0, lifeLength 8
+  const v = Math.hypot(p.vx, p.vy), a = A(7, 2);
+  assert.ok(v >= a / 2 + 29 && v <= a / 2 + 30, `trap muzzle: ${v}`);
+  assert.equal(p.accel, 0, 'no thrust');
+  assert.equal(p.life, 600);
+  assert.equal(p.armAt, 75, 'life >> 3');
+  assert.ok(p.onlySameOwnerCollision && !p.noOwnTeamCollision, 'own shots pass through a fresh trap');
+  p.damageReduction = 0; p.absorb = 0;                // isolate it: nothing eats or shoves it
+  const x0 = p.x;
+  for (let i = 0; i < 120; i++) g.step();
+  near(p.x - x0, 705, 40, 'coast');
+  assert.ok(!p.onlySameOwnerCollision && p.noOwnTeamCollision, 'armed');
+});
+test('tanks push at 8 and absorb at their own factor — the two are not the same field', () => {
+  const g = new Game('sandbox', 'T');
+  g.player.recompute();
+  assert.equal(g.player.push, 8);
+  assert.equal(g.player.absorb, g.player.def.absorbtionFactor);
+});
+test('missiles and minions carry diep barrel definitions', () => {
+  near(fireOne(54, 0, 'skimmer').p.life, 97.5, 1e-9, 'Skimmer shell = 75 * 1.3');
+  near(fireOne(55, 0, 'rocket').p.life, 75, 1e-9, 'Rocket shell = 75 * 1');
+  const M = G('MISSILE_BARRELS');
+  assert.equal(M.rocket[0].recoil, 3.3);              // the rocket's whole engine
+  assert.equal(M.rocket[0].reload, 0.15);
+  assert.equal(M.skimmer[0].reload, 0.35);
+  assert.equal(G('MINION_BARREL').size, 85);
+  assert.equal(G('MINION_BARREL').width, 50.4);
+  assert.equal(G('MINION_BARREL').bullet.speed, 0.8);
 });
 
 console.log(`\n${passed} passed\n`);

@@ -1111,7 +1111,7 @@ console.log('\nBallistics and output');
 test('a trap is modelled as a trap: it coasts to a stop, it does not fly', () => {
   // fireBarrel zeroes accel on a trap, so it never holds cruise. The model
   // stepped one as if it did and came out at 49577 units of carry against a real
-  // 1115, which is why Trappers stood a thousand units off leading a shot that
+  // 705, which is why Trappers stood a thousand units off leading a shot that
   // was never going to arrive.
   const g = bare('hard', { react: 9999 });
   const t = place(g.spawnBot(), 0, 0);
