@@ -396,7 +396,7 @@ var MINION_BARREL = {
 };
 
 // ---------------------------------------------------------------- turret
-function Turret(parent, index, count, arc) {
+function Turret(parent, index, count, arc, defs) {
   this.parent = parent;
   this.isTurret = true;
   this.index = index;
@@ -404,7 +404,8 @@ function Turret(parent, index, count, arc) {
   this.base = count === 1 ? 0 : (Math.PI * 2 * index) / count;
   this.angle = 0;
   this.target = null;
-  this.barrel = new Barrel(this, TURRET_BARREL, 0);
+  this.barrels = (defs || [TURRET_BARREL]).map(function (d, i) { return new Barrel(this, d, i); }, this);
+  this.barrel = this.barrels[0];          // the one that aims; the rest ride along
   this.stats = parent.stats;
   this.reloadTime = parent.reloadTime;
   this.scaleFactor = parent.scaleFactor;
@@ -423,13 +424,14 @@ Turret.prototype.tick = function () {
 
   if (this.game.tick % 2 === (this.index % 2)) this.target = this.game.findTarget(this, 1700, true);
   if (this.target && !this.target.dead) {
-    var b = TURRET_BARREL.bullet;
+    var b = this.barrel.def.bullet;
     this.angle = interceptAim(this, this.target, (20 + BSPEED_GAIN * this.stats[S_BSPEED]) * b.speed,
-                              TURRET_BARREL.size * this.scaleFactor);
+                              this.barrel.def.size * this.scaleFactor);
   } else {
     this.angle += PASSIVE_ROTATION;
   }
-  this.barrel.tick(!!(this.target && !this.target.dead));
+  var firing = !!(this.target && !this.target.dead);
+  for (var i = 0; i < this.barrels.length; i++) this.barrels[i].tick(firing);
 };
 
 // Aimbot, for turrets only — bots keep the cheap guess below.
@@ -502,15 +504,19 @@ Tank.prototype.setTank = function (id) {
   this.tankId = id;
   this.def = def;
   this.sides = def.sides;
+  this.isStar = !!def.isStar;             // Tree-Topper; every other body is a polygon
+  this.starPoints = def.starPoints || 3;
+  this.borderWidth = (def.borderWidth || 15) / 2;   // defs quote it doubled; 15 is the stock tank
   this.baseSize = def.baseSizeOverride || (def.sides === 4 ? 32.5 * ROOT2 : def.sides === 16 ? 25 * ROOT2 : 50);
   this.barrels = def.barrels.map(function (b, i) { return new Barrel(this, b, i); }, this);
   this.invisible = !!def.flags.invisibility;
   if (!this.invisible) this.opacity = 1;
+  this.game.paintTeam(this);              // a boss class's own colour wins over the team's
   this.recompute();                       // must precede period(), which reads reloadTime
   this.turrets = [];
   var post = ADDONS[def.postAddon];
   if (post && post.turrets) {
-    for (var i = 0; i < post.turrets; i++) this.turrets.push(new Turret(this, i, post.turrets, !!post.arc));
+    for (var i = 0; i < post.turrets; i++) this.turrets.push(new Turret(this, i, post.turrets, !!post.arc, post.turretBarrels));
   }
   // Loaded but not yet past the delay threshold — see Barrel.tick.
   this.barrels.forEach(function (b) { b.cycle = b.period(); });
@@ -827,7 +833,6 @@ function tickProjectile(p) {
 
 // ---------------------------------------------------------------- boss
 function Boss(game, spec) {
-  var tankLike = spec.tankId !== undefined;
   Entity.call(this, game, {
     type: 'boss', x: rand(game.arena.left * 0.6, game.arena.right * 0.6), y: rand(game.arena.top * 0.6, game.arena.bottom * 0.6),
     sides: spec.sides, size: spec.sides === 1 ? spec.size : spec.size * Math.SQRT1_2,
@@ -842,17 +847,8 @@ function Boss(game, spec) {
   this.stats = [0, 4, 4, 4, 4, 0, 0, 0];
   this.reloadTime = 15 * Math.pow(0.914, 4);
   this.movementSpeed = spec.speed;
-  var defs = tankLike ? TANK_DEFS[spec.tankId].barrels : spec.barrels;
   var self = this;
-  this.barrels = defs.map(function (b, i) {
-    var copy = JSON.parse(JSON.stringify(b));
-    if (tankLike) {
-      copy.bullet.color = C.fallen; copy.bullet.stroke = C.fallenS;
-      if (spec.droneOverride && copy.droneCount) copy.droneCount = spec.droneOverride;
-      copy.bullet.health *= 3; copy.bullet.damage *= 1.5;
-    }
-    return new Barrel(self, copy, i);
-  });
+  this.barrels = bossBarrels(spec).map(function (b, i) { return new Barrel(self, b, i); });
   this.turrets = [];
   if (spec.turrets) for (var i = 0; i < spec.turrets; i++) this.turrets.push(new Turret(this, i, spec.turrets, true));
   this.input = { fire: 1, altFire: 0 };
@@ -2239,7 +2235,10 @@ Game.prototype.spawnTank = function (o) {
 };
 
 Game.prototype.paintTeam = function (t) {
-  if (t.team && TEAM_COLORS[t.team]) { t.fill = TEAM_COLORS[t.team][0]; t.stroke = TEAM_COLORS[t.team][1]; }
+  // Boss classes carry their own colour — a Guardian is Crasher pink on every
+  // team, exactly as the AI boss is. Checked first so nothing repaints them.
+  if (t.def && t.def.color) { t.fill = t.def.color[0]; t.stroke = t.def.color[1]; }
+  else if (t.team && TEAM_COLORS[t.team]) { t.fill = TEAM_COLORS[t.team][0]; t.stroke = TEAM_COLORS[t.team][1]; }
   else if (t.isPlayer) { t.fill = C.blue; t.stroke = C.blueS; }        // in FFA you are always blue
   else { t.fill = C.red; t.stroke = C.redS; }                          // and everyone else is red
 };

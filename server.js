@@ -18,7 +18,7 @@ const { OP, SV, IN, ETYPES, Buf, MAX_PACKET, CHATKIND, packAngle, turretCount } 
 // Same trick the tests use: the engine is plain browser script with no browser
 // globals, so one shared context is all it needs. No bundler, no duplication.
 const sim = vm.createContext({ console, Math, JSON, Map, Set, Infinity, NaN });
-for (const f of ['js/tankdefs.js', 'js/tankdefs-extra.js', 'js/data.js', 'js/engine.js', 'js/modes.js', 'js/commands.js'])
+for (const f of ['js/tankdefs.js', 'js/data.js', 'js/tankdefs-extra.js', 'js/engine.js', 'js/modes.js', 'js/commands.js'])
   vm.runInContext(fs.readFileSync(path.join(__dirname, f), 'utf8'), sim, { filename: f });
 
 const { Game, GAMEMODES, TANK_DEFS, ADDONS, MSPT, MAX_LEVEL } = sim;

@@ -123,6 +123,8 @@ var ADDONS = {
                            { sides: 3, ratio: 1.3, spin: 0.17, offset: Math.PI / 6 },
                            { sides: 3, ratio: 1.3, spin: 0.17, offset: Math.PI / 2 }] },
   autosmasher: { guards: [{ sides: 6, ratio: 1.15, spin: 0.10 }], turrets: 1 },
+  // Mega Smasher: the wiki puts its hull at 1.13x a Smasher's, so 1.15 * 1.13.
+  megasmasher: { guards: [{ sides: 6, ratio: 1.3, spin: 0.10 }] },
   autoturret:  { turrets: 1 },
   auto3:       { turrets: 3, arc: true },
   auto5:       { turrets: 5, arc: true },
@@ -130,6 +132,13 @@ var ADDONS = {
   dompronounced:{ nub: { angle: Math.PI, size: 60, width: 50, dir: Math.PI } },
   launcher:    { hood: { lengthRatio: 1.31, widthRatio: 0.672 } }
 };
+// A mounted turret is a fixed 25-radius base carrying a 55 x 29.4 barrel, grown
+// only by the tank's LEVEL scale — diep sizes it off scaleFactor, never off the
+// body. barrelLen/barrelWidth/base are those figures over the 50 of a stock
+// tank, so a level-1 Auto Gunner is unchanged either way; only a class whose
+// body is not 50 (the bosses, the Mothership) tells the two apart. dist is the
+// odd one out and really is a fraction of the body: diep rings auto3/auto5 at
+// 0.8 * size.
 var TURRET = { barrelLen: 1.1, barrelWidth: 0.588, base: 0.5, dist: 0.8 };
 var TURRET_BARREL = {
   angle: 0, offset: 0, size: 55, width: 29.4, delay: 0.01, reload: 1, recoil: 0.3,
@@ -139,6 +148,18 @@ var TURRET_BARREL = {
   bullet: { type: 'bullet', sizeRatio: 1, health: 1, damage: 0.3, speed: 1.2, scatterRate: 1, lifeLength: 1, absorbtionFactor: 1 }
 };
 var PASSIVE_ROTATION = 0.01;
+
+// A turret carries one barrel unless its addon lists more. The Decade's mounted
+// turret is the only thing in the game that does: a Triple Shot on a swivel.
+ADDONS.tripleturret = {
+  turrets: 1,
+  turretBarrels: [-1, 0, 1].map(function (i) {
+    var b = {};
+    for (var k in TURRET_BARREL) b[k] = TURRET_BARREL[k];
+    b.angle = i * (Math.PI / 4);           // Triple Shot's own +/-45 degree fan
+    return b;
+  })
+};
 
 // --- missiles ----------------------------------------------------------
 // diep's Skimmer/Rocket are plain Bullets that happen to carry barrels, so their
@@ -197,8 +218,12 @@ var BOSSES = [
   },
   {
     name: 'Summoner', sides: 4, size: 150, fill: C.square, stroke: C.squareS, speed: 0.6, spin: true,
+    // The spawners come out of the four flat FACES, not the corners — see the
+    // official render. polyPath puts vertex 0 on the body's own angle, so the
+    // half-step of 1/8 turn is what lands them on the faces. Without it a
+    // 135-long barrel is swallowed whole by the 150 circumradius at a corner.
     barrels: [0, 1, 2, 3].map(function (i) {
-      return { angle: 2 * Math.PI * (i / 4), offset: 0, size: 135, width: 71.4, delay: 0, reload: 0.36, recoil: 1, isTrapezoid: true, trapezoidDirection: 0, addon: null, droneCount: 7, canControlDrones: true,
+      return { angle: 2 * Math.PI * (i / 4 + 1 / 8), offset: 0, size: 135, width: 71.4, delay: 0, reload: 0.36, recoil: 1, isTrapezoid: true, trapezoidDirection: 0, addon: null, droneCount: 7, canControlDrones: true,
         bullet: { type: 'drone', sizeRatio: (55 * Math.SQRT1_2) / (71.4 / 2), health: 12.5, damage: 0.56, speed: 1.7, scatterRate: 1, lifeLength: -1, absorbtionFactor: 1, color: C.necro, stroke: C.necroS, sides: 4 } };
     })
   },
@@ -213,6 +238,23 @@ var BOSSES = [
   { name: 'Fallen Booster', sides: 1, size: 120, fill: C.fallen, stroke: C.fallenS, speed: 2.2, tankId: 23 }
 ];
 var BOSS_HEALTH = 3000, BOSS_DAMAGE = 10, BOSS_SCORE = 30000; // 10 * maxMult(4 vs shape / 6 vs tank) -> 40/60
+
+// The barrels a boss actually carries. The two Fallen bosses are a host class
+// up-gunned and repainted; the rest carry their own. One function so the AI boss
+// and the /class version of it can never drift apart — both call this.
+function bossBarrels(spec) {
+  var fromTank = spec.tankId !== undefined;
+  var defs = fromTank ? TANK_DEFS[spec.tankId].barrels : spec.barrels;
+  return defs.map(function (b) {
+    var copy = JSON.parse(JSON.stringify(b));
+    if (fromTank) {
+      copy.bullet.color = C.fallen; copy.bullet.stroke = C.fallenS;
+      if (spec.droneOverride && copy.droneCount) copy.droneCount = spec.droneOverride;
+      copy.bullet.health *= 3; copy.bullet.damage *= 1.5;
+    }
+    return copy;
+  });
+}
 
 // Base drones: 2000 HP each, reload 0 (spawn as fast as the engine allows).
 var BASE_DRONE_BARREL = {

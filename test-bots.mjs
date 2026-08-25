@@ -5,7 +5,7 @@ import vm from 'node:vm';
 import assert from 'node:assert/strict';
 
 const ctx = vm.createContext({ console, Math, JSON, Map, Set, Infinity, NaN });
-for (const f of ['js/tankdefs.js', 'js/tankdefs-extra.js', 'js/data.js', 'js/protocol.js', 'js/engine.js', 'js/modes.js'])
+for (const f of ['js/tankdefs.js', 'js/data.js', 'js/tankdefs-extra.js', 'js/protocol.js', 'js/engine.js', 'js/modes.js'])
   vm.runInContext(readFileSync(new URL(f, import.meta.url), 'utf8'), ctx, { filename: f });
 
 const { Game, Entity, Shape, BOT_SKILL, BOT_DIFFICULTIES, botSkill } = ctx;
@@ -1416,6 +1416,10 @@ test('a bot holds fire at something it cannot see through a maze wall', () => {
   g.wantedShapes = 0;
   g.entities = g.entities.filter((e) => e.type !== 'shape');
   const w = g.walls[0];
+  // The generator's slabs run 317 to 1587 long, and the pair below sit a slab
+  // apart — on a long one they end up 3000 units apart and hold fire because
+  // the target is out of range, not because of the wall. Pin the length.
+  w.size = 100;
   const t = place(g.spawnBot(), w.x - w.size - 220, w.y);
   const mark = place(g.spawnBot(), w.x + w.size + 220, w.y);
   t.team = 'blue'; mark.team = 'red';

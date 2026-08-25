@@ -162,14 +162,14 @@ Renderer.prototype.drawBarrel = function (e, b, ex, ey, ea, scale, colorFill, co
     c.rect(0, -w, len * pull, w * 2);
   }
   c.closePath();
-  this.fillStroke(colorFill || C.barrel, colorStroke || C.barrelS, Math.max(1, 6 * scale * k));
+  this.fillStroke(colorFill || C.barrel, colorStroke || C.barrelS, Math.max(1, (e.borderWidth || 7.5) * 0.8 * scale * k));
   // trapper hood sits at the mouth
   if (d.addon === 'trapLauncher') {
     var hw = w * 1.25, hl = len * 0.28;
     c.beginPath();
     c.moveTo(len * pull, -w); c.lineTo(len * pull + hl, -hw); c.lineTo(len * pull + hl, hw); c.lineTo(len * pull, w);
     c.closePath();
-    this.fillStroke(C.barrel, C.barrelS, Math.max(1, 6 * scale * k));
+    this.fillStroke(C.barrel, C.barrelS, Math.max(1, (e.borderWidth || 7.5) * 0.8 * scale * k));
   }
   c.restore();
 };
@@ -181,15 +181,23 @@ Renderer.prototype.drawTurret = function (t, px, py, pa, ps, scale) {
   var mount = (t.arc ? pa : 0) + t.base;
   var sp = this.toScreen(px + (t.arc ? Math.cos(mount) * ps * TURRET.dist : 0),
                          py + (t.arc ? Math.sin(mount) * ps * TURRET.dist : 0));
-  var base = ps * TURRET.base * k;
-  var len = ps * TURRET.barrelLen * k;
-  var w = ps * TURRET.barrelWidth * k / 2;
-  var lw = Math.max(1, 6 * k * (ps / 50));
+  var ts = 50 * scale;                    // the turret grows with level, not with the body
+  var base = ts * TURRET.base * k;
+  var len = ts * TURRET.barrelLen * k;
+  var w = ts * TURRET.barrelWidth * k / 2;
+  var lw = Math.max(1, 6 * k * scale);
   c.save();
   c.translate(sp.x, sp.y);
   c.rotate(t.angle);
-  c.beginPath(); c.rect(0, -w, len * (1 - t.barrel.recoilAnim * 0.12), w * 2); c.closePath();
-  this.fillStroke(C.barrel, C.barrelS, lw);
+  // one barrel on every turret in the game bar the Decade's Triple Shot mount
+  var bs = t.barrels || [t.barrel];
+  for (var i = 0; i < bs.length; i++) {
+    c.save();
+    c.rotate(bs[i].def.angle || 0);
+    c.beginPath(); c.rect(0, -w, len * (1 - bs[i].recoilAnim * 0.12), w * 2); c.closePath();
+    this.fillStroke(C.barrel, C.barrelS, lw);
+    c.restore();
+  }
   c.restore();
   // mount
   polyPath(c, sp.x, sp.y, base, 1, 0);
@@ -285,7 +293,7 @@ Renderer.prototype.drawEntity = function (e, t) {
   }
 
   // body — polygons draw at circumradius size*sqrt(2), circles at size
-  if (e.isStar) starPath(c, sp.x, sp.y, r * ROOT2, 3, p.a);
+  if (e.isStar) starPath(c, sp.x, sp.y, r * ROOT2, e.starPoints || 3, p.a);
   else polyPath(c, sp.x, sp.y, e.sides === 1 ? r : r * ROOT2, e.sides, p.a);
   this.fillStroke(fill, stroke, lw);
 

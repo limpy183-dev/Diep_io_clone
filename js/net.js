@@ -318,8 +318,10 @@ NetGame.prototype.attachTank = function (e, tankId) {
   e.tankId = tankId;
   e.def = TANK_DEFS[tankId] || TANK_DEFS[0];
   e.scaleFactor = Math.pow(1.01, (e.level || 1) - 1);
+  e.borderWidth = (e.def.borderWidth || 15) / 2;
+  e.starPoints = e.def.starPoints || 3;      // isStar itself rides the flag byte
   e.barrels = e.def.barrels.map(function (d) { return { def: d, recoilAnim: 0 }; });
-  e.turrets = buildTurrets(e, turretCount(TANK_DEFS, ADDONS, tankId));
+  e.turrets = buildTurrets(e, turretCount(TANK_DEFS, ADDONS, tankId), (ADDONS[e.def.postAddon] || {}).turretBarrels);
 };
 
 NetGame.prototype.attachBoss = function (e, bossIndex) {
@@ -327,19 +329,19 @@ NetGame.prototype.attachBoss = function (e, bossIndex) {
   e.bossIndex = bossIndex;
   e.def = null;                                    // bosses are not tank defs
   e.scaleFactor = spec.sides === 1 ? spec.size / 50 : 1;
-  var defs = spec.tankId !== undefined ? TANK_DEFS[spec.tankId].barrels : spec.barrels;
-  e.barrels = defs.map(function (d) { return { def: d, recoilAnim: 0 }; });
+  e.barrels = bossBarrels(spec).map(function (d) { return { def: d, recoilAnim: 0 }; });
   e.turrets = buildTurrets(e, spec.turrets || 0);
 };
 
-function buildTurrets(parent, count) {
+function buildTurrets(parent, count, defs) {
   var out = [];
   for (var i = 0; i < count; i++) {
+    var bs = (defs || [TURRET_BARREL]).map(function (d) { return { def: d, recoilAnim: 0 }; });
     out.push({
       parent: parent, index: i, arc: count > 1,
       base: count === 1 ? 0 : (Math.PI * 2 * i) / count,
       angle: 0,                                      // the renderer mounts these off the parent pose
-      barrel: { def: TURRET_BARREL, recoilAnim: 0 }
+      barrels: bs, barrel: bs[0]
     });
   }
   return out;

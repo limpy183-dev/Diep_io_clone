@@ -5,7 +5,7 @@ import vm from 'node:vm';
 import assert from 'node:assert/strict';
 
 const ctx = vm.createContext({ console, Math, JSON, Map, Set, Infinity, NaN });
-for (const f of ['js/tankdefs.js', 'js/tankdefs-extra.js', 'js/data.js', 'js/protocol.js', 'js/engine.js', 'js/modes.js'])
+for (const f of ['js/tankdefs.js', 'js/data.js', 'js/tankdefs-extra.js', 'js/protocol.js', 'js/engine.js', 'js/modes.js'])
   vm.runInContext(readFileSync(new URL(f, import.meta.url), 'utf8'), ctx, { filename: f });
 
 const G = (expr) => vm.runInContext(expr, ctx);
@@ -16,8 +16,8 @@ let passed = 0;
 function test(name, fn) { fn(); passed++; console.log('  ok  ' + name); }
 
 console.log('\nPhase 0 — data');
-test('61 tanks load (54 from the dump + 7 added), Trapper is id 31', () => {
-  assert.equal(G('TANK_DEFS.filter(Boolean).length'), 61);
+test('74 tanks load (54 from the dump + 7 added + 13 unobtainable), Trapper is id 31', () => {
+  assert.equal(G('TANK_DEFS.filter(Boolean).length'), 74);
   assert.equal(G('TANK_DEFS[31].name'), 'Trapper');
   // Sniper -> Assassin / Overseer / Hunter / Trapper. Settles the Trapper=30 vs 31 conflict.
   assert.equal(G('JSON.stringify(TANK_DEFS[6].upgrades)'), '[15,11,19,31]');
@@ -1493,6 +1493,7 @@ const fireOne = (id, P, type) => {
 test('the generated tank table still matches data/tankdefs.json', () => {
   const dump = JSON.parse(readFileSync(new URL('data/tankdefs.json', import.meta.url), 'utf8'));
   for (const o of dump.filter(Boolean)) {
+    if (!o.name) continue;          // id 53, the dump's nameless dev tank; tankdefs-extra names it "Ball"
     const t = G(`TANK_DEFS[${o.id}]`);
     assert.equal(t.name, o.name);
     o.barrels.forEach((b, i) =>

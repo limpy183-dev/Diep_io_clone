@@ -33,7 +33,7 @@ function makeClient(name, mode, port) {
   // Stand-in for the DOM chat overlay: the decoder only needs somewhere to put
   // a line, and the test needs to read what arrived.
   ctx.CHAT = { fps: 0, lines: [], push(kind, who, text, color) { this.lines.push({ kind, who, text, color }); } };
-  for (const f of ['js/tankdefs.js', 'js/tankdefs-extra.js', 'js/data.js', 'js/protocol.js', 'js/engine.js', 'js/modes.js', 'js/commands.js', 'js/net.js'])
+  for (const f of ['js/tankdefs.js', 'js/data.js', 'js/tankdefs-extra.js', 'js/protocol.js', 'js/engine.js', 'js/modes.js', 'js/commands.js', 'js/net.js'])
     vm.runInContext(readFileSync(new URL(f, import.meta.url), 'utf8'), ctx, { filename: f });
 
   ctx.__name = name; ctx.__mode = mode; ctx.__port = port || PORT;
