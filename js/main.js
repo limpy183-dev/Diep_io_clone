@@ -475,12 +475,12 @@
     try { localStorage.setItem('ta_name', nameInput.value.trim()); localStorage.setItem('ta_server', serverInput.value.trim()); } catch (e) { /* private mode */ }
   }
 
-  function startOffline() {
+  function startOffline(modeKey) {
     online = false; net = null;
     saveName();
     setStatus('');
     closePicker();
-    beginRender(new Game(modeSelect.value, nameInput.value.trim(), {
+    beginRender(new Game(modeKey || modeSelect.value, nameInput.value.trim(), {
       difficulty: difficultyArg(), botCount: sel === 'custom' ? botCount : undefined
     }));
     game.notify('Bots: ' + diffLabel(), 90);
@@ -633,13 +633,13 @@
     else if (e.key === 'Enter') { startOffline(); e.preventDefault(); }
   });
 
-  function startOnline() {
+  function startOnline(modeKey) {
     saveName();
     var url = serverInput.value.trim() || defaultServer();
     if (!/^wss?:\/\//.test(url)) url = (location.protocol === 'https:' ? 'wss://' : 'ws://') + url;
     setStatus('Connecting…');
     onlineBtn.disabled = true;
-    var n = new NetGame(url, nameInput.value.trim(), modeSelect.value, {
+    var n = new NetGame(url, nameInput.value.trim(), modeKey || modeSelect.value, {
       onReady: function () {
         onlineBtn.disabled = false;
         setStatus('');
@@ -671,7 +671,7 @@
   function setStatus(msg) { status.textContent = msg; }
 
   playBtn.addEventListener('click', openPicker);
-  onlineBtn.addEventListener('click', startOnline);
+  onlineBtn.addEventListener('click', function () { startOnline(); });
   nameInput.addEventListener('keydown', function (e) { if (e.key === 'Enter') openPicker(); });
 
   try {
@@ -731,7 +731,7 @@
     }
 
     function render() {
-      var keys = Object.keys(GAMEMODES);
+      var keys = Object.keys(GAMEMODES).filter(function (k) { return !GAMEMODES[k].lab; });
       keys.sort(function (a, b) { return (a === value ? 0 : 1) - (b === value ? 0 : 1); });
       list.innerHTML = '';
       keys.forEach(function (k) { list.appendChild(makeItem(k)); });
@@ -744,6 +744,10 @@
   }
 
   modeSelect = buildModeDrop();
+
+  // The Mode Lab drives the same two entry points the menu buttons do, so a
+  // Lab mode is started exactly the way a shipped one is.
+  if (typeof MODELAB !== 'undefined') MODELAB.init(startOffline, startOnline);
 
   loadDiff();
   buildPicker();

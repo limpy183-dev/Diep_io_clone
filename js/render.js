@@ -101,6 +101,14 @@ function starPath(ctx, x, y, r, points, angle) {
   ctx.closePath();
 }
 
+// diep draws a 4-sided tank body with a flat FACE toward the tank's own angle,
+// not a corner — the Necromancer icon, whose two spawners come out of opposite
+// flat edges, is unambiguous about it. Every other side count puts a vertex on
+// that angle: the Guardian's spawner leaves through its flat rear edge and the
+// Defender's turrets sit on its corners, and the Mothership's 16 barrels carry
+// their own half-step. So the quarter-turn is a 4-gon rule, not a general one.
+function bodyAngle(e, a) { return e.sides === 4 ? a + Math.PI / 4 : a; }
+
 Renderer.prototype.fillStroke = function (fill, stroke, lw) {
   var c = this.ctx;
   c.fillStyle = fill; c.fill();
@@ -260,31 +268,32 @@ Renderer.prototype.drawEntity = function (e, t) {
     var guards = ADDONS[e.def.postAddon].guards;
     for (var gi = 0; gi < guards.length; gi++) {
       var g = guards[gi];
-      polyPath(c, sp.x, sp.y, r * g.ratio * ROOT2 * 0.72, g.sides, (g.offset || 0) + e.guardAngle * g.spin);
-      this.fillStroke(mixHex(fill, '#000000', 0.12), stroke, lw);
+      polyPath(c, sp.x, sp.y, r * g.ratio, g.sides, (g.offset || 0) + e.guardAngle * g.spin);
+      this.fillStroke(C.border, C.borderS, lw);
     }
   }
   // dominator plinth
   if (isTank && e.def && ADDONS[e.def.preAddon] && ADDONS[e.def.preAddon].guards) {
     var pg = ADDONS[e.def.preAddon].guards[0];
-    polyPath(c, sp.x, sp.y, r * pg.ratio * ROOT2 * 0.72, pg.sides, 0);
-    this.fillStroke(mixHex(fill, '#000000', 0.12), stroke, lw);
+    polyPath(c, sp.x, sp.y, r * pg.ratio, pg.sides, 0);
+    this.fillStroke(C.border, C.borderS, lw);
   }
 
   // Barrels under the body. A Firework shell carries 16 shard barrels purely so
   // the burst can reuse the firing path — they are not hardware, so don't draw
   // them, or the shell renders as a starburst instead of a plain hexagon.
-  if (e.barrels && e.type !== 'firework') {
+  if (e.barrels && e.type !== 'firework' && !e.hideBarrels) {
     // missiles render their barrels in the team colour, the only coloured barrels in the game
     var isMissile = e.type === 'skimmer' || e.type === 'rocket' || e.type === 'glider';
     var bf = isMissile ? fill : null, bs = isMissile ? stroke : null;
     var bscale = isTank ? scale : (p.s / (e.barrels[0] ? e.barrels[0].def.width / 2 : 21));
     for (var i = 0; i < e.barrels.length; i++) this.drawBarrel(e, e.barrels[i], p.x, p.y, p.a, isTank ? scale : bscale, bf, bs);
   }
-  // pronounced nub (Ranger / Dominator)
+  // pronounced collar (Ranger / Dominator). Its ratios are body radii, and
+  // drawBarrel multiplies by `scale`, so divide it back out.
   if (isTank && e.def && ADDONS[e.def.postAddon] && ADDONS[e.def.postAddon].nub) {
     var n = ADDONS[e.def.postAddon].nub;
-    this.drawBarrel(e, { def: { angle: n.angle, offset: 0, size: n.size, width: n.width, isTrapezoid: true, trapezoidDirection: n.dir, addon: null }, recoilAnim: 0 }, p.x, p.y, p.a, scale);
+    this.drawBarrel(e, { def: { angle: 0, offset: 0, size: n.lengthRatio * p.s / scale, width: n.widthRatio * p.s / scale, isTrapezoid: true, trapezoidDirection: Math.PI, addon: null }, recoilAnim: 0 }, p.x, p.y, p.a, scale);
   }
   // launcher hood (Skimmer / Rocketeer)
   if (isTank && e.def && e.def.preAddon === 'launcher') {
@@ -294,7 +303,7 @@ Renderer.prototype.drawEntity = function (e, t) {
 
   // body — polygons draw at circumradius size*sqrt(2), circles at size
   if (e.isStar) starPath(c, sp.x, sp.y, r * ROOT2, e.starPoints || 3, p.a);
-  else polyPath(c, sp.x, sp.y, e.sides === 1 ? r : r * ROOT2, e.sides, p.a);
+  else polyPath(c, sp.x, sp.y, e.sides === 1 ? r : r * ROOT2, e.sides, isTank ? bodyAngle(e, p.a) : p.a);
   this.fillStroke(fill, stroke, lw);
 
   // turrets on top
@@ -303,7 +312,7 @@ Renderer.prototype.drawEntity = function (e, t) {
   // spawn protection blink
   if (isTank && e.damageReduction === 0 && !e.godMode) {
     c.globalAlpha = 0.25 + 0.2 * Math.sin(this.game.tick * 0.4);
-    polyPath(c, sp.x, sp.y, e.sides === 1 ? r : r * ROOT2, e.sides, p.a);
+    polyPath(c, sp.x, sp.y, e.sides === 1 ? r : r * ROOT2, e.sides, bodyAngle(e, p.a));
     c.fillStyle = '#FFFFFF'; c.fill();
   }
   c.restore();
@@ -348,6 +357,7 @@ Renderer.prototype.drawHealthBar = function (e, t) {
 
 Renderer.prototype.drawName = function (e, t) {
   if (!e.name || e.dead) return;
+  if (e.hideName) return;              // Prop Hunt: a captioned Square is not a disguise
   var c = this.ctx, k = this.scaling(), p = ipos(e, t);
   var sp = this.toScreen(p.x, p.y);
   var r = p.s * k * (e.sides === 1 ? 1 : ROOT2);
@@ -764,7 +774,7 @@ Renderer.prototype.drawTankIcon = function (def, x, y, r, rot) {
   var guards = ADDONS[def.postAddon] && ADDONS[def.postAddon].guards;
   if (guards) for (var gi = 0; gi < guards.length; gi++) {
     polyPath(c, 0, 0, r * guards[gi].ratio, guards[gi].sides, guards[gi].offset || 0);
-    c.fillStyle = '#9E9E9E'; c.fill(); c.lineWidth = Math.max(1, 2 * scale); c.strokeStyle = '#727272'; c.stroke();
+    c.fillStyle = C.border; c.fill(); c.lineWidth = Math.max(1, 2 * scale); c.strokeStyle = C.borderS; c.stroke();
   }
   for (var i = 0; i < def.barrels.length; i++) {
     var b = def.barrels[i];
@@ -779,9 +789,32 @@ Renderer.prototype.drawTankIcon = function (def, x, y, r, rot) {
     c.fillStyle = C.barrel; c.fill(); c.lineWidth = Math.max(1, 2.5 * scale); c.strokeStyle = C.barrelS; c.stroke();
     c.restore();
   }
-  polyPath(c, 0, 0, def.sides === 1 ? r : r * ROOT2 * 0.8, def.sides, 0);
-  c.fillStyle = C.blue; c.fill(); c.lineWidth = Math.max(1, 3 * scale); c.strokeStyle = C.blueS; c.stroke();
+  polyPath(c, 0, 0, def.sides === 1 ? r : r * ROOT2 * 0.8, def.sides, bodyAngle(def, 0));
+  c.fillStyle = (def.color && def.color[0]) || C.blue; c.fill(); c.lineWidth = Math.max(1, 3 * scale); c.strokeStyle = (def.color && def.color[1]) || C.blueS; c.stroke();
   c.restore();
+};
+
+// A portrait of one entity at `r` pixels, drawn by the ordinary entity path so
+// it carries everything the tank really has: its own colour, guard hull, collar,
+// launcher hood, turrets and star body. Borrows the camera for one call rather
+// than re-deriving any of that — a second drawing routine is a second thing to
+// keep in step, which is how the death screen drifted from the arena in the
+// first place. Facing is pinned to 0 so the portrait does not tumble.
+Renderer.prototype.drawPortrait = function (e, x, y, r) {
+  var c = this.ctx, cam = this.cam;
+  var body = e.size * (e.sides === 1 ? 1 : ROOT2);
+  if (!(body > 0)) return;
+  var keep = { op: e.opacity, hf: e.hurtFlash, dr: e.damageReduction, a: e.angle, pa: e.pa, px: e.px, py: e.py, ps: e.psize };
+  e.opacity = 1; e.hurtFlash = 0; e.damageReduction = 1;
+  e.angle = e.pa = 0; e.px = e.x; e.py = e.y; e.psize = e.size;
+  this.cam = { x: e.x, y: e.y, fov: (r / body) / this.windowScaling() };
+  c.save();
+  c.translate(x - this.canvas.width / 2, y - this.canvas.height / 2);
+  this.drawEntity(e, 1);
+  c.restore();
+  this.cam = cam;
+  e.opacity = keep.op; e.hurtFlash = keep.hf; e.damageReduction = keep.dr;
+  e.angle = keep.a; e.pa = keep.pa; e.px = keep.px; e.py = keep.py; e.psize = keep.ps;
 };
 
 // Y overlay: the class-tree wheel. A sunburst of TANK_DEFS' upgrade graph —
@@ -893,7 +926,10 @@ Renderer.prototype.drawDeathScreen = function () {
   }
   var secs = Math.floor((g.tick - p.spawnTick) / TPS);
   var time = Math.floor(secs / 3600) + 'h ' + Math.floor((secs % 3600) / 60) + 'm ' + (secs % 60) + 's';
-  this.drawTankIcon(p.def, cx, cy + 5, 42);
+  // The real tank, not a schematic of it: a Guardian stays Crasher pink and
+  // keeps its spawner, a Mega Smasher keeps its hull.
+  if (p.def && p.size > 0) this.drawPortrait(p, cx, cy + 5, 42);
+  else this.drawTankIcon(p.def, cx, cy + 5, 42);
   c.font = 'bold 18px Ubuntu, Verdana, sans-serif'; c.fillStyle = '#FFF';
   c.fillText(p.def.name, cx, cy + 78);
   c.font = '16px Ubuntu, Verdana, sans-serif';
@@ -917,6 +953,42 @@ Renderer.prototype.drawDeathScreen = function () {
   c.restore();
 };
 
+// --- mode effects -------------------------------------------------------
+// Every Mode Lab visual lives in MODE_FX (modefx.js) rather than in here, so
+// the base game's draw path is untouched when none is loaded.
+Renderer.prototype.drawModeFX = function (layer) {
+  if (typeof MODE_FX === 'undefined') return;
+  var spec = MODE_FX[this.game.modeKey];
+  if (!spec || !spec[layer]) return;
+  var c = this.ctx;
+  c.save();
+  try { spec[layer](this, c, this.game, this.game.tick / TPS + (this.alpha || 0) / TPS); }
+  catch (e) { /* a broken effect must never take the frame down */ }
+  c.restore();
+};
+
+// The one line of mode state a player has to be able to read: a wave number, a
+// lap, a clock. It rides the map-state packet, so it changes once a second.
+Renderer.prototype.drawModeHud = function () {
+  var text = this.game.modeHud;
+  if (!text) return;
+  var c = this.ctx, x = this.canvas.width / 2, y = 30;
+  c.save();
+  c.font = 'bold 20px Ubuntu, Verdana, sans-serif';
+  c.textAlign = 'center'; c.textBaseline = 'middle';
+  var w = c.measureText(text).width + 42;
+  c.globalAlpha = 0.35; c.fillStyle = '#000';
+  c.beginPath();
+  if (c.roundRect) c.roundRect(x - w / 2, y - 17, w, 34, 17); else c.rect(x - w / 2, y - 17, w, 34);
+  c.fill();
+  c.globalAlpha = 1;
+  c.lineWidth = 3.4; c.strokeStyle = TEXT_S;
+  c.strokeText(text, x, y);
+  c.fillStyle = '#FFF';
+  c.fillText(text, x, y);
+  c.restore();
+};
+
 // --- frame --------------------------------------------------------------
 Renderer.prototype.render = function (alpha) {
   var g = this.game, c = this.ctx;
@@ -931,9 +1003,16 @@ Renderer.prototype.render = function (alpha) {
   var order = { base: 0, wall: 1, trap: 2, bullet: 3, drone: 4, necro: 4, swarm: 4, minion: 5, skimmer: 5, rocket: 5, shape: 6, tank: 7, boss: 8 };
   var sorted = ents.slice().sort(function (a, b) { return (order[a.type] || 3) - (order[b.type] || 3); });
   for (var i = 0; i < sorted.length; i++) this.drawEntity(sorted[i], alpha);
+  // Mode effects that belong in the world sit here: behind the name plates and
+  // health bars, in front of everything they are decorating.
+  this.drawModeFX('world');
   for (i = 0; i < sorted.length; i++) if (sorted[i].name) this.drawName(sorted[i], alpha);
   for (i = 0; i < sorted.length; i++) this.drawHealthBar(sorted[i], alpha);
+  // ...and the full-screen ones over the lot, but under the HUD, so a fog bank
+  // never hides your own stat panel.
+  this.drawModeFX('screen');
 
+  this.drawModeHud();
   this.drawScoreboard();
   this.drawMinimap();
   this.drawStatus();

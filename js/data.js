@@ -20,7 +20,7 @@ var ROOT2 = Math.SQRT2;
 // --- palette -----------------------------------------------------------
 // fill/stroke pairs read from the real client.
 var C = {
-  border:   '#555555',
+  border:   '#555555', borderS: '#404040',   // guard hulls and the Dominator plinth
   barrel:   '#999999', barrelS: '#727272',
   blue:     '#00B2E1', blueS:   '#0085A8',
   red:      '#F14E54', redS:    '#B43A3F',
@@ -128,8 +128,13 @@ var ADDONS = {
   autoturret:  { turrets: 1 },
   auto3:       { turrets: 3, arc: true },
   auto5:       { turrets: 5, arc: true },
-  pronounced:  { nub: { angle: Math.PI, size: 55, width: 42, dir: Math.PI } },
-  dompronounced:{ nub: { angle: Math.PI, size: 60, width: 50, dir: Math.PI } },
+  // The "pronounced" collar sits over the FRONT of the barrel, widening back
+  // toward the body — it is what tells a Ranger from a Stalker. diep parks it at
+  // offsetRatio * size with a half-length of sizeRatio * size and a half-width of
+  // widthRatio * size, all off the body radius, so both figures below are
+  // (offset + size) and 2 * width in body radii.
+  pronounced:  { nub: { lengthRatio: 40 / 50 + 50 / 50, widthRatio: 2 * 42 / 50 } },
+  dompronounced:{ nub: { lengthRatio: 50 / 50 + 22 / 50, widthRatio: 2 * 35 / 50 } },
   launcher:    { hood: { lengthRatio: 1.31, widthRatio: 0.672 } }
 };
 // A mounted turret is a fixed 25-radius base carrying a 55 x 29.4 barrel, grown
@@ -212,18 +217,14 @@ var FIREWORK_BARRELS = (function () {
 var BOSSES = [
   {
     name: 'Guardian of the Pentagons', sides: 3, size: 135, fill: C.crasher, stroke: C.crasherS,
-    speed: 0.9, spin: false, faceVelocity: true,
+    barrelScale: 1, speed: 0.9, spin: false, faceVelocity: true,
     barrels: [{ angle: Math.PI, offset: 0, size: 100, width: 71.4, delay: 0, reload: 0.36, recoil: 1, isTrapezoid: true, trapezoidDirection: 0, addon: null, droneCount: 24, canControlDrones: true,
       bullet: { type: 'drone', sizeRatio: 21 / (71.4 / 2), health: 12.5, damage: 0.56, speed: 1.7, scatterRate: 1, lifeLength: 1.5, absorbtionFactor: 1 } }]
   },
   {
-    name: 'Summoner', sides: 4, size: 150, fill: C.square, stroke: C.squareS, speed: 0.6, spin: true,
-    // The spawners come out of the four flat FACES, not the corners — see the
-    // official render. polyPath puts vertex 0 on the body's own angle, so the
-    // half-step of 1/8 turn is what lands them on the faces. Without it a
-    // 135-long barrel is swallowed whole by the 150 circumradius at a corner.
+    name: 'Summoner', sides: 4, size: 150, fill: C.square, stroke: C.squareS, speed: 0.6, spin: true, barrelScale: 1,
     barrels: [0, 1, 2, 3].map(function (i) {
-      return { angle: 2 * Math.PI * (i / 4 + 1 / 8), offset: 0, size: 135, width: 71.4, delay: 0, reload: 0.36, recoil: 1, isTrapezoid: true, trapezoidDirection: 0, addon: null, droneCount: 7, canControlDrones: true,
+      return { angle: 2 * Math.PI * (i / 4), offset: 0, size: 135, width: 71.4, delay: 0, reload: 0.36, recoil: 1, isTrapezoid: true, trapezoidDirection: 0, addon: null, droneCount: 7, canControlDrones: true,
         bullet: { type: 'drone', sizeRatio: (55 * Math.SQRT1_2) / (71.4 / 2), health: 12.5, damage: 0.56, speed: 1.7, scatterRate: 1, lifeLength: -1, absorbtionFactor: 1, color: C.necro, stroke: C.necroS, sides: 4 } };
     })
   },

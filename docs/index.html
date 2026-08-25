@@ -1,0 +1,389 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Mode Lab — Tank Arena</title>
+<meta name="description" content="38 gamemodes that are not in diep.io, built on a full diep.io replica. Every tile below is the game's own artwork, running live.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🔺</text></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Ubuntu:wght@400;500;700&display=swap">
+<style>
+  :root{
+    --bg:#07080D; --bg2:#0C0E15; --panel:#12151D; --line:rgba(255,255,255,.075);
+    --line2:rgba(255,255,255,.16); --ink:#F0F5FC; --dim:#A9B8CC; --dim2:#6D7E96;
+    --blue:#00B2E1; --green:#00E16E; --yellow:#FFDE43; --red:#F14E54; --purple:#BF7FF5;
+    --spectrum:linear-gradient(92deg,#7FE9FF,#B7FFD4 32%,#FFE9A0 64%,#FFB3C8);
+  }
+  *{box-sizing:border-box;}
+  html{scroll-behavior:smooth;}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:400 16px/1.62 Ubuntu,Verdana,system-ui,sans-serif;
+    -webkit-font-smoothing:antialiased; overflow-x:hidden;
+  }
+  a{color:var(--blue);}
+  .wrap{max-width:1200px;margin:0 auto;padding:0 28px;}
+
+  /* ---------- hero ---------- */
+  .hero{position:relative;padding:96px 0 60px;overflow:hidden;}
+  #herobg{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;opacity:.6;}
+  .hero .wrap{position:relative;}
+  .kick{font:500 12px Ubuntu,sans-serif;letter-spacing:.24em;text-transform:uppercase;color:var(--dim2);}
+  h1{
+    margin:16px 0 0;font:700 clamp(46px,8vw,92px)/0.97 Ubuntu,sans-serif;letter-spacing:.01em;
+    background:var(--spectrum);-webkit-background-clip:text;background-clip:text;color:transparent;
+    text-wrap:balance;
+  }
+  .lede{max-width:60ch;margin:22px 0 0;color:var(--dim);font-size:19px;}
+  .lede b{color:var(--ink);font-weight:500;}
+  .stats{display:flex;flex-wrap:wrap;gap:0;margin:38px 0 0;border:1px solid var(--line);border-radius:14px;
+         background:var(--panel);overflow:hidden;}
+  .stats div{flex:1 1 118px;padding:16px 20px;border-right:1px solid var(--line);}
+  .stats div:last-child{border-right:0;}
+  .stats b{display:block;font:700 30px Ubuntu,sans-serif;line-height:1.05;font-variant-numeric:tabular-nums;
+           background:var(--spectrum);-webkit-background-clip:text;background-clip:text;color:transparent;}
+  .stats span{font:500 11px Ubuntu,sans-serif;letter-spacing:.13em;text-transform:uppercase;color:var(--dim2);}
+  .cta{display:flex;gap:12px;flex-wrap:wrap;margin-top:30px;}
+  .cta a{
+    display:inline-block;padding:15px 26px;border-radius:12px;text-decoration:none;
+    font:700 15px Ubuntu,sans-serif;letter-spacing:.03em;transition:transform .18s,filter .18s;
+  }
+  .cta a:hover{transform:translateY(-2px);filter:brightness(1.12);}
+  .cta .primary{background:linear-gradient(92deg,#00E16E,#00B2E1);color:#05210F;}
+  .cta .ghost{background:rgba(255,255,255,.07);color:var(--ink);border:1px solid var(--line2);}
+
+  /* ---------- filters ---------- */
+  .bar{position:sticky;top:0;z-index:20;background:rgba(7,8,13,.93);backdrop-filter:blur(10px);
+       border-top:1px solid var(--line);border-bottom:1px solid var(--line);padding:12px 0;}
+  .chips{display:flex;gap:8px;flex-wrap:wrap;}
+  .chip{background:rgba(255,255,255,.05);border:1px solid var(--line);color:var(--dim);
+        font:500 12px Ubuntu,sans-serif;letter-spacing:.08em;text-transform:uppercase;
+        padding:7px 14px;border-radius:999px;cursor:pointer;transition:all .2s;}
+  .chip:hover{color:var(--ink);border-color:var(--line2);}
+  .chip[aria-pressed="true"]{background:linear-gradient(92deg,#00B2E1,#BF7FF5);color:#08090E;
+        border-color:transparent;font-weight:700;}
+
+  /* ---------- the wall ---------- */
+  section{padding:44px 0 10px;}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(268px,1fr));gap:20px;}
+  .card{
+    position:relative;border-radius:15px;overflow:hidden;background:var(--panel);
+    border:1px solid var(--line);cursor:pointer;text-align:left;padding:0;color:inherit;font:inherit;
+    transition:transform .28s cubic-bezier(.2,.9,.25,1.15),box-shadow .28s,border-color .28s;
+  }
+  .card:hover,.card:focus-visible{transform:translateY(-5px);border-color:var(--line2);
+    box-shadow:0 20px 42px -16px rgba(0,0,0,.95),0 0 0 1px rgba(120,200,255,.22);outline:none;}
+  .card canvas{display:block;width:100%;aspect-ratio:16/10;background:#0E1017;}
+  .card .cap{padding:14px 16px 16px;}
+  .card .nm{font:700 17px Ubuntu,sans-serif;line-height:1.15;}
+  .card .tg{font:500 10.5px Ubuntu,sans-serif;letter-spacing:.12em;text-transform:uppercase;color:#6FA8C8;margin-top:4px;}
+  .card .bl{margin-top:9px;color:var(--dim);font-size:13.6px;line-height:1.5;}
+  .card .fam{position:absolute;top:11px;left:11px;font:700 9.5px Ubuntu,sans-serif;letter-spacing:.13em;
+    text-transform:uppercase;color:#0A0C12;background:rgba(255,255,255,.75);padding:4px 8px;border-radius:5px;}
+  .card.hide{display:none;}
+
+  /* ---------- detail dialog ---------- */
+  dialog{border:0;padding:0;background:transparent;max-width:min(1080px,94vw);width:100%;color:var(--ink);}
+  dialog::backdrop{background:rgba(4,5,10,.86);backdrop-filter:blur(3px);}
+  .sheet{display:grid;grid-template-columns:1.05fr 1fr;background:var(--bg2);border:1px solid var(--line2);
+         border-radius:18px;overflow:hidden;max-height:88vh;}
+  .sheet .art{position:relative;background:#0E1017;min-height:280px;}
+  .sheet .art canvas{position:absolute;inset:0;width:100%;height:100%;}
+  .sheet .art .nm2{position:absolute;left:0;right:0;bottom:0;padding:26px 28px;
+    background:linear-gradient(to top,rgba(8,10,15,.95),transparent);
+    font:700 32px Ubuntu,sans-serif;}
+  .sheet .body{padding:32px 34px;overflow-y:auto;}
+  .sheet .fam2{font:700 11px Ubuntu,sans-serif;letter-spacing:.18em;text-transform:uppercase;color:var(--blue);}
+  .sheet h3{margin:8px 0 3px;font:700 29px Ubuntu,sans-serif;}
+  .sheet .tg2{font:500 11px Ubuntu,sans-serif;letter-spacing:.14em;text-transform:uppercase;color:var(--dim2);margin-bottom:18px;}
+  .sheet .bl2{color:#C6D3E4;font-size:15.5px;margin:0 0 24px;}
+  .sheet h4{font:700 11px Ubuntu,sans-serif;letter-spacing:.18em;text-transform:uppercase;color:var(--dim2);margin:0 0 12px;}
+  .sheet ol{margin:0 0 8px;padding:0;list-style:none;counter-reset:s;}
+  .sheet ol li{counter-increment:s;position:relative;padding-left:30px;margin-bottom:13px;
+    color:var(--dim);font-size:14.5px;line-height:1.6;}
+  .sheet ol li::before{content:counter(s);position:absolute;left:0;top:2px;width:20px;height:20px;border-radius:6px;
+    background:rgba(0,178,225,.14);color:#4FC7EE;font:700 11px Ubuntu,sans-serif;
+    display:flex;align-items:center;justify-content:center;}
+  .sheet .meta{display:flex;gap:18px;flex-wrap:wrap;margin-top:20px;padding-top:18px;border-top:1px solid var(--line);
+    font:500 12px Ubuntu,sans-serif;color:var(--dim2);}
+  .sheet .meta b{color:var(--dim);font-weight:500;}
+  .closeb{position:absolute;top:14px;right:16px;z-index:3;background:rgba(0,0,0,.45);border:1px solid var(--line2);
+    color:var(--ink);font:700 12px Ubuntu,sans-serif;letter-spacing:.1em;padding:8px 14px;border-radius:9px;cursor:pointer;}
+  .closeb:hover{background:rgba(0,0,0,.7);}
+  @media(max-width:800px){
+    .sheet{grid-template-columns:1fr;}
+    .sheet .art{min-height:200px;}
+  }
+
+  /* ---------- how / footer ---------- */
+  .note{border:1px solid var(--line);background:var(--panel);border-radius:14px;padding:26px 28px;margin-top:12px;}
+  .note h3{margin:0 0 10px;font:700 21px Ubuntu,sans-serif;}
+  .note p{color:var(--dim);margin:0 0 12px;max-width:70ch;}
+  .note p:last-child{margin:0;}
+  code{background:rgba(255,255,255,.07);padding:.1em .4em;border-radius:4px;font-size:.9em;
+       font-family:ui-monospace,Menlo,Consolas,monospace;}
+  footer{margin-top:60px;padding:26px 0 60px;border-top:1px solid var(--line);color:var(--dim2);font-size:13.5px;}
+  h2.sec{font:700 30px Ubuntu,sans-serif;margin:0 0 6px;}
+  p.secsub{color:var(--dim2);margin:0 0 24px;}
+  @media(prefers-reduced-motion:reduce){*{animation:none!important;transition-duration:.01ms!important;}}
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <canvas id="herobg"></canvas>
+  <div class="wrap">
+    <div class="kick">Tank Arena &middot; a diep.io replica, plus</div>
+    <h1>Mode Lab</h1>
+    <p class="lede"><b>38 gamemodes that are not in diep.io</b>, built on top of a full replica of it —
+    exact tick rate, exact formulas, the real class tree and the real balance table. Every tile below is
+    the game's own artwork, running live in your browser off the same file the game loads.</p>
+
+    <div class="stats">
+      <div><b>38</b><span>gamemodes</span></div>
+      <div><b>8</b><span>families</span></div>
+      <div><b>56</b><span>classes in the tree</span></div>
+      <div><b>25</b><span>ticks / second</span></div>
+      <div><b>681</b><span>mode tests</span></div>
+    </div>
+
+    <div class="cta" id="cta">
+      <a class="primary" href="../index.html">Play it</a>
+      <a class="ghost" href="../README.md">Read the README</a>
+    </div>
+    <p class="lede" id="ctanote" style="font-size:14px;margin-top:14px;color:#6D7E96;"></p>
+  </div>
+</header>
+
+<div class="bar">
+  <div class="wrap"><div class="chips" id="chips"></div></div>
+</div>
+
+<section class="wrap">
+  <div class="grid" id="grid"></div>
+</section>
+
+<section class="wrap">
+  <h2 class="sec">How it is put together</h2>
+  <p class="secsub">Three ideas carry all thirty-eight.</p>
+  <div class="note">
+    <h3>A mode is a table row</h3>
+    <p>Every mode is one entry in <code>GAMEMODES</code> plus, if it needs one, a <code>MODE_LOGIC</code>
+    entry with <code>init</code> / <code>tick</code> / <code>onSpawn</code> / <code>onTankDeath</code> /
+    <code>reset</code> / <code>botGoal</code>. Nothing forks the base game.</p>
+  </div>
+  <div class="note">
+    <h3>Rule modes are one constant</h3>
+    <p>Instagib, Vampire, Ice Rink and Blood Money change a single number that the whole simulation
+    already reads — damage, regeneration, friction, XP share — through one <code>Game.rule()</code>
+    lookup. The consequences cascade for free, which is why they feel like different games rather than
+    different arithmetic.</p>
+  </div>
+  <div class="note">
+    <h3>Every objective mode teaches the bots</h3>
+    <p>A mode without a <code>botGoal</code> plays fine online and looks broken offline, with the bots
+    walking past the payload for ten minutes. All thirty-eight ship one. The Juggernaut goes further and
+    registers itself as the arena bounty, so bot target scoring outbids everything else and they gang up
+    on it instead of farming.</p>
+  </div>
+</section>
+
+<footer class="wrap">
+  Thumbnails are drawn by <code>js/modefx.js</code> — the same painters the in-game Mode Lab uses, loaded
+  directly rather than exported as images. Mode text comes from <code>docs/modes.json</code>, regenerated
+  from the source of truth in <code>js/modes-extra.js</code>.
+</footer>
+
+<dialog id="dlg">
+  <div class="sheet">
+    <div class="art">
+      <button class="closeb" id="closeb">CLOSE</button>
+      <canvas id="dcv"></canvas>
+      <div class="nm2" id="dnm"></div>
+    </div>
+    <div class="body">
+      <div class="fam2" id="dfam"></div>
+      <h3 id="dh"></h3>
+      <div class="tg2" id="dtg"></div>
+      <p class="bl2" id="dbl"></p>
+      <h4>How it works</h4>
+      <ol id="dol"></ol>
+      <div class="meta" id="dmeta"></div>
+    </div>
+  </div>
+</dialog>
+
+<!-- The real thumbnail painters. Loading the game's own file means the site can
+     never drift from what the game draws. -->
+<script src="../js/modefx.js"></script>
+<script>
+(function () {
+  var MODES = [], byKey = {}, filter = 'All', cards = [], current = null;
+
+  // Served by `npm start`, ../index.html is the game. Served by GitHub Pages,
+  // /docs IS the site root and there is no ../ — so point at the repository
+  // instead, which the Pages hostname and path give us for free.
+  (function links() {
+    var m = location.hostname.match(/^([^.]+)\.github\.io$/);
+    if (!m) return;
+    var repo = location.pathname.split('/').filter(Boolean)[0];
+    var base = 'https://github.com/' + m[1] + (repo ? '/' + repo : '');
+    var cta = document.getElementById('cta');
+    cta.children[0].textContent = 'Get the game';
+    cta.children[0].href = base;
+    cta.children[1].href = base + '#readme';
+    document.getElementById('ctanote').textContent =
+      'This page is the catalogue. The game itself runs from the repository — clone it and open index.html, no build step.';
+  })();
+
+  // ---- hero backdrop: the same drifting polygons the in-game menu uses ----
+  (function hero() {
+    var cv = document.getElementById('herobg'), c = cv.getContext('2d'), bits = [], last = 0;
+    function size() {
+      var dpr = Math.min(2, devicePixelRatio || 1), r = cv.getBoundingClientRect();
+      cv.width = Math.max(2, r.width * dpr); cv.height = Math.max(2, r.height * dpr);
+      c.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
+    addEventListener('resize', size);
+    for (var i = 0; i < 26; i++) bits.push({
+      x: Math.random(), y: Math.random(), r: 14 + Math.random() * 52,
+      sides: 3 + ((Math.random() * 4) | 0), rot: Math.random() * 6.3,
+      spin: (Math.random() - .5) * .006, vy: -.05 - Math.random() * .12,
+      a: .05 + Math.random() * .07
+    });
+    function frame(now) {
+      requestAnimationFrame(frame);
+      var r = cv.getBoundingClientRect();
+      if (!r.width) return;
+      if (cv.width !== Math.round(r.width * Math.min(2, devicePixelRatio || 1))) size();
+      var dt = last ? Math.min(60, now - last) : 16; last = now;
+      var step = dt / 16.7, w = r.width, h = r.height;
+      c.clearRect(0, 0, w, h);
+      for (var i = 0; i < bits.length; i++) {
+        var b = bits[i];
+        b.y += b.vy * step / h * 60; b.rot += b.spin * step;
+        if (b.y < -.2) { b.y = 1.2; b.x = Math.random(); }
+        c.save(); c.globalAlpha = b.a;
+        c.translate(b.x * w, b.y * h); c.rotate(b.rot);
+        c.beginPath();
+        for (var s = 0; s < b.sides; s++) {
+          var a = Math.PI * 2 * (s / b.sides);
+          if (s) c.lineTo(Math.cos(a) * b.r, Math.sin(a) * b.r);
+          else c.moveTo(Math.cos(a) * b.r, Math.sin(a) * b.r);
+        }
+        c.closePath(); c.strokeStyle = '#9FD8FF'; c.lineWidth = 2; c.stroke();
+        c.restore();
+      }
+    }
+    size(); requestAnimationFrame(frame);
+  })();
+
+  // ---- build the wall ----
+  function build() {
+    var chips = document.getElementById('chips'), grid = document.getElementById('grid');
+    var fams = ['All'];
+    MODES.forEach(function (m) { if (fams.indexOf(m.family) === -1) fams.push(m.family); });
+    fams.forEach(function (f) {
+      var b = document.createElement('button');
+      b.className = 'chip'; b.textContent = f;
+      b.setAttribute('aria-pressed', f === 'All' ? 'true' : 'false');
+      b.onclick = function () {
+        filter = f;
+        [].forEach.call(chips.children, function (x) { x.setAttribute('aria-pressed', x === b ? 'true' : 'false'); });
+        cards.forEach(function (cd) { cd.el.classList.toggle('hide', filter !== 'All' && cd.m.family !== filter); });
+      };
+      chips.appendChild(b);
+    });
+
+    MODES.forEach(function (m) {
+      byKey[m.key] = m;
+      var el = document.createElement('button');
+      el.className = 'card';
+      el.innerHTML =
+        '<canvas width="320" height="200"></canvas>' +
+        '<div class="fam">' + esc(m.family) + '</div>' +
+        '<div class="cap"><div class="nm">' + esc(m.name) + '</div>' +
+        '<div class="tg">' + esc(m.tag || m.family) + '</div>' +
+        '<div class="bl">' + esc(m.blurb) + '</div></div>';
+      el.onclick = function () { openDetail(m); };
+      grid.appendChild(el);
+      cards.push({ m: m, el: el, cv: el.querySelector('canvas'), c: el.querySelector('canvas').getContext('2d') });
+    });
+    requestAnimationFrame(paint);
+  }
+
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"]/g, function (ch) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch];
+    });
+  }
+
+  // Only cards in the viewport are drawn, so a wall of 38 live canvases costs
+  // about as much as the handful you can actually see.
+  function paint(now) {
+    requestAnimationFrame(paint);
+    var t = now / 1000;
+    for (var i = 0; i < cards.length; i++) {
+      var cd = cards[i];
+      if (cd.el.classList.contains('hide')) continue;
+      var r = cd.el.getBoundingClientRect();
+      if (r.bottom < -140 || r.top > innerHeight + 140) continue;
+      var fn = MODE_THUMB[cd.m.key];
+      if (!fn) continue;
+      cd.c.setTransform(1, 0, 0, 1, 0, 0);
+      try { fn(cd.c, cd.cv.width, cd.cv.height, t + i * 0.7); } catch (e) { /* one bad tile is not the wall */ }
+    }
+    if (current) {
+      var cv = document.getElementById('dcv'), c = cv.getContext('2d');
+      var box = cv.getBoundingClientRect();
+      if (box.width) {
+        var dpr = Math.min(2, devicePixelRatio || 1);
+        var w = Math.round(box.width * dpr), h = Math.round(box.height * dpr);
+        if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }
+        c.setTransform(dpr, 0, 0, dpr, 0, 0);
+        var f = MODE_THUMB[current.key];
+        if (f) try { f(c, box.width, box.height, t); } catch (e) { /* ignore */ }
+      }
+    }
+  }
+
+  // ---- detail ----
+  var dlg = document.getElementById('dlg');
+  function openDetail(m) {
+    current = m;
+    document.getElementById('dnm').textContent = m.name;
+    document.getElementById('dfam').textContent = m.family;
+    document.getElementById('dh').textContent = m.name;
+    document.getElementById('dtg').textContent = m.tag || '';
+    document.getElementById('dbl').textContent = m.blurb;
+    var ol = document.getElementById('dol');
+    ol.innerHTML = '';
+    (m.how || []).forEach(function (line) {
+      var li = document.createElement('li');
+      li.textContent = line;
+      ol.appendChild(li);
+    });
+    document.getElementById('dmeta').innerHTML =
+      '<span>Teams <b>' + (m.teams || 'free-for-all') + '</b></span>' +
+      '<span>Arena <b>' + m.size.toLocaleString() + ' units</b></span>' +
+      '<span>Layout <b>' + m.arena + '</b></span>' +
+      '<span>Key <b>' + esc(m.key) + '</b></span>';
+    if (dlg.showModal) dlg.showModal(); else dlg.setAttribute('open', '');
+  }
+  document.getElementById('closeb').onclick = function () { dlg.close ? dlg.close() : dlg.removeAttribute('open'); };
+  dlg.addEventListener('close', function () { current = null; });
+  dlg.addEventListener('click', function (e) { if (e.target === dlg) dlg.close(); });
+
+  // ---- data ----
+  // Fetched when served over http; falls back to the inline copy for a page
+  // opened straight off the disk, where fetch() of a sibling file is blocked.
+  fetch('modes.json').then(function (r) { return r.json(); })
+    .then(function (d) { MODES = d; build(); })
+    .catch(function () { MODES = window.__MODES__ || []; build(); });
+})();
+</script>
+<script src="modes.js"></script>
+</body>
+</html>

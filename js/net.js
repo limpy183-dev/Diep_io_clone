@@ -111,6 +111,7 @@ NetGame.prototype.readMapState = function (b) {
   var size = b.rf32(), h = size / 2, a = this.arena;
   a.left = -h; a.right = h; a.top = -h; a.bottom = h; a.size = size;
   this.noRespawn = !!b.ru8();
+  this.modeHud = b.rstr();
   var n = b.ru16(), out = [];
   for (var i = 0; i < n; i++) {
     out.push({
@@ -155,6 +156,13 @@ NetGame.prototype.readDeath = function (b) {
   p.level = b.ru8();
   p.tankId = b.ru8();
   p.def = TANK_DEFS[p.tankId] || TANK_DEFS[0];
+  // Fill the mirror in enough for drawPortrait: online it is all the death
+  // screen has to draw from, and a bare circle is not what you died as.
+  this.attachTank(p, p.tankId);
+  p.sides = p.def.sides;
+  p.isStar = !!p.def.isStar;
+  p.size = p.psize = baseSizeOf(p.def) * p.scaleFactor;
+  if (p.def.color) { p.fill = p.def.color[0]; p.stroke = p.def.color[1]; }
   var alive = b.ru32();
   p.spawnTick = this.tick - alive;
   p.kills = b.ru8();
@@ -328,7 +336,7 @@ NetGame.prototype.attachBoss = function (e, bossIndex) {
   var spec = BOSSES[bossIndex] || BOSSES[0];
   e.bossIndex = bossIndex;
   e.def = null;                                    // bosses are not tank defs
-  e.scaleFactor = spec.sides === 1 ? spec.size / 50 : 1;
+  e.scaleFactor = spec.barrelScale !== undefined ? spec.barrelScale : e.size / 50;
   e.barrels = bossBarrels(spec).map(function (d) { return { def: d, recoilAnim: 0 }; });
   e.turrets = buildTurrets(e, spec.turrets || 0);
 };

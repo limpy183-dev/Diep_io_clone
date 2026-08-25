@@ -1,7 +1,21 @@
 # Tank Arena
 
-A browser tank-arena game built to the attached reverse-engineering spec: exact tick rate,
-exact formulas, the real class tree, and the real balance data.
+**A diep.io replica — and then a lot more on top of it.**
+
+The replica half is built to the attached reverse-engineering spec and does not take
+liberties: exact tick rate, exact formulas, the real class tree, the real balance data,
+all five bosses, all eleven of diep's own game modes, and authoritative multiplayer with
+client-side prediction. If you have played diep.io, this is that.
+
+The other half is everything diep.io does not have. The headline is the **[Mode Lab](docs/index.html)**
+— 38 extra gamemodes reached from a button on the main menu, from Gun Game and Prop Hunt to a
+black hole that starts as a speck and ends by swallowing the arena. Several of them bring their
+own visuals: real fog, a nightfall that actually dims your vision, an accretion disc, a
+twelve-sided custom Juggernaut hull that exists in no class tree. On top of that there are 76
+chat commands including a 50-strong cheat set, bot difficulty down to six individual skill
+dials, 31 real community builds the bots draft from, and a class-tree wheel.
+
+Everything still runs with no build step. Open `index.html` and play.
 
 ## Run
 
@@ -18,10 +32,88 @@ Then open `http://localhost:8137` and hit *Play Online*. The server hosts the ga
 files too, so everyone points at the same address. To play across machines, give
 others your LAN address (`ws://192.168.x.x:8137`) in the server box.
 
-Run the tests:
+Run the tests — 923 of them:
 
 ```bash
 npm test
+```
+
+`npm run test:modes` runs just the Mode Lab suite, which is the fast one.
+
+## The Mode Lab
+
+Press **MODE LAB** on the main menu — the button under the bot-difficulty line. It opens a wall
+of 38 tiles, each one live-rendered rather than a screenshot. Click a tile and it expands into
+a full-screen view with a write-up of the mode beside it, then plays offline against bots or
+online against people.
+
+There is a browsable version of the same wall at **[docs/index.html](docs/index.html)**, which
+loads the game's own `js/modefx.js` so the tiles on the site are drawn by exactly the same code
+as the tiles in the game. To publish it, turn on GitHub Pages with the source set to
+*Deploy from a branch → main → /docs*; it then serves at
+`https://<user>.github.io/<repo>/`.
+
+| Family | Modes |
+|---|---|
+| **Rules** — one constant, whole new game | Chaos Rotation, Score Attack, Instagib, Vampire, Ice Rink, Blood Money, Locust |
+| **The Tree** — the 56 classes are the content | Gun Game, Draft Roulette, Mirror Match, Randomizer |
+| **Asymmetry** | Juggernaut, Infection, Boss Rush, Siege, Closer Gauntlet, Boss Royale |
+| **Physics** — knockback over damage | Sumo, Diep Ball, Grand Prix, Red Light Green Light, Singularity |
+| **Deception** | Prop Hunt, Hide and Seek, Fog of War, Nightfall |
+| **Territory** | King of the Hill, Payload, Alpha Hunt, Nest Wars, Roaming Domination, Bounty King |
+| **The Arena** | Labyrinth Royale, Musical Tiles, Portals |
+| **Social** | Squads, Duel Bracket, Bomb Tag |
+
+A few that are worth calling out:
+
+- **Juggernaut** ships the only invented *hull* in the project — twelve sides, a spiked collar,
+  six ring cannons, two heavy forward guns and a drone escort, at 9,000 health and double size.
+  Every one of its numbers lives in the tank def rather than in an override applied after
+  `recompute()`, because `recompute()` runs again on the next kill and would put them all back
+  (this is bug 27 in the list below, learned once). The bots are told about it explicitly: the
+  Juggernaut registers itself as `game.bountyTarget`, which outbids everything else in their
+  target scoring, so they gang up on it instead of farming.
+- **Prop Hunt** works because the renderer draws a tank from `sides` / `size` / `fill` / `stroke`,
+  all writable at runtime — so a hider genuinely *is* a Square as far as the draw path is
+  concerned, name plate and barrels suppressed. Hiders keep full movement speed; the tell is
+  behaviour, not stillness. A seeker that shoots a real polygon pays 40 health for it.
+- **Singularity** opens as a 40-unit speck with almost no pull and grows on a cubic ramp for
+  twelve minutes until its radius covers the whole board. The accretion disc, lensing ring and
+  infalling debris are all drawn from the live pull value, so the picture is the physics.
+- **Chaos Rotation** draws one of fifteen modifiers every ninety seconds from a shuffled deck.
+  It is also the argument against ever shipping thirty-eight separate online arenas: one
+  well-populated FFA plus a modifier table beats eight empty lobbies.
+
+### Adding one
+
+A mode is a `GAMEMODES` row plus, if it needs one, a `MODE_LOGIC` entry. Two shapes:
+
+```js
+// a rule mode — no logic at all
+labMode('icerink', { name: 'Ice Rink', family: 'Rules', rules: { friction: 0.02 }, blurb: '...', how: [...] });
+
+// an objective mode
+labMode('koth', { name: 'King of the Hill', teams: ['blue','red'], logic: {
+  init(g) {...}, tick(g) {...}, reset(g) { labReset(g, 'koth'); }, botGoal(g, t) {...}
+}, blurb: '...', how: [...] });
+```
+
+`Game.rule(key, default)` is the single lookup for every mode that is a changed constant rather
+than a changed objective — `friction`, `dmgMult`, `regen`, `lifesteal`, `shapeXp`, `killShare`,
+`spawnLevel`, `reloadMult`, `shapes`, `bots`, `fov`. `ruleOverride` is a live layer on top of it,
+which is how Chaos Rotation switches a modifier on and off mid-round without touching the table.
+
+Two rules that are not optional:
+
+- **Every objective mode ships a `botGoal`.** Without one it plays fine online and looks broken
+  offline, with the bots walking past the payload for ten minutes.
+- **Never open the cheat gate to get an effect.** Setting `g.cheatsOn` to enable a mechanic hands
+  `/god` and `/nuke` to everyone in the arena. That has already happened once here (bug 11).
+
+Regenerate the website's mode data after adding one:
+
+```bash
+node -e "const fs=require('fs'),vm=require('vm');const s=vm.createContext({console,Math,JSON,Map,Set,Infinity,NaN});for(const f of ['js/tankdefs.js','js/data.js','js/tankdefs-extra.js','js/protocol.js','js/engine.js','js/modes.js','js/modes-extra.js'])vm.runInContext(fs.readFileSync(f,'utf8'),s,{filename:f});const o=Object.keys(s.LAB_MODES).map(k=>{const m=s.LAB_MODES[k],g=s.GAMEMODES[k];return{key:k,name:m.name,family:m.family,tag:m.tag,blurb:m.blurb,how:m.how,teams:g.teams?g.teams.length:0,size:g.size,arena:g.maze?'maze':'open'}});fs.writeFileSync('docs/modes.json',JSON.stringify(o,null,1));fs.writeFileSync('docs/modes.js','window.__MODES__ = window.__MODES__ || '+JSON.stringify(o)+';\n')"
 ```
 
 ## What's here
@@ -33,6 +125,9 @@ npm test
 | `js/data.js` | Constants, palette, XP curve, shapes, addons, bosses, game modes |
 | `js/engine.js` | 25 Hz simulation: entities, physics, damage, barrels, projectiles, AI, bots |
 | `js/modes.js` | The six objective modes + possession (H) |
+| `js/modes-extra.js` | The Mode Lab's 38 arenas — rules, logic, and the Juggernaut hull |
+| `js/modefx.js` | Per-mode screen effects and the animated menu thumbnails |
+| `js/modelab.js` | The Mode Lab button and its menu, markup and styles included |
 | `js/protocol.js` | Binary wire format, shared by client and server |
 | `js/net.js` | Client-side world mirror, snapshot interpolation, own-tank prediction |
 | `js/render.js` | Canvas 2D drawing + HUD |
@@ -41,6 +136,8 @@ npm test
 | `js/main.js` | Input, fixed-timestep loop, menu |
 | `server.js` | Authoritative game server (also serves the static files) |
 | `test.mjs` | 100 simulation tests |
+| `test-modes.mjs` | 681 Mode Lab tests — registration, resets, rules, effects |
+| `docs/index.html` | The Mode Lab website; draws its tiles with the game's own `modefx.js` |
 | `test-net.mjs` | 50 network tests against a live server |
 | `test-bots.mjs` | 75 bot-AI tests |
 | `test-wheel.mjs` | class-tree wheel geometry |
@@ -63,6 +160,10 @@ authoritative one, then broadcasts the result. Three flavours:
   its way past it. `/help` lists everything, `/cheats` lists just those.
 
 ## Objective modes
+
+These are diep.io's own six. The 38 in the Mode Lab use the same machinery, with three hooks
+added for them: `onSpawn` (dress a fresh tank), `filterUpgrades` (narrow the upgrade offer) and
+`botGoal` (tell the bots what the objective is).
 
 Each lives in `js/modes.js` as an `init` / `tick` / `onTankDeath` / `reset` entry that the
 engine dispatches on by name. Winning a round posts a banner, then resets the objectives and
@@ -199,7 +300,11 @@ node -e "const fs=require('fs');fs.writeFileSync('js/tankdefs.js','var TANK_DEFS
 - **AI** — one targeting class with retarget cadence, hysteresis, and the cheap
   perpendicular-drift intercept solver, shared by turrets, drones, crashers and bosses.
 - **All 5 bosses**, 45-minute spawn cycle, one-at-a-time rule, 30 000 XP.
-- **All 11 game modes** — FFA, 2 Teams, 4 Teams, Maze (40×40 cells of 635 du, walls that eat
+- **The Mode Lab** — 38 extra gamemodes behind a button on the main menu, in eight families,
+  each with an animated tile and a written explanation. Twenty-eight of them define their own
+  visuals — fog banks, a growing black hole, a hazard ring, a traffic light, a crown, a fuse —
+  and every one of them ships a bot goal so the offline arena plays the objective too. See above.
+- **All 11 of diep's game modes** — FFA, 2 Teams, 4 Teams, Maze (40×40 cells of 635 du, walls that eat
   what is fired at them), Sandbox (+ cheats), plus the six objective modes below. Team bases with drone spawners, enemy-projectile
   dissolve, and rammer ejection.
 - **UI** — scoreboard, score/level bars, stat panel with queueing, upgrade cards, minimap,

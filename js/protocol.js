@@ -82,6 +82,12 @@ function unpackAngle(b) { return b / 255 * Math.PI * 2; }
 
 // How many auto-turret angles a tank id carries. Both sides derive this from
 // the tank table rather than sending a count.
+// A class's body radius before level scaling. Shared so the client's own-tank
+// mirror can size a death-screen portrait the same way the sim sizes the tank.
+function baseSizeOf(def) {
+  return def.baseSizeOverride || (def.sides === 4 ? 32.5 * Math.SQRT2 : def.sides === 16 ? 25 * Math.SQRT2 : 50);
+}
+
 function turretCount(defs, addons, tankId) {
   var d = defs[tankId];
   if (!d) return 0;
@@ -91,5 +97,5 @@ function turretCount(defs, addons, tankId) {
 
 if (typeof module !== 'undefined') module.exports = {
   OP: OP, SV: SV, IN: IN, ETYPES: ETYPES, Buf: Buf, MAX_PACKET: MAX_PACKET, CHATKIND: CHATKIND,
-  packAngle: packAngle, unpackAngle: unpackAngle, turretCount: turretCount
+  packAngle: packAngle, unpackAngle: unpackAngle, turretCount: turretCount, baseSizeOf: baseSizeOf
 };

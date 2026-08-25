@@ -18,7 +18,7 @@ const { OP, SV, IN, ETYPES, Buf, MAX_PACKET, CHATKIND, packAngle, turretCount } 
 // Same trick the tests use: the engine is plain browser script with no browser
 // globals, so one shared context is all it needs. No bundler, no duplication.
 const sim = vm.createContext({ console, Math, JSON, Map, Set, Infinity, NaN });
-for (const f of ['js/tankdefs.js', 'js/data.js', 'js/tankdefs-extra.js', 'js/engine.js', 'js/modes.js', 'js/commands.js'])
+for (const f of ['js/tankdefs.js', 'js/data.js', 'js/tankdefs-extra.js', 'js/protocol.js', 'js/engine.js', 'js/modes.js', 'js/modes-extra.js', 'js/commands.js'])
   vm.runInContext(fs.readFileSync(path.join(__dirname, f), 'utf8'), sim, { filename: f });
 
 const { Game, GAMEMODES, TANK_DEFS, ADDONS, MSPT, MAX_LEVEL } = sim;
@@ -389,12 +389,15 @@ function buildMapState(g) {
 
 function sendMapState(client, g) {
   const items = buildMapState(g);
-  const b = new Buf(16 + items.length * 14);
+  const b = new Buf(300 + items.length * 14);
   b.u8(SV.MAPSTATE);
   // Tag and Survival close the field in mid-round, and Survival takes the
   // respawn button away with it — both only reach a client through this packet.
   b.f32(g.arena.size);
   b.u8(g.noRespawn ? 1 : 0);
+  // The Mode Lab's one line of readable state — a wave, a lap, a clock. It
+  // only moves when a mode changes it, which the modes do once a second.
+  b.str(g.modeHud || '');
   b.u16(items.length);
   for (const it of items) {
     b.i16(it.x); b.i16(it.y); b.u16(it.w); b.u16(it.h);

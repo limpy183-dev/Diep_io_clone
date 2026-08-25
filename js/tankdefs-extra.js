@@ -190,17 +190,20 @@
     for (var i = 0; i < BOSSES.length; i++) if (BOSSES[i].name === name) return BOSSES[i];
     throw new Error('no boss named ' + name);
   }
-  // Barrels off a boss spec, or off a plain class, with per-barrel overrides.
-  function copyBarrels(defs, over) {
+  // Barrels off a boss spec, or off a plain class, with per-barrel overrides and
+  // an optional geometry scale (see DEF_SF).
+  function copyBarrels(defs, over, mul) {
     return defs.map(function (b) {
       var c = JSON.parse(JSON.stringify(b));
       for (var k in (over || {})) {
         if (k === 'bullet') { for (var j in over.bullet) c.bullet[j] = over.bullet[j]; }
         else c[k] = over[k];
       }
+      if (mul) { c.size *= mul; c.width *= mul; c.offset *= mul; }
       return c;
     });
   }
+  var DEF_SF = (150 * Math.SQRT1_2) / 50;
   function smasherStats() {
     var max = [10, 0, 0, 0, 0, 10, 10, 10];
     return STATS(false).map(function (s, i) { return { name: s.name, max: max[i] }; });
@@ -209,6 +212,11 @@
   var guardian = bossOf('Guardian of the Pentagons');
   var fallenOverlord = bossOf('Fallen Overlord');
   var fallenBooster = bossOf('Fallen Booster');
+
+  // Arena Closers are Color.Neutral wherever they appear — the yellow is the
+  // point of them. makeArenaCloser painted that on by hand after spawning, so
+  // /class arena closer came out team-blue; on the def it holds either way.
+  TANK_DEFS[16].color = [C.neutral, C.neutralS];
 
   var SPECIAL = [
     // --- the two tanks that only exist inside diep's own code --------------
@@ -250,10 +258,16 @@
     // not you hold the trigger — that is the boss's own behaviour, kept. Its
     // three turrets ride the standard auto3 ring (0.8 * size); the real boss
     // mounts them slightly tighter, at 60 units on a 106-unit body.
+    //
+    // DEF_SF: unlike the Guardian and the Summoner, the Defender does not pin
+    // its barrels — diep grows them with the body at size / 50, which is why its
+    // launchers reach half again as far as the triangle is wide. A player class
+    // scales barrels by level alone, so that factor is baked in here instead.
     tank({
       id: 102, name: 'Defender', levelRequirement: 45,
       sides: 3, baseSizeOverride: 150 * Math.SQRT1_2, color: [C.triangle, C.triangleS],
-      postAddon: 'auto3', barrels: bossBarrels(bossOf('Defender'))
+      postAddon: 'auto3',
+      barrels: copyBarrels(bossBarrels(bossOf('Defender')), null, DEF_SF)
     }),
     tank({
       id: 103, name: 'Fallen Overlord', levelRequirement: 45,
@@ -340,8 +354,7 @@
       sides: 8, baseSizeOverride: 160 * Math.SQRT1_2, color: [C.square, C.squareS],
       stats: STATS(true),
       barrels: [0, 1, 2, 3, 4, 5, 6, 7].map(function (i) {
-        // + 1/16 for the same reason the plain Summoner carries + 1/8: faces, not corners.
-        return copyBarrels(bossBarrels(bossOf('Summoner')), { angle: 2 * Math.PI * (i / 8 + 1 / 16), size: 175, reload: 0.18 })[0];
+        return copyBarrels(bossBarrels(bossOf('Summoner')), { angle: 2 * Math.PI * (i / 8), size: 175, reload: 0.18 })[0];
       })
     }),
 
@@ -352,9 +365,9 @@
       id: 109, name: 'Defender (8th Anniversary)', levelRequirement: 45,
       sides: 3, baseSizeOverride: 150 * Math.SQRT1_2, color: [C.triangle, C.triangleS],
       postAddon: 'auto3',
-      barrels: bossBarrels(bossOf('Defender')).concat([0, 1, 2].map(function (i) {
+      barrels: copyBarrels(bossBarrels(bossOf('Defender')), null, DEF_SF).concat([0, 1, 2].map(function (i) {
         return {
-          angle: 2 * Math.PI * (i / 3 + 1 / 6), offset: 0, size: 95, width: 100, delay: 0,
+          angle: 2 * Math.PI * (i / 3 + 1 / 6), offset: 0, size: 200, width: 210, delay: 0,
           reload: 4, recoil: 0, isTrapezoid: true, trapezoidDirection: 0, addon: null,
           droneCount: 2, canControlDrones: false,
           bullet: { type: 'minion', sizeRatio: 1, health: 4, damage: 0.7, speed: 0.56, scatterRate: 1, lifeLength: -1, absorbtionFactor: 1, color: C.square, stroke: C.squareS }

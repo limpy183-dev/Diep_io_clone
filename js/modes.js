@@ -105,7 +105,7 @@ function lockTank(t) {
 function makeDominator(g, x, y) {
   var t = new Tank(g, { x: x, y: y, team: null, name: 'Dominator', tankId: pick(DOMINATOR.ids) });
   t.level = DOMINATOR.level;
-  t.baseSize = DOMINATOR.size / Math.pow(1.01, DOMINATOR.level - 1);
+  t.scaleBoost = DOMINATOR.size / (t.baseSize * Math.pow(1.01, DOMINATOR.level - 1));
   t.recompute();
   t.health = t.maxHealth;
   t.damagePerTick = DOMINATOR.damage;
