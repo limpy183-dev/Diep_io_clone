@@ -389,7 +389,7 @@ function buildMapState(g) {
 
 function sendMapState(client, g) {
   const items = buildMapState(g);
-  const b = new Buf(300 + items.length * 14);
+  const b = new Buf(1600 + items.length * 14);
   b.u8(SV.MAPSTATE);
   // Tag and Survival close the field in mid-round, and Survival takes the
   // respawn button away with it — both only reach a client through this packet.
@@ -398,6 +398,23 @@ function sendMapState(client, g) {
   // The Mode Lab's one line of readable state — a wave, a lap, a clock. It
   // only moves when a mode changes it, which the modes do once a second.
   b.str(g.modeHud || '');
+  // The end-of-round podium. Only present while a round is being won, so it
+  // costs nothing for the other 99% of the match.
+  const pod = g.roundEndsAt ? g.podium : null;
+  b.u8(pod ? 1 : 0);
+  if (pod) {
+    b.str(pod.text || '');
+    b.u16(pod.players || 0);
+    b.u8(pod.top.length);
+    for (const row of pod.top) {
+      b.str(row.name || '');
+      b.u32(Math.max(0, Math.min(0xFFFFFFFF, Math.round(row.score))));
+      b.u8(Math.min(255, row.level || 0));
+      b.u16(Math.min(65535, row.kills || 0));
+      b.str(row.tank || '');
+      b.u8(row.isPlayer ? 1 : 0);
+    }
+  }
   b.u16(items.length);
   for (const it of items) {
     b.i16(it.x); b.i16(it.y); b.u16(it.w); b.u16(it.h);
@@ -630,7 +647,7 @@ function handle(client, b) {
         const godBit = !!(bits & IN.GOD);
         if (godBit && !client.godBit) t.godMode = !t.godMode;
         client.godBit = godBit;
-        if (bits & IN.LEVELUP && t.level < MAX_LEVEL) t.addScore(Math.max(5, sim.LEVEL_SCORE[t.level + 1] - t.score + 1));
+        if (bits & IN.LEVELUP && t.level < game.levelCap()) t.addScore(Math.max(5, sim.LEVEL_SCORE[t.level + 1] - t.score + 1));
       }
       break;
     }

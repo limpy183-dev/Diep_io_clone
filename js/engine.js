@@ -113,8 +113,11 @@ Entity.prototype.kill = function (source) {
   // A tank pays out a share of what it was carrying; a shape pays its listed
   // reward. The mode multiplier is the arena's *shape* score multiplier — FFA 1x,
   // Mothership 3x — so it has no business scaling a kill.
+  // killBounty is a flat payment on top of the share. Without it a mode where
+  // shapes pay nothing can never get off zero: everyone starts on 0, a kill
+  // hands over a share of 0, and the scoreboard never moves.
   var reward = this.type === 'tank'
-    ? this.score * this.game.rule('killShare', KILL_SCORE_SHARE)
+    ? this.score * this.game.rule('killShare', KILL_SCORE_SHARE) + this.game.rule('killBounty', 0)
     : this.scoreReward * this.game.mode.xp * this.game.rule('shapeXp', 1);
   if (reward && source) {
     var root = source; while (root.owner) root = root.owner;
@@ -215,6 +218,10 @@ Barrel.prototype.period = function () {
 Barrel.prototype.tick = function (shooting) {
   var d = this.def;
   this.recoilAnim *= 0.8;
+  // A mode can switch a barrel group off — the Juggernaut opens different
+  // weapons at different ranges. Cheaper and more honest than rebuilding its
+  // barrel list on the fly.
+  if (this.disabled) { this.cycle = this.period(); return; }
   // Necromancer's two barrels never fire: its drones are reanimated Squares and
   // nothing else. They are declared droneCount 0, which used to fall straight
   // past the child cap below and let left-click mint free, permanent,
@@ -415,7 +422,10 @@ function Turret(parent, index, count, arc, defs) {
   this.isTurret = true;
   this.index = index;
   this.arc = arc;
-  this.base = count === 1 ? 0 : (Math.PI * 2 * index) / count;
+  // Bosses mount their turrets between their barrels rather than on top of
+  // them, so the ring can be rotated off the body's own vertices.
+  this.base = (count === 1 ? 0 : (Math.PI * 2 * index) / count)
+    + ((parent.spec && parent.spec.turretOffset) || 0);
   this.angle = 0;
   this.target = null;
   this.barrels = (defs || [TURRET_BARREL]).map(function (d, i) { return new Barrel(this, d, i); }, this);
@@ -487,7 +497,7 @@ function Tank(game, o) {
   this.isPlayer = !!o.isPlayer;
   this.bot = !!o.bot;
   this.score = o.score || 0;
-  this.level = levelFromScore(this.score);
+  this.level = levelFromScore(this.score, game.levelCap());
   this.stats = [0, 0, 0, 0, 0, 0, 0, 0];
   this.queued = [];
   this.tankId = 0;
@@ -541,13 +551,13 @@ Tank.prototype.recompute = function () {
   // scaleBoost is how a mode makes a tank big: diep scales the whole tank, so
   // barrels, collars and guards ride the same factor. Growing baseSize alone
   // left the Dominator with a level-75 cannon bolted to a 160-unit body.
-  this.scaleFactor = Math.pow(1.01, L - 1) * (this.scaleBoost || 1);
+  this.scaleFactor = Math.pow(this.game.rule('lvlScale', 1.01), L - 1) * (this.scaleBoost || 1);
   this.size = this.baseSize * this.scaleFactor;
   var mh = def.maxHealth + 2 * (L - 1) + st[S_HEALTH] * 20;
   if (this.maxHealth) this.health = Math.min(this.health * (mh / this.maxHealth), mh);
   this.maxHealth = mh;
   this.regenPerTick = (mh * 4 * st[S_REGEN] + mh) / 25000 * this.game.rule('regen', 1);
-  this.movementSpeed = def.speed * 2.55 * Math.pow(1.07, st[S_SPEED]) / Math.pow(1.015, L - 1);
+  this.movementSpeed = def.speed * 2.55 * Math.pow(1.07, st[S_SPEED]) / Math.pow(this.game.rule('lvlSlow', 1.015), L - 1);
   this.reloadTime = 15 * Math.pow(0.914, st[S_RELOAD]) * this.game.rule('reloadMult', 1);
   this.damagePerTick = 5 + st[S_BODY] + (def.bodyDamage || 0);
   this.absorb = def.absorbtionFactor;
@@ -556,7 +566,7 @@ Tank.prototype.recompute = function () {
   this.push = 8;
   // Fog of War and Nightfall pull this in; Nightfall moves it every tick, so
   // it reads a live value off the game rather than a fixed rule.
-  this.fov = 0.55 * def.fieldFactor / Math.pow(1.01, (L - 1) / 2)
+  this.fov = 0.55 * def.fieldFactor / Math.pow(this.game.rule('lvlScale', 1.01), (L - 1) / 2)
     * (this.game.fovScale !== undefined ? this.game.fovScale : this.game.rule('fov', 1));
   // bonusPoints is the /points cheat; the floor keeps an over-spent build (also
   // a cheat) from wrapping to 255 when it goes out on the wire as a u8.
@@ -566,7 +576,7 @@ Tank.prototype.recompute = function () {
 Tank.prototype.addScore = function (n) {
   if (this.dead) return;
   this.score += n;
-  var nl = levelFromScore(this.score);
+  var nl = levelFromScore(this.score, this.game.levelCap());
   if (nl !== this.level) { this.level = nl; this.recompute(); this.checkUpgrades(); }
   else this.recompute();
   this.flushQueue();
@@ -642,7 +652,7 @@ Tank.prototype.tick = function () {
   if (this.immobile) { mx = 0; my = 0; }   // Dominators are bolted down
   if (mx || my) {
     var m = Math.hypot(mx, my);
-    this.addVelocity(Math.atan2(my / m, mx / m), this.movementSpeed);
+    this.addVelocity(Math.atan2(my / m, mx / m), this.movementSpeed * g.rule('accelMult', 1));
     this.moved = true;
   }
 
@@ -654,8 +664,10 @@ Tank.prototype.tick = function () {
   for (var b = 0; b < this.barrels.length; b++) this.barrels[b].tick(shooting);
   for (var t = 0; t < this.turrets.length; t++) this.turrets[t].tick();
 
-  // regen
-  if (this.health < this.maxHealth) {
+  // regen. Vampire turns this off, and "off" has to mean the hyper-regen too —
+  // regenPerTick alone leaves a 30-second-undamaged tank healing 0.4% a tick,
+  // which is most of the healing in the game.
+  if (this.health < this.maxHealth && g.rule('regen', 1) !== 0) {
     this.health = Math.min(this.maxHealth, this.health + this.regenPerTick);
     if (g.tick - this.lastDamage >= HYPER_REGEN_DELAY) this.health = Math.min(this.maxHealth, this.health + this.maxHealth / 250);
   }
@@ -669,6 +681,16 @@ Tank.prototype.tick = function () {
     this.opacity = Math.max(0, Math.min(1, this.opacity));
   }
   if (this.cheatInvis) this.opacity = 0;   // /invis, which no class can undo by firing
+
+  // Knockback can shove a tank clean inside a wall block, and inside one there
+  // is nothing to push it back out — it just sits there, invulnerable and stuck.
+  // Being in the wall is fatal, ramping so a graze is survivable and a burial
+  // is not.
+  if (g.walls.length && !this.canMoveThroughWalls && !this.isCloser
+      && g.inWall(this.x, this.y, -this.size * 0.35)) {
+    this.wallTicks = (this.wallTicks || 0) + 1;
+    this.applyDamage(this.maxHealth * 0.004 * this.wallTicks, null);
+  } else this.wallTicks = 0;
 
   this.guardAngle += 1;
   if (this.hurtFlash > 0) this.hurtFlash--;
@@ -874,6 +896,7 @@ function Boss(game, spec) {
   this.stats = [0, 4, 4, 4, 4, 0, 0, 0];
   this.reloadTime = 15 * Math.pow(0.914, 4);
   this.movementSpeed = spec.speed;
+  this.regenPerTick = (this.regenPerTick || 0) * game.rule('regen', 1);
   var self = this;
   this.barrels = bossBarrels(spec).map(function (b, i) { return new Barrel(self, b, i); });
   this.turrets = [];
@@ -888,6 +911,18 @@ Boss.prototype.constructor = Boss;
 Boss.prototype.tick = function () {
   var g = this.game, s = this.spec;
   if (this.hurtFlash > 0) this.hurtFlash--;
+  // Somebody is driving. Its own AI would fight the wheel for the angle and the
+  // throttle every tick, so it stands down entirely.
+  if (this.possessedBy && !this.possessedBy.dead) {
+    var d = this.possessedBy;
+    this.angle = Math.atan2(this.mouse.y - this.y, this.mouse.x - this.x);
+    if (s.spin) this.angle += PASSIVE_ROTATION * 2;
+    var mx = (this.input.right - this.input.left), my = (this.input.down - this.input.up);
+    if (mx || my) { var m = Math.hypot(mx, my); this.maintainVelocity(Math.atan2(my / m, mx / m), this.movementSpeed * 6); }
+    for (var bi = 0; bi < this.barrels.length; bi++) this.barrels[bi].tick(!!this.input.fire);
+    for (var ti = 0; ti < this.turrets.length; ti++) this.turrets[ti].tick();
+    return;
+  }
   if (g.tick % 2 === 0 && s.viewRange !== 0) this.target = g.findTarget(this, 3000, true);
   if (this.target && !this.target.dead) {
     var aim = predictAim(this, this.target, 20 + BSPEED_GAIN * this.stats[S_BSPEED]);
@@ -1304,7 +1339,7 @@ function botShouldFight(t, tgt, sk) {
   // nothing. A fight it is visibly losing still costs a level 45 bot every point
   // it spent a whole life collecting, which is how the strongest tanks on the
   // board ended up with the shortest lives.
-  if (t.level >= MAX_LEVEL - 2) return botWinOdds(t, tgt) > 0.25;
+  if (t.level >= t.game.levelCap() - 2) return botWinOdds(t, tgt) > 0.25;
   // How readily the odds talk it out of something. At zero it charges whatever
   // it can see, which is most of what being an easy bot means. The role divides
   // it: a Farmer wants a much surer thing than a Hunter does before it stops
@@ -1670,7 +1705,12 @@ function botScan(t, sk, doShapes) {
     // ponytail: a shot has to land before it notices someone out there — a bot
     // being missed from beyond its sight still knows nothing. Read owners off the
     // incoming bullets in botDodge if that gap ever matters.
-    if (d2 > sight2 && e !== t.aiEngaged && !(e === hitter && d2 < botClear2(t, e, sk))
+    // A globally-marked target is never out of sight. Juggernaut hangs its
+    // whole design on the arena converging on one tank, and a bot that cannot
+    // see across the map simply farms instead.
+    var globalMark = g.bountyGlobal && e === g.bountyTarget && e !== t
+      && !(e.team !== null && e.team === t.team);
+    if (!globalMark && d2 > sight2 && e !== t.aiEngaged && !(e === hitter && d2 < botClear2(t, e, sk))
         && !botZoomSees(t, e, zx, zy, sight2)) continue;
     if (e.opacity <= 0 && !t.seesInvisible) continue;          // a hidden Stalker is not there
     // Whoever is on us, plus whoever was and has not left yet — tickBot holds
@@ -1678,7 +1718,7 @@ function botScan(t, sk, doShapes) {
     // is not a choice, so the odds do not get to price it: out-level a bot and
     // the punching-up penalty below used to rank you under a passing Square.
     var atUs = e === t.aiEngaged || e === hitter || botThreatens(e, t);
-    var gap = (e.level || MAX_LEVEL) - t.level;
+    var gap = (e.level || t.game.levelCap()) - t.level;
     // A mode can name one entity as the thing everyone is supposed to be
     // shooting at (the Juggernaut, the bomb carrier, the crowned leader). It
     // outbids the ordinary scoring hard, because "everyone piles on" IS the
@@ -1687,7 +1727,7 @@ function botScan(t, sk, doShapes) {
     // null — which is exactly where the Juggernaut lives. Mark anything that is
     // not a team mate.
     var mark = (e === t.game.bountyTarget && e !== t && !(e.team !== null && e.team === t.team))
-      ? 9 + sk.threat * 3 : 0;
+      ? (g.bountyGlobal ? 1e4 : 9 + sk.threat * 3) : 0;
     var ts = -Math.sqrt(d2) / 400
       - (atUs || mark ? 0 : sk.threat * Math.max(0, gap) * 0.22)       // punching up is how bots die
       + sk.threat * (1 - e.health / e.maxHealth) * 2 * role.prey   // finish what is already hurt
@@ -1799,7 +1839,10 @@ function tickBot(t) {
   // Shapes are a thousand entities to price and they do not move much, so they
   // get a lazier cadence than the reaction window — but an immediate look the
   // moment the one being chewed on dies, or the bot stands there with its gun off.
-  var doShapes = lostFarm || g.tick % 15 === t.id % 15;
+  // A mode can take farming off the table entirely. In Juggernaut there is one
+  // thing to do and standing in a field of Squares is not it.
+  var doShapes = (g.rule('botFarm', 1) !== 0) && (lostFarm || g.tick % 15 === t.id % 15);
+  if (g.rule('botFarm', 1) === 0) { t.aiFarm = null; t.farmBan = 0; }
   if (lostTank || lostFarm || doShapes || g.tick % sk.react === t.id % sk.react) {
     botScan(t, sk, doShapes);
     // What the mode wants of it, refreshed on the same schedule — sweeping 64
@@ -1825,7 +1868,7 @@ function tickBot(t) {
   // gap between the two thresholds stops it flip-flopping on the line, and the
   // level check stops it fleeing a cripple it was two shots from finishing.
   var fleeAt = Math.min(0.6, sk.flee * botRole(t).flee);
-  if (tgt && fleeAt && (tgt.level || MAX_LEVEL) >= t.level - 4) {
+  if (tgt && fleeAt && (tgt.level || t.game.levelCap()) >= t.level - 4) {
     if (t.health < t.maxHealth * fleeAt) t.fleeing = true;
     else if (t.health > t.maxHealth * 0.75) t.fleeing = false;
   } else t.fleeing = false;
@@ -2193,6 +2236,9 @@ function Game(modeKey, playerName, opts) {
   this.bases = [];
   this.timeScale = 1;               // /timewarp: sim steps per wall-clock tick
   this.ruleOverride = null;         // Chaos Rotation's live modifier layer
+  // Rule modes have no tick to set this, and an unlabelled arena leaves you
+  // guessing which of the thirty-nine you are in.
+  this.modeHud = this.mode.lab ? this.mode.name.toUpperCase() : '';
   this.bountyTarget = null;         // the one thing every bot should be shooting at
   this.fx = null;                   // per-mode screen effect state, read by the renderer
 
@@ -2216,7 +2262,10 @@ function Game(modeKey, playerName, opts) {
 
   if (!this.headless) this.player = this.spawnTank({ name: playerName, isPlayer: true });
   this.setDifficulty(opts.difficulty || 'medium');
-  this.botCount = this.rule('bots', opts.botCount !== undefined ? opts.botCount : (this.mode.sandbox ? 64 : 80));
+  // `bots` pins a count; `botsDelta` nudges whatever the player chose, which is
+  // what a mode wants when it only needs a slightly thinner field than usual.
+  var chosen = opts.botCount !== undefined ? opts.botCount : (this.mode.sandbox ? 64 : 80);
+  this.botCount = Math.max(0, this.rule('bots', chosen) + this.rule('botsDelta', 0));
   this.botRespawn = [];                // levels waiting to come back, one per dead bot
   for (var b = 0; b < this.botCount; b++) this.spawnBot();
 }
@@ -2228,6 +2277,29 @@ Game.prototype.notify = function (text, ticks) { this.notifications.push({ text:
 // objective — friction, damage, regen, XP shares, spawn level. `ruleOverride`
 // is the live layer Chaos Rotation writes to, so a modifier can be switched on
 // and off mid-round without touching the mode table.
+// The top of the board when a round ends, so the winner screen has something
+// to show. Taken at the moment of the win rather than at the moment of the
+// draw, because the arena keeps killing each other through the banner.
+Game.prototype.snapshotPodium = function (winnerText) {
+  var list = [];
+  for (var i = 0; i < this.entities.length; i++) {
+    var e = this.entities[i];
+    if (e.type !== 'tank' || e.modeEntity || e.isCloser) continue;
+    if (!e.isPlayer && !e.bot) continue;
+    list.push({ name: e.name || 'an unnamed tank', score: Math.round(e.score), level: e.level,
+      kills: e.kills || 0, tank: e.def ? e.def.name : '', isPlayer: !!e.isPlayer, dead: !!e.dead });
+  }
+  list.sort(function (a, b) { return b.score - a.score; });
+  this.podium = { text: winnerText || '', top: list.slice(0, 3), players: list.length, tick: this.tick };
+  return this.podium;
+};
+
+// The level ceiling. 45 everywhere except a mode that says otherwise, and the
+// one place every cap check goes through so raising it raises all of them.
+Game.prototype.levelCap = function () {
+  return Math.min(LEVEL_CAP, this.rule('maxLevel', MAX_LEVEL));
+};
+
 Game.prototype.rule = function (key, dflt) {
   var o = this.ruleOverride;
   if (o && o[key] !== undefined) return o[key];
@@ -2286,15 +2358,26 @@ Game.prototype.spawnTank = function (o) {
   // Instagib, Sumo and the duel modes hand out a finished tank rather than a
   // level 1 one. A mode-set score always wins over the rule.
   var lvl = this.rule('spawnLevel', 0);
-  if (lvl && !score) score = LEVEL_SCORE[Math.min(MAX_LEVEL, lvl)];
+  if (lvl && !score) score = LEVEL_SCORE[Math.min(this.levelCap(), lvl)];
   var t = new Tank(this, { x: p.x, y: p.y, name: o.name, isPlayer: o.isPlayer, bot: o.bot, team: team, score: score });
   this.paintTeam(t);
   var force = this.rule('forceClass', null);
-  if (force !== null) forceTankClass(t, force === 'random' ? randomTankId() : force, this.rule('forceStats', null));
+  var stats = this.rule('forceStats', null);
+  if (force !== null) forceTankClass(t, force === 'random' ? randomTankId() : force, stats);
+  else if (stats) {
+    // A mode can hand out a build without dictating the class — Grand Prix
+    // wants every car on maximum speed but does not care what you drive.
+    for (var si = 0; si < 8; si++) t.stats[si] = Math.min(stats[si] || 0, t.def.stats[si].max);
+    t.recompute();
+  }
   this.add(t);
   // Modes dress a fresh tank here: a gun-game rung, a prop-hunt disguise, an
   // infection team. One hook rather than a spawn path per mode.
   if (this.logic && this.logic.onSpawn) this.logic.onSpawn(this, t);
+  // Last, and always: a tank handed out at level 45 has upgrades waiting and
+  // nothing had ever asked. A mode that does not want cards says so through
+  // filterUpgrades, which checkUpgrades runs.
+  t.checkUpgrades();
   return t;
 };
 
@@ -2345,9 +2428,13 @@ Game.prototype.paintTeam = function (t) {
 
 Game.prototype.spawnBot = function () {
   var back = this.botRespawn.length ? this.botRespawn.shift() : null;
+  // A mode that hands out a finished tank hands one to the bots as well. The
+  // queued level is a rung on the normal ladder, and these modes have no ladder.
+  var fixed = this.rule('spawnLevel', 0);
+  var lvl = fixed ? Math.min(this.levelCap(), fixed) : (back ? back.lvl : 1);
   var t = this.spawnTank({
     name: pick(BOT_NAMES) + (Math.random() < 0.4 ? ' ' + ((Math.random() * 99) | 0) : ''),
-    bot: true, score: LEVEL_SCORE[back ? back.lvl : 1],
+    bot: true, score: LEVEL_SCORE[lvl],
     team: back ? back.team : undefined
   });
   t.autoFire = false;
@@ -2740,7 +2827,13 @@ Game.prototype.step = function () {
     switch (e.type) {
       case 'tank':
         if (e.isCloser) tickCloser(e);
-        else if (e.bot && !e.parked && !e.immobile) tickBot(e);
+        else if (e.bot && !e.parked && !e.immobile) {
+          tickBot(e);
+          // A goal is a hint the ordinary AI weighs against everything else.
+          // Some modes are not negotiable — a red light, a starting grid, a
+          // prop holding still — so a mode may drive the bot outright instead.
+          if (this.logic && this.logic.botDrive) this.logic.botDrive(this, e);
+        }
         e.tick(); break;
       case 'boss': e.tick(); break;
       case 'shape': e.tick(); break;
@@ -2763,6 +2856,8 @@ Game.prototype.step = function () {
   // round reset, once the win banner has had its time on screen
   if (this.roundEndsAt && this.tick >= this.roundEndsAt) {
     this.roundEndsAt = 0;
+    this.podium = null;
+    this.mapDirty = true;
     if (this.logic && this.logic.reset) this.logic.reset(this);
     for (var r = 0; r < this.entities.length; r++) {
       var t = this.entities[r];
@@ -2927,7 +3022,7 @@ Game.prototype.respawnPlayer = function (name, old) {
   // Modes that hand out a finished tank respawn you at the same level rather
   // than one rung down — there is no rung.
   var fixed = this.rule('spawnLevel', 0);
-  var lvl = fixed ? Math.min(MAX_LEVEL, fixed)
+  var lvl = fixed ? Math.min(this.levelCap(), fixed)
     : (old && !this.mode.freshStart ? respawnLevel(old.level) : 1);
   // You come back on your own side; Tag is the one mode that moves you, onto
   // whoever tagged you.
@@ -2943,5 +3038,6 @@ if (typeof module !== 'undefined') module.exports = {
   Game: Game, Tank: Tank, Entity: Entity, Shape: Shape, Barrel: Barrel,
   handleCollision: handleCollision, collides: collides, predictAim: predictAim, interceptAim: interceptAim,
   BOT_SKILL: BOT_SKILL, BOT_DIFFICULTIES: BOT_DIFFICULTIES, BOT_KNOB_GROUPS: BOT_KNOB_GROUPS, botSkill: botSkill,
-  BOT_ROLES: BOT_ROLES, forceTankClass: forceTankClass, randomTankId: randomTankId, playableTankIds: playableTankIds
+  BOT_ROLES: BOT_ROLES, forceTankClass: forceTankClass, randomTankId: randomTankId, playableTankIds: playableTankIds,
+  Boss: Boss, Turret: Turret
 };

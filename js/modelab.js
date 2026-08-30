@@ -16,10 +16,15 @@
 // Only tiles actually on screen are drawn, and the whole loop stops when the
 // menu is closed, so an idle main menu costs nothing.
 
+// The tile the painters are written against. Everything they draw is in these
+// pixels, so any larger canvas is a scaled version of this composition rather
+// than the same drawing marooned in more space.
+var THUMB_W = 300, THUMB_H = 190;
+
 var MODELAB = (function () {
   var root = null, wall = null, grid = null, detail = null, tiles = [], raf = 0;
   var open = false, current = null, filter = 'All';
-  var api = { onPlay: null, onPlayOnline: null };
+  var api = { onPlay: null, onPlayOnline: null, diff: null };
 
   // --- styles ------------------------------------------------------------
   var CSS = [
@@ -133,6 +138,15 @@ var MODELAB = (function () {
     '#lab-panel ol li::before{content:counter(lab);position:absolute;left:0;top:1px;width:20px;height:20px;',
     '  border-radius:6px;background:rgba(0,178,225,.14);color:#4FC7EE;font:700 11px Ubuntu,sans-serif;',
     '  display:flex;align-items:center;justify-content:center;}',
+    // the difficulty row
+    '#lab-panel .lab-diff{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 22px;}',
+    '#lab-panel .lab-dbtn{flex:1 1 auto;min-width:62px;background:rgba(255,255,255,.05);',
+    '  border:1px solid rgba(255,255,255,.09);color:#8FA0B8;border-radius:9px;padding:9px 6px;',
+    '  font:700 11px Ubuntu,Verdana,sans-serif;letter-spacing:.08em;text-transform:uppercase;',
+    '  cursor:pointer;transition:all .18s;}',
+    '#lab-panel .lab-dbtn:hover{color:#EAF2FF;border-color:rgba(255,255,255,.24);}',
+    '#lab-panel .lab-dbtn.on{color:#08090E;border-color:transparent;font-weight:700;}',
+    '#lab-panel .lab-dnote{font:400 13px Ubuntu,Verdana,sans-serif;color:#7C8DA6;margin:-14px 0 22px;min-height:2.6em;}',
     '#lab-panel .lab-acts{display:flex;gap:10px;flex-wrap:wrap;position:sticky;bottom:-38px;',
     '  padding:14px 0 0;background:linear-gradient(to top,#0C0E15 72%,rgba(12,14,21,0));}',
     '#lab-panel button{flex:1 1 140px;border:0;border-radius:11px;padding:15px 18px;cursor:pointer;',
@@ -421,9 +435,20 @@ var MODELAB = (function () {
       var dpr = Math.min(2, window.devicePixelRatio || 1);
       var w = Math.max(2, Math.round(box.width * dpr)), h = Math.max(2, Math.round(box.height * dpr));
       if (dc.width !== w || dc.height !== h) { dc.width = w; dc.height = h; }
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       var fn2 = MODE_THUMB[current];
-      if (fn2) try { fn2(ctx, box.width, box.height, t); } catch (e) { /* ignore */ }
+      if (fn2) {
+        // The painters compose against a fixed 300x190 tile: radii, fonts and
+        // offsets are in tile pixels. Handing them a 750x650 box just spreads
+        // the same small drawing over more room. Scale the context to COVER
+        // the box instead, so everything in the scene grows with it.
+        var k = Math.max(box.width / THUMB_W, box.height / THUMB_H);
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.save();
+        ctx.translate((box.width - THUMB_W * k) / 2, (box.height - THUMB_H * k) / 2);
+        ctx.scale(k, k);
+        try { fn2(ctx, THUMB_W, THUMB_H, t); } catch (e) { /* ignore */ }
+        ctx.restore();
+      }
     }
   }
 
@@ -499,6 +524,33 @@ var MODELAB = (function () {
       m.how.forEach(function (line) { ol.appendChild(el('li', '', line)); });
       p.appendChild(ol);
     }
+    // Bot difficulty, right where you choose the mode. Every mode's bots read
+    // the same six skill dials, and the Lab modes lean on them harder than the
+    // base game does — an Extreme bot in Grand Prix drives the racing line and
+    // shoots you off it.
+    if (api.diff) {
+      p.appendChild(el('div', 'lab-h', 'Bot difficulty'));
+      var row = el('div', 'lab-diff');
+      var note = el('div', 'lab-dnote');
+      var TONE = { easy: '#7FD8A0', medium: '#8FD9FF', hard: '#FFDE43', veryhard: '#FFA95C', extreme: '#FF6A6A' };
+      api.diff.list().forEach(function (d) {
+        var b = el('button', 'lab-dbtn' + (d.key === api.diff.get() ? ' on' : ''), d.label);
+        if (d.key === api.diff.get()) b.style.background = TONE[d.key] || '#8FD9FF';
+        b.addEventListener('click', function () {
+          api.diff.set(d.key);
+          row.querySelectorAll('.lab-dbtn').forEach(function (x) { x.classList.remove('on'); x.style.background = ''; });
+          b.classList.add('on');
+          b.style.background = TONE[d.key] || '#8FD9FF';
+          note.textContent = d.blurb;
+        });
+        row.appendChild(b);
+      });
+      p.appendChild(row);
+      var cur = api.diff.list().filter(function (d) { return d.key === api.diff.get(); })[0];
+      note.textContent = cur ? cur.blurb : '';
+      p.appendChild(note);
+    }
+
     var acts = el('div', 'lab-acts');
     var go = el('button', 'lab-go', 'PLAY OFFLINE');
     go.addEventListener('click', function () { launch(m.key, false); });
@@ -543,7 +595,10 @@ var MODELAB = (function () {
   }
 
   return {
-    init: function (onPlay, onPlayOnline) { api.onPlay = onPlay; api.onPlayOnline = onPlayOnline; build(); },
+    init: function (onPlay, onPlayOnline, diff) {
+      api.onPlay = onPlay; api.onPlayOnline = onPlayOnline; api.diff = diff || null;
+      build();
+    },
     open: show, close: hide
   };
 })();

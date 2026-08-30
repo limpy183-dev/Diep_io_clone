@@ -24,6 +24,11 @@ function winRound(g, text) {
   if (g.roundEndsAt) return;
   g.notify(text, ROUND_END_DELAY);
   g.roundEndsAt = g.tick + ROUND_END_DELAY;
+  // Taken here rather than in each mode, so every win screen gets a podium and
+  // no mode can forget to build one. It is taken at the instant of the win
+  // because the arena keeps killing each other all through the banner.
+  if (g.snapshotPodium) g.snapshotPodium(text);
+  g.mapDirty = true;
 }
 
 // Sweep everything a mode built, so init() can run again cleanly.
@@ -47,7 +52,9 @@ function clearModeEntities(g) {
 function possess(g, tank, target) {
   if (!tank || tank.dead || !target || target.dead) return false;
   if (target.possessedBy || tank.possessing) return false;
-  if (target.team === null || target.team !== tank.team) return false;
+  // Boss Royale has no teams at all, so `both are null` has to count as "mine"
+  // — the old test refused every possession in a team-less arena.
+  if (target.team !== tank.team) return false;
   tank.possessing = target;
   target.possessedBy = tank;
   tank.parked = true;

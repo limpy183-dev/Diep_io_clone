@@ -15,6 +15,7 @@ function Renderer(canvas, game) {
   this.showClassTree = false;
   this.treeT0 = 0;      // ms stamp of the last Y press; 0 = closed
   this.tree = null;     // lazy: TANK_DEFS is patched by tankdefs-extra.js at load
+  this.treeRoot = -1;   // which id the cached wheel was grown from
   this.alpha = 0;
   this.statsT = 0;      // 0 = panel parked off-screen left, 1 = fully in
   this.statsTime = 0;
@@ -60,7 +61,7 @@ Renderer.prototype.updateCamera = function (dt, alpha) {
     var ip = ipos(p, alpha || 0);
     var tx = ip.x, ty = ip.y;
     // Predator's right-click pushes the camera up to 1500 units toward the cursor
-    if (p.def.flags.zoomAbility && p.input.altFire) {
+    if (p.def && p.def.flags.zoomAbility && p.input.altFire) {
       var d = Math.hypot(p.mouse.x - tx, p.mouse.y - ty);
       var k = Math.min(PREDATOR_ZOOM, d) / (d || 1);
       tx += (p.mouse.x - tx) * k; ty += (p.mouse.y - ty) * k;
@@ -537,10 +538,11 @@ Renderer.prototype.drawStatus = function () {
   var g = this.game, p = this.statsOwner(), c = this.ctx;
   if (!p) return;
   var w = 420, x = (this.canvas.width - w) / 2, y = this.canvas.height - 44;
-  var span = LEVEL_SCORE[Math.min(MAX_LEVEL, p.level) + 1] - LEVEL_SCORE[p.level];
-  var into = p.level >= MAX_LEVEL ? 1 : (p.score - LEVEL_SCORE[p.level]) / (span || 1);
+  var cap = g.levelCap ? g.levelCap() : MAX_LEVEL;
+  var span = LEVEL_SCORE[Math.min(cap, p.level) + 1] - LEVEL_SCORE[p.level];
+  var into = p.level >= cap ? 1 : (p.score - LEVEL_SCORE[p.level]) / (span || 1);
   // gold plate is a static nameplate; the green bar above is the XP progress
-  this.bar(x, y, w, 26, 1, C.levelBar, 'Lvl ' + p.level + ' ' + p.def.name);
+  this.bar(x, y, w, 26, 1, C.levelBar, 'Lvl ' + p.level + ' ' + (p.def ? p.def.name : p.name || ''));
   this.bar(x + 40, y - 30, w - 80, 22, into, C.scoreBar,
     (p === g.player ? '' : p.name + ' - ') + 'Score: ' + abbrev(p.score));
 };
@@ -567,7 +569,7 @@ Renderer.prototype.statRects = function (t) {
   var x = 20 - (1 - t) * (bw + 80), y0 = this.canvas.height - 42;
   for (var ui = 0; ui < 8; ui++) {
     var wire = uiToWire(ui);
-    if (p.def.stats[wire].max === 0) continue;
+    if (!p.def || p.def.stats[wire].max === 0) continue;
     out.push({ ui: ui, wire: wire, x: x, y: 0, w: bw, h: bh });
   }
   // real client lists [1] Health Regen at the top down to [8] Movement Speed
@@ -602,7 +604,8 @@ Renderer.prototype.drawStats = function () {
   c.save();
   c.globalAlpha = alpha;
   for (var i = 0; i < rects.length; i++) {
-    var r = rects[i], wire = r.wire, def = p.def.stats[wire];
+    var r = rects[i], wire = r.wire, def = p.def && p.def.stats[wire];
+    if (!def) continue;
     var cur = p.stats[wire], max = def.max;
     var col = STAT_COLORS[r.ui];
     var rad = r.h / 2;
@@ -671,8 +674,14 @@ Renderer.prototype.upgradeLayout = function () {
   // next tier unlocked one, which reads as a lost upgrade.
   if (this.upgradeHidden) return { hidden: true, cards: [], reopen: { x: 16, y: 10, w: 58, h: 58 } };
 
-  var n = p.pendingUpgrades.length, cols = Math.min(2, n), rows = Math.ceil(n / cols);
-  var size = 116, gap = 12, pad = 14, close = 58, head = close + 20;
+  // Two columns is right for diep's four cards. Juggernaut Royale opens eleven
+  // branches at once, and eleven cards in two columns is a panel taller than the
+  // window, so the grid squares up and the cards shrink once there are more than
+  // a handful.
+  var n = p.pendingUpgrades.length;
+  var cols = n <= 4 ? Math.min(2, n) : Math.min(4, Math.ceil(Math.sqrt(n)));
+  var rows = Math.ceil(n / cols);
+  var size = n > 6 ? 92 : 116, gap = 12, pad = 14, close = 58, head = close + 20;
   var gridW = cols * size + (cols - 1) * gap;
   var panel = { x: 16, y: 10, w: gridW + pad * 2 + 56, h: pad + head + rows * (size + gap) + 46 };
   var gx = panel.x + (panel.w - gridW) / 2, gy = panel.y + pad + head;
@@ -768,8 +777,13 @@ Renderer.prototype.drawUpgrades = function () {
 };
 
 // Small schematic of a tank: body + barrels, used on cards and the class tree.
+// The icon is drawn at `r` pixels whatever the class's real body radius is, so
+// the hardware has to be scaled against THAT radius rather than against the
+// stock 50 — otherwise a class with a baseSizeOverride (the Dominators, the
+// bosses, every Juggernaut Royale hull) gets barrels several times too long for
+// its own icon.
 Renderer.prototype.drawTankIcon = function (def, x, y, r, rot) {
-  var c = this.ctx, scale = r / 50;
+  var c = this.ctx, scale = r / baseSizeOf(def);
   c.save(); c.translate(x, y); if (rot) c.rotate(rot);
   var guards = ADDONS[def.postAddon] && ADDONS[def.postAddon].guards;
   if (guards) for (var gi = 0; gi < guards.length; gi++) {
@@ -823,24 +837,56 @@ Renderer.prototype.drawPortrait = function (e, x, y, r) {
 // wheel shows. Angular span is the node's leaf count.
 var TREE_COLORS = ['#AEE89A', '#F49B9B', '#F2DE98', '#A8E6E6', '#C4A8F0', '#A8B4F0'];
 var TREE_RADII = [0.249, 0.504, 0.796, 0.99];   // hub edge, then each ring's outer edge
+// A deeper tree needs the room a three-ring one does not: the hub shrinks to a
+// porthole and the bands thin out, which is where the extra rings come from.
+// Juggernaut Royale's ninety-six hulls over six rings are the only tree that
+// reaches for it, and the hub gives up more the deeper it goes.
+function treeBands(n) {
+  if (n <= 3) return TREE_RADII;
+  var hub = n >= 6 ? 0.105 : 0.15, out = [];
+  for (var i = 0; i <= n; i++) out.push(hub + (0.99 - hub) * (i / n));
+  return out;
+}
 var TREE_INTRO = 380;                            // ms: grow + swing into place
 
-function buildClassTree(id, depth) {
+// `base` is the level the root sits at, so a tree that does not start at zero
+// still lays its rings out from its own hub outward.
+//
+// `seen` turns the sunburst into a spanning tree: without it a class with two
+// parents is drawn under both, which the Basic wheel wants (a Quad Tank really
+// does hang off Twin and off Flank Guard) and a deep one cannot afford — every
+// Juggernaut Royale hull past tier 3 has two or three parents, and expanding
+// every path is fourteen hundred slivers instead of ninety-six sectors. A mode
+// asks for it with treeUnique.
+function buildClassTree(id, depth, base, seen) {
   var d = TANK_DEFS[id];
   if (!d || d.flags.devOnly) return null;
+  if (seen) { if (seen[id]) return null; seen[id] = 1; }
+  if (base === undefined) base = d.levelRequirement || 0;
   var kids = [];
-  if (depth < 3) for (var i = 0; i < d.upgrades.length; i++) {
-    var k = buildClassTree(d.upgrades[i], depth + 1);
+  if (seen || depth < 4) for (var i = 0; i < d.upgrades.length; i++) {
+    var k = buildClassTree(d.upgrades[i], depth + 1, base, seen);
     if (k) kids.push(k);
   }
   var w = 0;
   for (i = 0; i < kids.length; i++) w += kids[i].weight;
-  return { def: d, ring: Math.round(d.levelRequirement / 15) - 1, kids: kids, weight: w || 1 };
+  // A tree whose tiers are not fifteen levels apart says which ring it wants.
+  // Everything in the Basic tree still derives it from levelRequirement, so a
+  // class that skips a tier keeps leaving the gap the real wheel shows.
+  var ring = d.treeRing === undefined ? Math.round((d.levelRequirement - base) / 15) - 1 : d.treeRing;
+  return { def: d, ring: ring, kids: kids, weight: w || 1 };
+}
+
+// How many rings a built tree actually uses.
+function treeDepth(n) {
+  var deep = n.ring + 1;
+  for (var i = 0; i < n.kids.length; i++) deep = Math.max(deep, treeDepth(n.kids[i]));
+  return deep;
 }
 
 Renderer.prototype.drawTreeSector = function (n, cx, cy, R, a0, a1, ci) {
-  var c = this.ctx;
-  var r0 = R * TREE_RADII[n.ring], r1 = R * TREE_RADII[n.ring + 1];
+  var c = this.ctx, band = this.treeRadii || TREE_RADII;
+  var r0 = R * band[n.ring], r1 = R * band[n.ring + 1];
   c.beginPath();
   c.arc(cx, cy, r0, a0, a1);
   c.arc(cx, cy, r1, a1, a0, true);
@@ -851,20 +897,33 @@ Renderer.prototype.drawTreeSector = function (n, cx, cy, R, a0, a1, ci) {
   c.save();
   c.translate(cx + Math.cos(mid) * rm, cy + Math.sin(mid) * rm);
   c.rotate(mid);                                 // barrels point radially outward
-  this.drawTankIcon(n.def, 0, 0, Math.min(R * 0.048, (r1 - r0) * 0.30, (a1 - a0) * rm * 0.32));
+  this.drawTankIcon(n.def, 0, 0, Math.min(R * 0.048, (r1 - r0) * 0.34, (a1 - a0) * rm * 0.34));
   c.restore();
 };
 
 Renderer.prototype.drawClassTree = function () {
   var p = this.game.player, c = this.ctx, self = this;
   if (!p) return;
-  if (!this.tree) this.tree = buildClassTree(0, 0);
+  // A mode can own its own tree. Juggernaut Royale has thirteen hulls of its
+  // own and showing the player the Basic-tank wheel there is showing them a
+  // tree they cannot reach a single node of.
+  var root = (this.game.mode && this.game.mode.treeRoot) || 0;
+  if (!this.tree || this.treeRoot !== root) {
+    this.tree = buildClassTree(root, 0, undefined,
+      (this.game.mode && this.game.mode.treeUnique) ? {} : null);
+    this.treeRoot = root;
+    this.treeRings = this.tree ? treeDepth(this.tree) : 3;
+    this.treeRadii = treeBands(this.treeRings);
+  }
+  if (!this.tree) return;
 
   var now = performance.now();
   var e = Math.min(1, (now - this.treeT0) / TREE_INTRO);
   e = 1 - Math.pow(1 - e, 3);
   var cx = this.canvas.width / 2, cy = this.canvas.height / 2;
-  var R = Math.min(cx, cy) * 0.86 * (0.3 + 0.7 * e);
+  // A deep wheel is drawn as big as the window allows: ninety-six hulls in a
+  // wheel sized for twenty-two is ninety-six slivers nobody can read.
+  var R = Math.min(cx, cy) * (this.treeRings > 3 ? 0.985 : 0.86) * (0.3 + 0.7 * e);
   // both clockwise: the intro swings in from behind, then the wheel keeps turning
   var rot = now * 0.0001 - (1 - e) * 0.75;
 
@@ -881,7 +940,7 @@ Renderer.prototype.drawClassTree = function () {
 
   // The hub is a washed-out porthole, not a card: your own tank is already
   // rendered at screen centre, so it shows through instead of being redrawn.
-  var hub = R * TREE_RADII[0];
+  var hub = R * (this.treeRadii || TREE_RADII)[0];
   c.lineWidth = Math.max(1, R * 0.008); c.strokeStyle = '#5F5F5F';
   c.beginPath(); c.arc(cx, cy, hub, 0, Math.PI * 2); c.fillStyle = 'rgba(255,255,255,0.22)'; c.fill(); c.stroke();
   c.beginPath(); c.arc(cx, cy, hub * 0.84, 0, Math.PI * 2); c.fillStyle = 'rgba(255,255,255,0.12)'; c.fill(); c.stroke();
@@ -931,7 +990,7 @@ Renderer.prototype.drawDeathScreen = function () {
   if (p.def && p.size > 0) this.drawPortrait(p, cx, cy + 5, 42);
   else this.drawTankIcon(p.def, cx, cy + 5, 42);
   c.font = 'bold 18px Ubuntu, Verdana, sans-serif'; c.fillStyle = '#FFF';
-  c.fillText(p.def.name, cx, cy + 78);
+  c.fillText(p.def ? p.def.name : (p.name || 'Tank'), cx, cy + 78);
   c.font = '16px Ubuntu, Verdana, sans-serif';
   c.fillText('Score: ' + abbrev(p.score) + '     Level: ' + p.level + '     Kills: ' + p.kills, cx, cy + 108);
   c.fillText('Time alive: ' + time, cx, cy + 134);
@@ -956,6 +1015,110 @@ Renderer.prototype.drawDeathScreen = function () {
 // --- mode effects -------------------------------------------------------
 // Every Mode Lab visual lives in MODE_FX (modefx.js) rather than in here, so
 // the base game's draw path is untouched when none is loaded.
+// The end-of-round board. Diep's own furniture — the gold level plate, the
+// green score bar, the class portraits — reassembled as a podium, because a
+// round that somebody won should not end on your own death screen.
+Renderer.prototype.drawWinner = function () {
+  var g = this.game, p = g.podium;
+  // Online there is no local roundEndsAt — the podium only ever arrives while
+  // a round is ending, so its presence is the signal.
+  if (!p || (g.roundEndsAt === undefined ? false : !g.roundEndsAt && !g.online)) return;
+  if (!p.top || !p.top.length) return;
+  var c = this.ctx, W = this.canvas.width, H = this.canvas.height;
+  var age = g.roundEndsAt ? Math.max(0, g.roundEndsAt - g.tick) : ROUND_END_DELAY;
+  // slide in over the first half second, hold, then let the reset take it away
+  var inK = Math.min(1, (ROUND_END_DELAY - age) / 12);
+  c.save();
+  c.globalAlpha = inK;
+  c.fillStyle = 'rgba(0,0,0,0.62)';
+  c.fillRect(0, 0, W, H);
+
+  var cx = W / 2, top = H * 0.5 - 210;
+  c.textAlign = 'center'; c.textBaseline = 'middle';
+
+  // the banner
+  c.font = 'bold 15px Ubuntu, Verdana, sans-serif';
+  c.lineWidth = 3.4; c.strokeStyle = TEXT_S;
+  c.fillStyle = '#FFDE43';
+  c.strokeText('ROUND OVER', cx, top - 34);
+  c.fillText('ROUND OVER', cx, top - 34);
+
+  c.font = 'bold ' + Math.round(Math.min(34, W / 26)) + 'px Ubuntu, Verdana, sans-serif';
+  c.lineWidth = 6; c.strokeStyle = TEXT_S;
+  var text = p.text || '';
+  // one wrap, because a win line is a whole sentence
+  var maxW = Math.min(W - 80, 900);
+  if (c.measureText(text).width > maxW) {
+    var cutAt = text.lastIndexOf(' ', Math.floor(text.length * 0.6));
+    if (cutAt > 10) {
+      var l1 = text.slice(0, cutAt), l2 = text.slice(cutAt + 1);
+      c.strokeText(l1, cx, top); c.fillStyle = '#FFF'; c.fillText(l1, cx, top);
+      c.strokeText(l2, cx, top + 36); c.fillText(l2, cx, top + 36);
+      top += 36;
+    } else { c.strokeText(text, cx, top); c.fillStyle = '#FFF'; c.fillText(text, cx, top); }
+  } else {
+    c.strokeText(text, cx, top);
+    c.fillStyle = '#FFF';
+    c.fillText(text, cx, top);
+  }
+
+  // the podium: second, first, third, at descending heights
+  var order = [1, 0, 2], baseY = top + 168;
+  var slotW = Math.min(210, (W - 60) / 3);
+  var medal = ['#FFDE43', '#D8DEE6', '#CD8B45'];
+  for (var i = 0; i < 3; i++) {
+    var idx = order[i], row = p.top[idx];
+    var x = cx + (i - 1) * slotW;
+    var lift = idx === 0 ? 46 : idx === 1 ? 20 : 0;
+    var y = baseY - lift;
+    var plinth = idx === 0 ? 92 : idx === 1 ? 66 : 46;
+    // the plinth
+    c.globalAlpha = inK * 0.9;
+    c.fillStyle = row ? medal[idx] : '#3A3A3A';
+    c.fillRect(x - slotW / 2 + 8, y + 26, slotW - 16, plinth);
+    c.fillStyle = 'rgba(0,0,0,0.22)';
+    c.fillRect(x - slotW / 2 + 8, y + 26 + plinth - 9, slotW - 16, 9);
+    c.globalAlpha = inK;
+    c.fillStyle = '#2E2E2E';
+    c.font = 'bold 26px Ubuntu, Verdana, sans-serif';
+    c.fillText(String(idx + 1), x, y + 26 + plinth / 2 + 2);
+    if (!row) continue;
+    // name, then the numbers
+    c.font = 'bold ' + (idx === 0 ? 20 : 17) + 'px Ubuntu, Verdana, sans-serif';
+    c.lineWidth = 4; c.strokeStyle = TEXT_S;
+    var nm = row.name.length > 14 ? row.name.slice(0, 13) + '\u2026' : row.name;
+    c.strokeText(nm, x, y - 4);
+    c.fillStyle = row.isPlayer ? '#85E8A0' : '#FFF';
+    c.fillText(nm, x, y - 4);
+    c.font = 'bold 13px Ubuntu, Verdana, sans-serif';
+    c.lineWidth = 3;
+    c.strokeText(abbrev(row.score), x, y + 16);
+    c.fillStyle = '#FFDE43';
+    c.fillText(abbrev(row.score), x, y + 16);
+    // the class it finished as, on the plinth
+    c.font = 'bold 11px Ubuntu, Verdana, sans-serif';
+    c.fillStyle = 'rgba(0,0,0,0.6)';
+    c.fillText(row.tank || '', x, y + 26 + plinth - 20);
+  }
+
+  // a stat line under the podium
+  var win = p.top[0];
+  if (win) {
+    c.font = 'bold 14px Ubuntu, Verdana, sans-serif';
+    c.lineWidth = 3.2; c.strokeStyle = TEXT_S;
+    var line = 'Level ' + win.level + '  \u00b7  ' + win.kills + ' kill' + (win.kills === 1 ? '' : 's')
+      + '  \u00b7  ' + p.players + ' in the arena';
+    c.strokeText(line, cx, baseY + 148);
+    c.fillStyle = '#CFD8E4';
+    c.fillText(line, cx, baseY + 148);
+  }
+  c.font = 'bold 13px Ubuntu, Verdana, sans-serif';
+  c.globalAlpha = inK * (0.5 + 0.4 * Math.abs(Math.sin(g.tick * 0.08)));
+  c.fillStyle = '#9AA6B4';
+  c.fillText('next round in ' + Math.ceil(age / TPS) + '\u2026', cx, baseY + 176);
+  c.restore();
+};
+
 Renderer.prototype.drawModeFX = function (layer) {
   if (typeof MODE_FX === 'undefined') return;
   var spec = MODE_FX[this.game.modeKey];
@@ -1019,7 +1182,10 @@ Renderer.prototype.render = function (alpha) {
   this.drawStats();
   this.drawUpgrades();
   this.drawNotifications();
+  this.drawWinner();
   if (this.showClassTree) { if (!this.treeT0) this.treeT0 = performance.now(); this.drawClassTree(); }
   else this.treeT0 = 0;
-  this.drawDeathScreen();
+  // A round somebody won ends on the winner board, not on your own death
+  // screen — being dead when the horn goes is not the story of the round.
+  if (!(g.podium && g.podium.top && g.podium.top.length)) this.drawDeathScreen();
 };

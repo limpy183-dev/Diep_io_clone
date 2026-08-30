@@ -7,6 +7,9 @@ var MSPT = 40;
 var GRID = 50;                 // background grid cell, diep units
 var ARENA_PADDING = 200;       // walkable grey margin outside the play field
 var MAX_LEVEL = 45;
+// A mode may raise its own ceiling with the `maxLevel` rule (Juggernaut Royale
+// runs to 100). LEVEL_SCORE is built this far so the curve is there when it does.
+var LEVEL_CAP = 100;
 var SPAWN_PROTECT_TICKS = 374; // ~15s
 var HYPER_REGEN_DELAY = 750;   // 30s undamaged
 var HASH_CELL = 128;           // 2^7
@@ -65,13 +68,14 @@ function uiToWire(i) { return 7 - i; }
 // scoreAtLevel[i] = scoreAtLevel[i-1] + (40/9) * 1.06^(i-2) * min(31, i-1)
 var LEVEL_SCORE = (function () {
   var t = [0, 0];
-  for (var i = 2; i <= MAX_LEVEL + 1; i++) t[i] = t[i - 1] + (40 / 9) * Math.pow(1.06, i - 2) * Math.min(31, i - 1);
+  for (var i = 2; i <= LEVEL_CAP + 1; i++) t[i] = t[i - 1] + (40 / 9) * Math.pow(1.06, i - 2) * Math.min(31, i - 1);
   return t;
 })();
 
-function levelFromScore(score) {
+function levelFromScore(score, cap) {
+  var top = cap || MAX_LEVEL;
   var lvl = 1;
-  while (lvl < MAX_LEVEL && score >= LEVEL_SCORE[lvl + 1]) lvl++;
+  while (lvl < top && score >= LEVEL_SCORE[lvl + 1]) lvl++;
   return lvl;
 }
 function statCount(level) {
@@ -128,6 +132,8 @@ var ADDONS = {
   autoturret:  { turrets: 1 },
   auto3:       { turrets: 3, arc: true },
   auto5:       { turrets: 5, arc: true },
+  auto7:       { turrets: 7, arc: true },
+  auto9:       { turrets: 9, arc: true },
   // The "pronounced" collar sits over the FRONT of the barrel, widening back
   // toward the body — it is what tells a Ranger from a Stalker. diep parks it at
   // offsetRatio * size with a half-length of sizeRatio * size and a half-width of
@@ -135,7 +141,49 @@ var ADDONS = {
   // (offset + size) and 2 * width in body radii.
   pronounced:  { nub: { lengthRatio: 40 / 50 + 50 / 50, widthRatio: 2 * 42 / 50 } },
   dompronounced:{ nub: { lengthRatio: 50 / 50 + 22 / 50, widthRatio: 2 * 35 / 50 } },
-  launcher:    { hood: { lengthRatio: 1.31, widthRatio: 0.672 } }
+  launcher:    { hood: { lengthRatio: 1.31, widthRatio: 0.672 } },
+
+  // Juggernaut Royale's shells. Guards are drawn beneath the body in the border
+  // grey, so a branch is legible from its outline alone before any colour or
+  // aura reaches you: thorns, a halo, a reactor core, tusks, gears, ice shards,
+  // armour plates, a siege frame, fangs, a veil, and the apex crown.
+  jrcrown:     { guards: [{ sides: 3, ratio: 1.36, spin: 0.13, offset: 0 },
+                          { sides: 3, ratio: 1.36, spin: 0.13, offset: Math.PI / 3 },
+                          { sides: 3, ratio: 1.30, spin: 0.13, offset: Math.PI / 6 }] },
+  jrhalo:      { guards: [{ sides: 12, ratio: 1.24, spin: -0.05 },
+                          { sides: 12, ratio: 1.10, spin: 0.09 }] },
+  jrcore:      { guards: [{ sides: 4, ratio: 1.22, spin: 0.18 },
+                          { sides: 4, ratio: 1.22, spin: -0.18, offset: Math.PI / 4 }] },
+  jrtusks:     { guards: [{ sides: 3, ratio: 1.44, spin: 0.04 }] },
+  jrgear:      { guards: [{ sides: 8, ratio: 1.22, spin: 0.10 },
+                          { sides: 8, ratio: 1.22, spin: -0.10, offset: Math.PI / 8 },
+                          { sides: 8, ratio: 1.08, spin: 0.16 }] },
+  jrshard:     { guards: [{ sides: 6, ratio: 1.30, spin: 0.03 },
+                          { sides: 6, ratio: 1.14, spin: -0.06, offset: Math.PI / 6 },
+                          { sides: 3, ratio: 1.38, spin: 0.02, offset: Math.PI / 2 }] },
+  jrplates:    { guards: [{ sides: 5, ratio: 1.22, spin: 0.06 },
+                          { sides: 5, ratio: 1.22, spin: 0.06, offset: Math.PI / 5 }] },
+  jrframe:     { guards: [{ sides: 4, ratio: 1.32, spin: 0 },
+                          { sides: 4, ratio: 1.16, spin: 0, offset: Math.PI / 4 }] },
+  jrfangs:     { guards: [{ sides: 3, ratio: 1.28, spin: 0.24 },
+                          { sides: 3, ratio: 1.28, spin: -0.24, offset: Math.PI / 3 }] },
+  jrveil:      { guards: [{ sides: 12, ratio: 1.32, spin: 0.02 }] },
+  jrmega:      { guards: [{ sides: 10, ratio: 1.30, spin: 0.07 },
+                          { sides: 5, ratio: 1.48, spin: -0.04 },
+                          { sides: 5, ratio: 1.48, spin: -0.04, offset: Math.PI / 5 }] },
+  jrplinth:    { guards: [{ sides: 8, ratio: 1.38, spin: 0 }] },
+  // The two tiers above fusion. An apex wears a double crown of blades; an omega
+  // wears three counter-turning rings on top of it, and is meant to be legible
+  // as "that is not a hull you are allowed to fight" from a screen away.
+  jrapex:      { guards: [{ sides: 3, ratio: 1.52, spin: 0.09, offset: 0 },
+                          { sides: 3, ratio: 1.52, spin: 0.09, offset: Math.PI / 3 },
+                          { sides: 6, ratio: 1.30, spin: -0.12 },
+                          { sides: 6, ratio: 1.14, spin: 0.16, offset: Math.PI / 6 }] },
+  jromega:     { guards: [{ sides: 3, ratio: 1.66, spin: 0.05, offset: 0 },
+                          { sides: 3, ratio: 1.66, spin: 0.05, offset: Math.PI / 3 },
+                          { sides: 12, ratio: 1.40, spin: -0.08 },
+                          { sides: 12, ratio: 1.24, spin: 0.14 },
+                          { sides: 6, ratio: 1.10, spin: -0.20 }] }
 };
 // A mounted turret is a fixed 25-radius base carrying a 55 x 29.4 barrel, grown
 // only by the tank's LEVEL scale — diep sizes it off scaleFactor, never off the
@@ -228,10 +276,18 @@ var BOSSES = [
         bullet: { type: 'drone', sizeRatio: (55 * Math.SQRT1_2) / (71.4 / 2), health: 12.5, damage: 0.56, speed: 1.7, scatterRate: 1, lifeLength: -1, absorbtionFactor: 1, color: C.necro, stroke: C.necroS, sides: 4 } };
     })
   },
+  // Defender (§8): a triangle with a trap launcher out of each CORNER and an
+  // auto-turret on each face between them. Two things had it drawing as a
+  // six-spoke star rather than a triangle: the barrels sat on the faces (the
+  // +1/6 offset) where the turrets belong, and at scaleFactor size/50 = 2.12 a
+  // `size: 120` barrel rendered 254 units long against a 150-unit body. The
+  // launchers are now the real Trapper's proportions against their own body —
+  // a Trapper is size 60 / width 42 on a 50-radius hull, so 1.2x and 0.84x.
   {
-    name: 'Defender', sides: 3, size: 150, fill: C.triangle, stroke: C.triangleS, speed: 0.2, spin: true, viewRange: 0, turrets: 3,
+    name: 'Defender', sides: 3, size: 150, fill: C.triangle, stroke: C.triangleS, speed: 0.2,
+    spin: true, viewRange: 0, turrets: 3, turretOffset: Math.PI / 3, barrelScale: 1.7,
     barrels: [0, 1, 2].map(function (i) {
-      return { angle: 2 * Math.PI * (i / 3 + 1 / 6), offset: 0, size: 120, width: 71.4, delay: 0, reload: 5, recoil: 2, isTrapezoid: false, trapezoidDirection: 0, addon: 'trapLauncher', forceFire: true,
+      return { angle: 2 * Math.PI * (i / 3), offset: 0, size: 62, width: 50, delay: 0, reload: 5, recoil: 2, isTrapezoid: false, trapezoidDirection: 0, addon: 'trapLauncher', forceFire: true,
         bullet: { type: 'trap', sizeRatio: 0.8, health: 12.5, damage: 4, speed: 5, scatterRate: 1, lifeLength: 8, absorbtionFactor: 1, color: C.neutral, stroke: C.neutralS } };
     })
   },
@@ -338,5 +394,6 @@ var ROUND_END_DELAY = 12 * TPS;
 if (typeof module !== 'undefined') module.exports = {
   TPS: TPS, MSPT: MSPT, GRID: GRID, C: C, SHAPES: SHAPES, ADDONS: ADDONS, BOSSES: BOSSES,
   LEVEL_SCORE: LEVEL_SCORE, levelFromScore: levelFromScore, statCount: statCount,
-  respawnLevel: respawnLevel, uiToWire: uiToWire, GAMEMODES: GAMEMODES, MAX_LEVEL: MAX_LEVEL
+  respawnLevel: respawnLevel, uiToWire: uiToWire, GAMEMODES: GAMEMODES, MAX_LEVEL: MAX_LEVEL,
+  LEVEL_CAP: LEVEL_CAP
 };

@@ -98,7 +98,7 @@ function applyMul(t) {
 }
 
 function setLevel(t, lvl) {
-  lvl = clampN(Math.round(lvl), 1, MAX_LEVEL);
+  lvl = clampN(Math.round(lvl), 1, t.game.levelCap());
   // Already there? Keep the score they earned past the level floor.
   if (t.level !== lvl) t.score = LEVEL_SCORE[lvl];
   t.level = lvl;
@@ -126,7 +126,7 @@ function spawnAlly(g, t, spread) {
   b.x = b.px = p.x; b.y = b.py = p.y;
   b.team = allyTeam(g, t);
   g.paintTeam(b);
-  b.addScore(LEVEL_SCORE[Math.min(MAX_LEVEL, t.level)]);
+  b.addScore(LEVEL_SCORE[Math.min(g.levelCap(), t.level)]);
   return b;
 }
 
@@ -392,15 +392,16 @@ cmd('heal hp', {
   run: function (ctx) { ctx.tank.health = ctx.tank.maxHealth; return 'Healed to ' + Math.round(ctx.tank.maxHealth) + ' HP.'; }
 });
 cmd('level setlevel', {
-  cat: 'cheat', cheat: true, needsTank: true, args: '<1-45|max>', help: 'Jump straight to a level.',
+  cat: 'cheat', cheat: true, needsTank: true, args: '<1-cap|max>', help: 'Jump straight to a level.',
   run: function (ctx, a) {
-    if (!a.length) return 'Usage: /level <1-' + MAX_LEVEL + '|max>';
-    return 'You are now level ' + setLevel(ctx.tank, a[0] === 'max' ? MAX_LEVEL : num(a[0], 1)) + '.';
+    var cap = ctx.game.levelCap();
+    if (!a.length) return 'Usage: /level <1-' + cap + '|max>';
+    return 'You are now level ' + setLevel(ctx.tank, a[0] === 'max' ? cap : num(a[0], 1)) + '.';
   }
 });
 cmd('maxlevel', {
-  cat: 'cheat', cheat: true, needsTank: true, args: '', help: 'Jump to level 45.',
-  run: function (ctx) { setLevel(ctx.tank, MAX_LEVEL); return 'Level ' + MAX_LEVEL + '.'; }
+  cat: 'cheat', cheat: true, needsTank: true, args: '', help: 'Jump to the level cap.',
+  run: function (ctx) { return 'Level ' + setLevel(ctx.tank, ctx.game.levelCap()) + '.'; }
 });
 cmd('xp addscore', {
   cat: 'cheat', cheat: true, needsTank: true, args: '<amount>', help: 'Add score.',
@@ -415,7 +416,7 @@ cmd('setscore', {
   run: function (ctx, a) {
     var t = ctx.tank;
     t.score = Math.max(0, num(a[0], 0));
-    t.level = levelFromScore(t.score);
+    t.level = levelFromScore(t.score, ctx.game.levelCap());
     t.recompute(); t.checkUpgrades();
     return 'Score ' + Math.round(t.score) + ', level ' + t.level + '.';
   }
@@ -484,13 +485,13 @@ cmd('points', {
   }
 });
 cmd('max', {
-  cat: 'cheat', cheat: true, needsTank: true, args: '', help: 'Level 45, stats maxed, god mode on.',
+  cat: 'cheat', cheat: true, needsTank: true, args: '', help: 'Max level, stats maxed, god mode on.',
   run: function (ctx) {
-    setLevel(ctx.tank, MAX_LEVEL);
+    var lvl = setLevel(ctx.tank, ctx.game.levelCap());
     for (var i = 0; i < 8; i++) ctx.tank.stats[i] = ctx.tank.def.stats[i].max;
     ctx.tank.godMode = true;
     ctx.tank.recompute();
-    return 'Level ' + MAX_LEVEL + ', stats maxed, god mode ON. Go be a problem.';
+    return 'Level ' + lvl + ', stats maxed, god mode ON. Go be a problem.';
   }
 });
 cmd('speed', {
@@ -748,11 +749,12 @@ cmd('clone', {
   }
 });
 cmd('botlevel levelbots', {
-  cat: 'cheat', cheat: true, args: '<1-45|max>',
+  cat: 'cheat', cheat: true, args: '<1-cap|max>',
   help: 'Level every bot on the field. They spend the points and pick their classes themselves.',
   run: function (ctx, a) {
-    if (!a.length) return 'Usage: /botlevel <1-' + MAX_LEVEL + '|max>';
-    var lvl = a[0] === 'max' ? MAX_LEVEL : num(a[0], 1), n = 0;
+    var cap = ctx.game.levelCap();
+    if (!a.length) return 'Usage: /botlevel <1-' + cap + '|max>';
+    var lvl = a[0] === 'max' ? cap : num(a[0], 1), n = 0;
     ctx.game.entities.forEach(function (e) {
       if (e.type === 'tank' && e.bot && !e.dead) { lvl = setLevel(e, lvl); n++; }
     });

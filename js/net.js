@@ -38,6 +38,13 @@ function NetGame(url, name, mode, hooks) {
   this.connect();
 }
 
+// render.js reads the level ceiling off the game to draw the XP bar, and online
+// the client has a mode but no Game to ask.
+NetGame.prototype.levelCap = function () {
+  var r = this.mode && this.mode.rules;
+  return Math.min(LEVEL_CAP, (r && r.maxLevel) || MAX_LEVEL);
+};
+
 NetGame.prototype.blankPlayer = function () {
   var p = {
     id: 0, type: 'tank', x: 0, y: 0, px: 0, py: 0, angle: 0, pa: 0, size: 50, psize: 50,
@@ -112,6 +119,15 @@ NetGame.prototype.readMapState = function (b) {
   a.left = -h; a.right = h; a.top = -h; a.bottom = h; a.size = size;
   this.noRespawn = !!b.ru8();
   this.modeHud = b.rstr();
+  if (b.ru8()) {
+    var pod = { text: b.rstr(), players: b.ru16(), top: [] };
+    var rows = b.ru8();
+    for (var pi = 0; pi < rows; pi++) {
+      pod.top.push({ name: b.rstr(), score: b.ru32(), level: b.ru8(),
+        kills: b.ru16(), tank: b.rstr(), isPlayer: !!b.ru8() });
+    }
+    this.podium = pod;
+  } else this.podium = null;
   var n = b.ru16(), out = [];
   for (var i = 0; i < n; i++) {
     out.push({

@@ -8,12 +8,13 @@ all five bosses, all eleven of diep's own game modes, and authoritative multipla
 client-side prediction. If you have played diep.io, this is that.
 
 The other half is everything diep.io does not have. The headline is the **[Mode Lab](docs/index.html)**
-— 38 extra gamemodes reached from a button on the main menu, from Gun Game and Prop Hunt to a
-black hole that starts as a speck and ends by swallowing the arena. Several of them bring their
-own visuals: real fog, a nightfall that actually dims your vision, an accretion disc, a
-twelve-sided custom Juggernaut hull that exists in no class tree. On top of that there are 76
-chat commands including a 50-strong cheat set, bot difficulty down to six individual skill
-dials, 31 real community builds the bots draft from, and a class-tree wheel.
+— 39 extra gamemodes reached from a button on the main menu, from Gun Game and Prop Hunt to a
+black hole that starts as a speck and ends by swallowing the arena. Several bring their own
+visuals: real fog, a nightfall that actually dims your vision, an accretion disc, an ice sheet
+with cracks and skate marks, a twelve-sided custom Juggernaut, and ninety-six more custom hulls
+in a six-ring tree of their own that runs to level 100. On top of that there are 76 chat commands including a 50-strong cheat set,
+bot difficulty down to six individual skill dials, 31 real community builds the bots draft from,
+and a class-tree wheel.
 
 Everything still runs with no build step. Open `index.html` and play.
 
@@ -32,7 +33,7 @@ Then open `http://localhost:8137` and hit *Play Online*. The server hosts the ga
 files too, so everyone points at the same address. To play across machines, give
 others your LAN address (`ws://192.168.x.x:8137`) in the server box.
 
-Run the tests — 923 of them:
+Run the tests — 1,048 of them:
 
 ```bash
 npm test
@@ -43,9 +44,9 @@ npm test
 ## The Mode Lab
 
 Press **MODE LAB** on the main menu — the button under the bot-difficulty line. It opens a wall
-of 38 tiles, each one live-rendered rather than a screenshot. Click a tile and it expands into
-a full-screen view with a write-up of the mode beside it, then plays offline against bots or
-online against people.
+of 39 tiles, each one live-rendered rather than a screenshot. Click a tile and it expands into a
+full-screen view — the composition scales with the box rather than being spread across it — with
+a write-up of the mode beside it, a bot-difficulty picker, and Play Offline / Play Online.
 
 There is a browsable version of the same wall at **[docs/index.html](docs/index.html)**, which
 loads the game's own `js/modefx.js` so the tiles on the site are drawn by exactly the same code
@@ -57,7 +58,7 @@ as the tiles in the game. To publish it, turn on GitHub Pages with the source se
 |---|---|
 | **Rules** — one constant, whole new game | Chaos Rotation, Score Attack, Instagib, Vampire, Ice Rink, Blood Money, Locust |
 | **The Tree** — the 56 classes are the content | Gun Game, Draft Roulette, Mirror Match, Randomizer |
-| **Asymmetry** | Juggernaut, Infection, Boss Rush, Siege, Closer Gauntlet, Boss Royale |
+| **Asymmetry** | Juggernaut, Juggernaut Royale, Infection, Boss Rush, Siege, Closer Gauntlet, Boss Royale |
 | **Physics** — knockback over damage | Sumo, Diep Ball, Grand Prix, Red Light Green Light, Singularity |
 | **Deception** | Prop Hunt, Hide and Seek, Fog of War, Nightfall |
 | **Territory** | King of the Hill, Payload, Alpha Hunt, Nest Wars, Roaming Domination, Bounty King |
@@ -80,9 +81,96 @@ A few that are worth calling out:
 - **Singularity** opens as a 40-unit speck with almost no pull and grows on a cubic ramp for
   twelve minutes until its radius covers the whole board. The accretion disc, lensing ring and
   infalling debris are all drawn from the live pull value, so the picture is the physics.
-- **Chaos Rotation** draws one of fifteen modifiers every ninety seconds from a shuffled deck.
-  It is also the argument against ever shipping thirty-eight separate online arenas: one
-  well-populated FFA plus a modifier table beats eight empty lobbies.
+- **Juggernaut Royale** is the other side of that coin: *everybody* is a juggernaut, and
+  juggernauts grow. **Ninety-six custom hulls on eleven branches, seven tiers deep, to level
+  100**, wired into `TANK_DEFS` with real `upgrades` arrays and real level requirements — so the
+  upgrade cards, the class-tree overlay and the server-side gate in `upgradeTo` are the game's
+  own. A juggernaut tree is just another tree.
+
+  The level ceiling is a mode rule (`maxLevel`), not a fork: 45 everywhere else, 100 in here, with
+  the tiers gated at 1 / 12 / 24 / 36 / 52 / 70 / 100. Two more rules pay for it. `shapeXp` and
+  `killBounty` go up with the ceiling, because level 100 costs thirty-one times what level 45
+  does; `lvlScale` and `lvlSlow` soften diep's own per-level growth and slowdown curves, which
+  run to 2.7x size and a quarter speed if you take them to 100 unchanged.
+
+  **Every card is a group.** No node in the tree hands you a single hull: the worst case is a
+  choice of two and most of it offers three, which is what the second ending on five of the
+  branches and six more fusions were added for.
+
+  | Branch | What it is | Signature | Ends at |
+  |---|---|---|---|
+  | **Warden** | Fires no bullets at any point. Hooded trap launchers, turrets on a plinth. Terrain. | `BARRICADE` — ten traps thrown down in a ring around it | **Citadel** — 10 launchers, 5 turrets, 6,200 hp, under half a tank's speed |
+  | **Reaper** | Barely fires either. Drones, then more drones. | `SWARM` — every drone it owns hurled at what it is looking at | **Broodmother** — 32 drones out of 4 hangars |
+  | **Bulwark** | **No barrels whatsoever.** Armour and contact damage. | `SLAM` — everything inside 2.7 radii thrown off and hurt | **Leviathan** — 20 sides, 8,600 hp, 54 contact damage |
+  | **Lodestone** | A gravity well bolted to the hull. Bullets bend into it and die on it. | `PULL` — tanks and fire alike dragged in | **Event Horizon** — an inner ring that simply deletes what crosses it |
+  | **Cinder** | Heat. Contact ignites, ground stays on fire, damage is banked. | `OVERLOAD` — the bank spent at once; at full heat it survives on 1 hp | **Meltdown** — eight ember barrels and one detonation a life |
+  | **Rime** | Cold. A field that halves anything in it. | `FREEZE` — the ring stopped dead, movement and guns both | **Permafrost** — `SLICK`, a sheet of ice with no friction on it |
+  | **Leech** | Blood. Damage feeds it; the dead work for it. | `REAP` — a mouthful torn out of everything close | **Ossuary** — husks orbiting as armour, eaten for an instant heal |
+  | **Effigy** | Deception. Decoys the renderer draws as real tanks, and bots target as real tanks. | `DECOY` / `BLINK` — copies of you, and six hundred units away from them | **Hydra** — dies into three half-size Hydras |
+  | **Metronome** | Time. Four seconds armoured, four seconds fast, forever. | `REWIND` — position and health, three seconds back | **Chronoform** — a field where other people's clocks run slow |
+  | **Arsenal** | Siege. It roots and stops being a tank. | `DEPLOY` / `MORTAR` — bolted down, and a shell where the cursor is | **Fortress** — six turrets that keep firing fifteen seconds after it leaves |
+  | **Parasite** | Theft. Score, drones, and barrels off the hull it killed. | `INFEST` / `HIJACK` — latched on, or your swarm is theirs | **Usurper** — wears a barrel from everything it has killed |
+
+  Every branch above ends in **at least two** hulls, so level 36 is a fork. Six of the second
+  endings exist for that reason — the **Labyrinth** (a Warden that never stops moving, laying a
+  corridor behind it), **Hivewright** (minions, drones and orbiters at once), **Conflagration**
+  (spends its heat continuously instead of banking it), **Aeon** (exactly as strong as whoever is
+  winning is winning), **Ballista** (range where the Fortress has walls) and **Changeling**
+  (tethered, latched and draining). Tier 3 also holds six **wilds**: **The Hollow** (bullets stop
+  dead at the shell), **Tessellate** (health in four orbiting segments), **Kingmaker** (stronger
+  every time anybody anywhere dies), **Nomad** (scales with distance from the middle), **Wrecking
+  Ball** (a mass on a chain) and **Devourer** (physically grows on what its field swallows).
+
+  Tier 4 is where the branches touch: sixteen **fusions**, each the marriage of two verbs, and
+  every branch is half of two or three of them — Thermocline, Ashbrood, Worldbreaker, Voidforge,
+  Necropolis, Wraithhive, Horologium, Aurora Lance, Plaguelord, Gorgon, Ironmaw, Caldera,
+  Bastille, Nullpoint, Frostbrood and Cordyceps. They burn two branch colours at once.
+
+  Tier 5 at **level 70** is eight **apexes** — Ragnarok, Absolute Zero, Oblivion, Legion,
+  Sepulchre, Paradox, Ordnance and Behemoth (20,000 hp, 74 contact damage, no barrels at all).
+  Tier 6 at **level 100** is four **Omegas** and the end of the wheel: **Apotheosis**, which
+  carries a piece of every branch's armament and whose `ASCEND` refills the bar, burns off every
+  status and shrugs off four seconds of anything; **Extinction**, whose `NOVA` detonates the width
+  of the screen; **Singularity**, a 204-unit body with a real well inside it; and **Ouroboros**,
+  which comes apart into two more of itself when it dies. Everything past fusion also draws a flat
+  tier dividend in `jrTickTank` — thicker skin, faster gun, more contact damage, doubled again at
+  tier 6 — so the top of the ladder is worth the climb rather than a wider row of numbers.
+
+  Underneath it is one table. A hull is a row — silhouette, one `JR_GUNS` call, one ability verb,
+  one passive verb — and the ability dispatcher, the aura painter, the bot's range profile and the
+  wheel all read it off the def. Thirty-four ability verbs and thirty-nine passives, and four status
+  effects (burn, chill, freeze, bleed) that stack across branches because they are resolved in one
+  place. Nothing in the engine was forked to do it: `Tank.tick` rewrites `damageReduction` every
+  tick and `logic.tick` runs after it, so a mode override lands for exactly one tick and unwinds
+  itself.
+
+  **Bots read their own hull.** Each is handed one of the eleven branches on spawn and climbs it
+  until the branches marry at tier 4, then takes whatever fusion or apex it is offered — so all
+  eleven get driven instead of twenty bots converging on whatever scores best — and the
+  mode's `botDrive` hook then overrides the generic AI with the job the row implies: bodies charge
+  to zero range, trap hulls close to 500, snipers back off anything inside 900, siege hulls plant
+  themselves. The button has a condition per verb rather than a cooldown mash.
+
+  Press **Y** in there and the wheel shows *the juggernauts* — a mode can name its own
+  `treeRoot`, so the class-tree overlay grows from the Brute rather than from the Basic tank you
+  cannot reach a single node of from inside the mode. It also sets `treeUnique`, because past tier
+  3 every hull has two or three parents: drawn as a plain sunburst that is fourteen hundred
+  slivers, and drawn once per hull it is ninety-five readable sectors over six rings. The hulls are built into `TANK_DEFS` at
+  load rather than in `init()`, because the client draws them and online the client never runs a
+  mode's `init()` at all: a remote player in a Bastion has to have a Bastion to draw.
+
+  The branches never converge, because one shared endgame is exactly what "all the paths are the
+  same" feels like. The silhouettes carry it too: trap hulls wear the flared `trapLauncher` hood,
+  drone hulls wear wide outward trapezoids, and the melee line wears the spiked guard shells and
+  literally nothing else — its bullet stats are capped at zero so the stat panel says so as
+  plainly as the shape does. The field runs at 2,600 polygons in an 18,000-unit arena, about five
+  times normal density, because climbing costs and farming is the half of it that isn't fighting.
+- **Chaos Rotation** draws one of fifteen modifiers every ninety seconds from a Fisher-Yates
+  shuffle, drawn without replacement. Each modifier is written as an arena part and a *per-tank*
+  part, and the per-tank part re-applies on every spawn while it is live — otherwise a modifier
+  quietly stops applying to half the arena within thirty seconds. It is also the argument against
+  ever shipping thirty-nine separate online arenas: one well-populated FFA plus a modifier table
+  beats eight empty lobbies.
 
 ### Adding one
 
@@ -103,12 +191,36 @@ than a changed objective — `friction`, `dmgMult`, `regen`, `lifesteal`, `shape
 `spawnLevel`, `reloadMult`, `shapes`, `bots`, `fov`. `ruleOverride` is a live layer on top of it,
 which is how Chaos Rotation switches a modifier on and off mid-round without touching the table.
 
-Two rules that are not optional:
+### Teaching the bots
 
-- **Every objective mode ships a `botGoal`.** Without one it plays fine online and looks broken
-  offline, with the bots walking past the payload for ten minutes.
+There are two hooks, and the difference matters.
+
+`botGoal(g, t)` returns a **hint**: a point or an entity the ordinary AI weighs against spacing,
+strafing, dodging and whatever polygon is underfoot. Good enough for "go stand on the hill".
+
+`botDrive(g, t)` runs immediately after `tickBot` and **overrides the movement keys outright**.
+Some rules are not negotiable and a hint loses. Red Light, Green Light proved it: with a goal
+that said "stop", bots died 921 times in sixty seconds, because at 25 Hz a tank at terminal
+speed needs twenty ticks to reverse and the AI was still weighing its options. Driving them —
+`botHalt`, `botDriveTo` — took it to 121, and somebody wins the race. Grand Prix, Prop Hunt and
+Hide and Seek use it for the same reason: racing a line, holding still like furniture, and
+staying faded are things a bot has to *do*, not consider.
+
+Four rules that are not optional:
+
+- **Every objective mode teaches its bots**, with a goal or a drive. Without one it plays fine
+  online and looks broken offline, with the bots walking past the payload for ten minutes.
 - **Never open the cheat gate to get an effect.** Setting `g.cheatsOn` to enable a mechanic hands
   `/god` and `/nuke` to everyone in the arena. That has already happened once here (bug 11).
+- **`fieldFactor` is a zoom-OUT divisor: lower sees further.** A plain Tank is 1.0, Ranger is
+  0.7. The Juggernaut shipped at 1.12, which meant the biggest hull in the game was looking
+  through a *smaller* window than everyone hunting it. It is 0.82 now.
+- **Put every derived number in the tank def, never in an override after `recompute()`.**
+  `recompute()` runs again on the next score change and rebuilds `maxHealth`, `damagePerTick`,
+  `absorb`, `movementSpeed` and `reloadTime` from the def. A Juggernaut buffed after the fact was
+  back to 1,628 health on its first kill; a zombie buffed after the fact was an ordinary tank
+  again the first time it touched a polygon. Where a value genuinely cannot live in the def
+  (`push` is pinned at 8 by `recompute`), re-apply it every tick and say so in a comment.
 
 Regenerate the website's mode data after adding one:
 
@@ -125,7 +237,7 @@ node -e "const fs=require('fs'),vm=require('vm');const s=vm.createContext({conso
 | `js/data.js` | Constants, palette, XP curve, shapes, addons, bosses, game modes |
 | `js/engine.js` | 25 Hz simulation: entities, physics, damage, barrels, projectiles, AI, bots |
 | `js/modes.js` | The six objective modes + possession (H) |
-| `js/modes-extra.js` | The Mode Lab's 38 arenas — rules, logic, and the Juggernaut hull |
+| `js/modes-extra.js` | The Mode Lab's 39 arenas — rules, logic, the Juggernaut and the 72 Royale hulls |
 | `js/modefx.js` | Per-mode screen effects and the animated menu thumbnails |
 | `js/modelab.js` | The Mode Lab button and its menu, markup and styles included |
 | `js/protocol.js` | Binary wire format, shared by client and server |
@@ -136,8 +248,9 @@ node -e "const fs=require('fs'),vm=require('vm');const s=vm.createContext({conso
 | `js/main.js` | Input, fixed-timestep loop, menu |
 | `server.js` | Authoritative game server (also serves the static files) |
 | `test.mjs` | 100 simulation tests |
-| `test-modes.mjs` | 681 Mode Lab tests — registration, resets, rules, effects |
+| `test-modes.mjs` | 806 Mode Lab tests — registration, resets, rules, bots, effects |
 | `docs/index.html` | The Mode Lab website; draws its tiles with the game's own `modefx.js` |
+| `js/modelab.js` | (above) also carries the difficulty picker and the FLIP expand |
 | `test-net.mjs` | 50 network tests against a live server |
 | `test-bots.mjs` | 75 bot-AI tests |
 | `test-wheel.mjs` | class-tree wheel geometry |
@@ -161,9 +274,9 @@ authoritative one, then broadcasts the result. Three flavours:
 
 ## Objective modes
 
-These are diep.io's own six. The 38 in the Mode Lab use the same machinery, with three hooks
-added for them: `onSpawn` (dress a fresh tank), `filterUpgrades` (narrow the upgrade offer) and
-`botGoal` (tell the bots what the objective is).
+These are diep.io's own six. The 39 in the Mode Lab use the same machinery, with four hooks
+added for them: `onSpawn` (dress a fresh tank), `filterUpgrades` (narrow the upgrade offer),
+`botGoal` (hint at the objective) and `botDrive` (take the wheel outright).
 
 Each lives in `js/modes.js` as an `init` / `tick` / `onTankDeath` / `reset` entry that the
 engine dispatches on by name. Winning a round posts a banner, then resets the objectives and
@@ -300,10 +413,18 @@ node -e "const fs=require('fs');fs.writeFileSync('js/tankdefs.js','var TANK_DEFS
 - **AI** — one targeting class with retarget cadence, hysteresis, and the cheap
   perpendicular-drift intercept solver, shared by turrets, drones, crashers and bosses.
 - **All 5 bosses**, 45-minute spawn cycle, one-at-a-time rule, 30 000 XP.
-- **The Mode Lab** — 38 extra gamemodes behind a button on the main menu, in eight families,
-  each with an animated tile and a written explanation. Twenty-eight of them define their own
-  visuals — fog banks, a growing black hole, a hazard ring, a traffic light, a crown, a fuse —
-  and every one of them ships a bot goal so the offline arena plays the objective too. See above.
+- **The Mode Lab** — 39 extra gamemodes behind a button on the main menu, in eight families,
+  each with an animated tile, a written explanation and a difficulty picker. Thirty-three define
+  their own visuals — fog banks, a growing black hole, a cracked ice sheet, a hazard ring, a
+  traffic light, a crown, a fuse, starting lights — and every one teaches its bots the mode.
+  See above.
+- **A winner screen.** A round somebody won ends on a diep-styled podium — top three on plinths,
+  score, level, kills and finishing class — not on your own death screen. `winRound()` snapshots
+  it, so no mode can forget to build one, and it rides the map-state packet so it works online.
+- **Off-screen indicators** for the one thing that matters in a mode: the Juggernaut, the King,
+  the hill, the payload, the ball, the bomb carrier, the Alpha, the boss wave. A 22,300-unit
+  arena hides an objective completely, and a mode you cannot find reads as a mode where nothing
+  is happening.
 - **All 11 of diep's game modes** — FFA, 2 Teams, 4 Teams, Maze (40×40 cells of 635 du, walls that eat
   what is fired at them), Sandbox (+ cheats), plus the six objective modes below. Team bases with drone spawners, enemy-projectile
   dissolve, and rammer ejection.

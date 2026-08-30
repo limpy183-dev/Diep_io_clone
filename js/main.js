@@ -199,7 +199,7 @@
       case 'y': renderer.showClassTree = true; break;
       case 'h': doPossess(); break;
       case 'o': cheats.suicide = true; if (!online && p) p.selfDestruct = true; break;
-      case 'k': cheats.levelup = true; if (!online && cheatsOK(game) && p) p.addScore(Math.max(5, LEVEL_SCORE[Math.min(MAX_LEVEL, p.level + 1)] - p.score + 1)); break;
+      case 'k': cheats.levelup = true; if (!online && cheatsOK(game) && p) p.addScore(Math.max(5, LEVEL_SCORE[Math.min(game.levelCap(), p.level + 1)] - p.score + 1)); break;
       case ';':
         cheats.god = !cheats.god;
         if (!online && cheatsOK(game) && p) { p.godMode = !p.godMode; game.notify('God mode ' + (p.godMode ? 'ON' : 'OFF'), 50); }
@@ -747,7 +747,15 @@
 
   // The Mode Lab drives the same two entry points the menu buttons do, so a
   // Lab mode is started exactly the way a shipped one is.
-  if (typeof MODELAB !== 'undefined') MODELAB.init(startOffline, startOnline);
+  if (typeof MODELAB !== 'undefined') MODELAB.init(startOffline, startOnline, {
+    get: function () { return sel; },
+    set: function (k) { sel = k; saveDiff(); syncPicker(); },
+    list: function () {
+      return BOT_DIFFICULTIES.map(function (k) {
+        return { key: k, label: BOT_SKILL[k].label, blurb: DIFF_BLURB[k] || '' };
+      });
+    }
+  });
 
   loadDiff();
   buildPicker();

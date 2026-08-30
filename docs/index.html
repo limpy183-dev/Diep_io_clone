@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Mode Lab — Tank Arena</title>
-<meta name="description" content="38 gamemodes that are not in diep.io, built on a full diep.io replica. Every tile below is the game's own artwork, running live.">
+<meta name="description" content="39 gamemodes that are not in diep.io, built on a full diep.io replica. Every tile below is the game's own artwork, running live.">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🔺</text></svg>">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -137,16 +137,16 @@
   <div class="wrap">
     <div class="kick">Tank Arena &middot; a diep.io replica, plus</div>
     <h1>Mode Lab</h1>
-    <p class="lede"><b>38 gamemodes that are not in diep.io</b>, built on top of a full replica of it —
+    <p class="lede"><b>39 gamemodes that are not in diep.io</b>, built on top of a full replica of it —
     exact tick rate, exact formulas, the real class tree and the real balance table. Every tile below is
     the game's own artwork, running live in your browser off the same file the game loads.</p>
 
     <div class="stats">
-      <div><b>38</b><span>gamemodes</span></div>
+      <div><b>39</b><span>gamemodes</span></div>
       <div><b>8</b><span>families</span></div>
       <div><b>56</b><span>classes in the tree</span></div>
       <div><b>25</b><span>ticks / second</span></div>
-      <div><b>681</b><span>mode tests</span></div>
+      <div><b>806</b><span>mode tests</span></div>
     </div>
 
     <div class="cta" id="cta">
@@ -167,7 +167,7 @@
 
 <section class="wrap">
   <h2 class="sec">How it is put together</h2>
-  <p class="secsub">Three ideas carry all thirty-eight.</p>
+  <p class="secsub">Three ideas carry all thirty-nine.</p>
   <div class="note">
     <h3>A mode is a table row</h3>
     <p>Every mode is one entry in <code>GAMEMODES</code> plus, if it needs one, a <code>MODE_LOGIC</code>
@@ -183,10 +183,11 @@
   </div>
   <div class="note">
     <h3>Every objective mode teaches the bots</h3>
-    <p>A mode without a <code>botGoal</code> plays fine online and looks broken offline, with the bots
-    walking past the payload for ten minutes. All thirty-eight ship one. The Juggernaut goes further and
-    registers itself as the arena bounty, so bot target scoring outbids everything else and they gang up
-    on it instead of farming.</p>
+    <p>There are two hooks. <code>botGoal</code> returns a hint the ordinary AI weighs against
+    spacing, strafing and whatever polygon is underfoot. <code>botDrive</code> overrides the
+    movement keys outright, for rules that are not negotiable — a red light, a starting grid, a
+    prop holding still. Red Light proved the difference: with a hint, bots died 921 times in
+    sixty seconds; driven, 121, and somebody wins. All thirty-nine use one or the other.</p>
   </div>
 </section>
 

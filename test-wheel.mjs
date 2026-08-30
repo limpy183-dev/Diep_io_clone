@@ -24,7 +24,7 @@ const sandbox = {
   window: { devicePixelRatio: 1, innerWidth: 1280, innerHeight: 720 }
 };
 vm.createContext(sandbox);
-for (const f of ['data.js', 'tankdefs.js', 'tankdefs-extra.js', 'render.js'])
+for (const f of ['data.js', 'tankdefs.js', 'tankdefs-extra.js', 'protocol.js', 'render.js'])
   vm.runInContext(fs.readFileSync(new URL('./js/' + f, import.meta.url), 'utf8'), sandbox, { filename: f });
 
 const r = new sandbox.Renderer(canvas, { player: { def: sandbox.TANK_DEFS[0], level: 1 }, tick: 0 });
@@ -75,4 +75,55 @@ const spinA = at(5000).a0;
 for (const t = performance.now(); performance.now() - t < 60;);
 assert.ok(at(5060).a0 > spinA, 'the idle spin is not clockwise');
 
+// --- the second tree ----------------------------------------------------
+// A mode may root the wheel on a tree of its own. Juggernaut Royale's is six
+// rings deep and ninety-six hulls wide, which is the case the three-ring layout
+// could not draw at all: it needs a generated band table and its own radius,
+// and the Basic tree above must keep the ones it had. It also asks for
+// treeUnique, so a hull with three parents is drawn once rather than three
+// times — without it the same graph expands to well over a thousand slivers.
+for (const f of ['engine.js', 'modes.js', 'modes-extra.js'])
+  vm.runInContext(fs.readFileSync(new URL('./js/' + f, import.meta.url), 'utf8'), sandbox, { filename: f });
+
+const B = sandbox.JR_BASE;
+const JMODE = sandbox.GAMEMODES.juggerroyale;
+assert.ok(JMODE.treeUnique, 'the juggernaut mode no longer asks for a deduped wheel');
+const jr = new sandbox.Renderer(canvas, {
+  player: { def: sandbox.TANK_DEFS[B], level: 1 },
+  mode: JMODE, tick: 0
+});
+jr.treeT0 = performance.now() - 5000;
+arcs.length = 0;
+jr.drawClassTree();
+const RINGS = 6;
+assert.strictEqual(jr.treeRings, RINGS, `juggernaut wheel came out ${jr.treeRings} rings deep`);
+assert.deepStrictEqual(jr.treeRadii, sandbox.treeBands(RINGS), 'the deep wheel did not take its band table');
+assert.strictEqual(jr.treeRadii.length, RINGS + 1, 'a six-ring wheel needs seven radius stops');
+assert.ok(arcs.every(a => Number.isFinite(a.r + a.a0 + a.a1)), 'NaN in juggernaut wheel geometry');
+
+const jring = arcs.filter(wheel);
+const jsectors = (jring.length - 2) / 2;
+let jnodes = 0, jleaves = 0;
+(function count(n) { n.kids.forEach(k => { jnodes++; if (!k.kids.length) jleaves++; count(k); }); })(jr.tree);
+assert.strictEqual(jsectors, jnodes, `drew ${jsectors} sectors for ${jnodes} juggernaut nodes`);
+// every hull but the Brute at the hub, exactly once
+assert.strictEqual(jnodes, sandbox.JR_HULLS.length - 1,
+  `${jnodes} sectors for ${sandbox.JR_HULLS.length - 1} hulls — the wheel is not one sector per hull`);
+
+// six bands, and every sector sits in exactly one of them
+const JR = Math.min(canvas.width, canvas.height) / 2 * 0.985;
+const jbands = sandbox.treeBands(RINGS).map(f => +(JR * f).toFixed(3));
+const jspan = new Map();
+for (let i = 0; i < jsectors; i++) {
+  const a = jring[i * 2], b = jring[i * 2 + 1];
+  const lo = jbands.indexOf(+a.r.toFixed(3));
+  assert.ok(lo >= 0 && +b.r.toFixed(3) === jbands[lo + 1], `juggernaut sector ${i} spans a non-ring radius`);
+  jspan.set(lo, (jspan.get(lo) || 0) + (a.a1 - a.a0));
+}
+assert.strictEqual(jspan.size, RINGS, `juggernaut wheel used ${jspan.size} rings, not ${RINGS}`);
+assert.ok(Math.abs(jspan.get(0) - TAU) < 1e-9, 'the eleven branches do not tile the circle');
+// ...and it really is a bigger wheel than the Basic one
+assert.ok(JR > R, 'the deep wheel is not drawn any bigger than the three-ring one');
+
 console.log(`wheel ok — ${sectors} sectors, ${leaves} tier-4 leaves, both animations clockwise`);
+console.log(`juggernaut wheel ok — ${jsectors} sectors over ${RINGS} rings, ${jleaves} endings, radius ${(JR / R).toFixed(2)}x`);
