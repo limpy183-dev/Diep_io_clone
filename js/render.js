@@ -613,21 +613,37 @@ Renderer.prototype.drawStats = function () {
     c.fillStyle = 'rgba(0,0,0,0.72)'; c.fill();
     // pips clipped to the pill so the ends stay rounded
     c.save(); c.clip();
-    var pipW = (r.w - 4) / max;
-    for (var k = 0; k < max; k++) {
-      var queuedCount = p.queued.filter(function (q) { return q === wire; }).length;
-      if (k < cur) c.fillStyle = col;
-      else if (k < cur + queuedCount) c.fillStyle = 'rgba(255,255,255,0.35)';
+    // A deep bar (Juggernaut Royale, max 28) collapses each filled row into one
+    // solid block and hands back a shorter row, so eight bars still fit the
+    // corner at level 200. statBar owns that arithmetic; this only paints it.
+    var bar = statBar(cur, max);
+    var queuedCount = p.queued.filter(function (q) { return q === wire; }).length;
+    var pips = bar.full + bar.slots;
+    var pipW = (r.w - 4) / pips;
+    for (var k = 0; k < pips; k++) {
+      var pxr = r.x + 2 + k * pipW + 1, pw = pipW - 2;
+      if (k < bar.full) {                       // a closed rank: lit, with a core
+        c.fillStyle = col; c.fillRect(pxr, r.y + 2, pw, r.h - 4);
+        c.fillStyle = 'rgba(255,255,255,0.6)';
+        c.fillRect(pxr + pw * 0.3, r.y + r.h * 0.31, pw * 0.4, r.h * 0.38);
+        continue;
+      }
+      var j = k - bar.full;
+      if (j < bar.into) c.fillStyle = col;
+      else if (j < bar.into + queuedCount) c.fillStyle = 'rgba(255,255,255,0.35)';
       else continue;
-      c.fillRect(r.x + 2 + k * pipW + 1, r.y + 2, pipW - 2, r.h - 4);
+      c.fillRect(pxr, r.y + 2, pw, r.h - 4);
     }
     c.restore();
-    // label right-aligned, key number last: "Health Regen [1]"
+    // label right-aligned, key number last: "Health Regen [1]". A deep bar adds
+    // the rank it is on, and says MAX outright when there is no room left.
     c.font = 'bold 11px Ubuntu, Verdana, sans-serif'; c.textAlign = 'right'; c.textBaseline = 'middle';
     c.lineWidth = 2.2; c.strokeStyle = TEXT_S;
-    var label = def.name + ' [' + (r.ui + 1) + ']';
+    var label = bar.slots === 0 ? def.name + '  MAX'
+      : def.name + (bar.full ? ' ×' + bar.rank : '') + ' [' + (r.ui + 1) + ']';
     c.strokeText(label, r.x + r.w - 10, r.y + r.h / 2);
-    c.fillStyle = '#FFF'; c.fillText(label, r.x + r.w - 10, r.y + r.h / 2);
+    c.fillStyle = bar.slots === 0 ? '#FFE869' : '#FFF';
+    c.fillText(label, r.x + r.w - 10, r.y + r.h / 2);
     // + button is always present in the real client, dimmed when unspendable
     var bx = r.x + r.w + 5, bw2 = r.h * 1.28;
     var live = mine && p.statsAvailable > 0 && cur < max;
@@ -761,11 +777,40 @@ Renderer.prototype.drawUpgrades = function () {
     c.restore();
     c.beginPath(); c.roundRect(r.x, r.y, r.w, r.h, 6);
     c.lineWidth = 3; c.strokeStyle = '#6B6B6B'; c.stroke();
-    this.drawTankIcon(def, r.x + r.w / 2, r.y + r.h * 0.44, r.w * 0.18, rot);
+    // Clipped to the card: the icon scales barrels against the hull's own body
+    // radius, so a Solar Tyrant's four-radius masts reach a third of a card's
+    // width past its own edge and paint over the two cards beside it.
+    c.save();
+    c.beginPath(); c.roundRect(r.x, r.y, r.w, r.h, 6); c.clip();
+    this.drawTankIcon(def, r.x + r.w / 2, r.y + r.h * 0.46, r.w * 0.18, rot);
+    c.restore();
+    // A Juggernaut Royale card says which family it belongs to and what its
+    // button is, because in there a card is not "one node further along" — from
+    // level 52 up it is the branch of the tree you are choosing to be sealed
+    // into, and the name alone does not carry that.
+    if (def.jrLabel) {
+      c.save();
+      c.beginPath(); c.roundRect(r.x, r.y, r.w, r.h, 6); c.clip();
+      c.fillStyle = 'rgba(' + def.jrTone + ',0.9)';
+      c.fillRect(r.x, r.y, r.w, 15);
+      c.restore();
+      c.font = 'bold 9px Ubuntu, Verdana, sans-serif';
+      c.fillStyle = 'rgba(0,0,0,0.82)';
+      c.fillText(def.jrLabel.toUpperCase(), r.x + r.w / 2, r.y + 8);
+      if (def.jrAbility) {
+        c.font = 'bold 9px Ubuntu, Verdana, sans-serif';
+        c.lineWidth = 2.4; c.strokeStyle = TEXT_S;
+        var ab = def.jrAbility.toUpperCase() +
+          (def.jrAuto ? ' +' + def.jrAuto.length : '');
+        c.strokeText(ab, r.x + r.w / 2, r.y + r.h - 4);
+        c.fillStyle = 'rgba(255,255,255,0.85)'; c.fillText(ab, r.x + r.w / 2, r.y + r.h - 4);
+      }
+    }
     c.font = 'bold 12px Ubuntu, Verdana, sans-serif';
     c.lineWidth = 2.8; c.strokeStyle = TEXT_S;
-    c.strokeText(def.name, r.x + r.w / 2, r.y + r.h - 13);
-    c.fillStyle = '#FFF'; c.fillText(def.name, r.x + r.w / 2, r.y + r.h - 13);
+    var ny = r.y + r.h - (def.jrLabel && def.jrAbility ? 17 : 13);
+    c.strokeText(def.name, r.x + r.w / 2, ny);
+    c.fillStyle = '#FFF'; c.fillText(def.name, r.x + r.w / 2, ny);
   }
 
   this.uiButton(l.ignore, 5);

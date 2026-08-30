@@ -77,7 +77,7 @@ assert.ok(at(5060).a0 > spinA, 'the idle spin is not clockwise');
 
 // --- the second tree ----------------------------------------------------
 // A mode may root the wheel on a tree of its own. Juggernaut Royale's is six
-// rings deep and ninety-six hulls wide, which is the case the three-ring layout
+// rings deep and a hundred and forty hulls wide, which is the case the three-ring layout
 // could not draw at all: it needs a generated band table and its own radius,
 // and the Basic tree above must keep the ones it had. It also asks for
 // treeUnique, so a hull with three parents is drawn once rather than three
@@ -95,10 +95,10 @@ const jr = new sandbox.Renderer(canvas, {
 jr.treeT0 = performance.now() - 5000;
 arcs.length = 0;
 jr.drawClassTree();
-const RINGS = 6;
+const RINGS = 8;
 assert.strictEqual(jr.treeRings, RINGS, `juggernaut wheel came out ${jr.treeRings} rings deep`);
 assert.deepStrictEqual(jr.treeRadii, sandbox.treeBands(RINGS), 'the deep wheel did not take its band table');
-assert.strictEqual(jr.treeRadii.length, RINGS + 1, 'a six-ring wheel needs seven radius stops');
+assert.strictEqual(jr.treeRadii.length, RINGS + 1, 'an eight-ring wheel needs nine radius stops');
 assert.ok(arcs.every(a => Number.isFinite(a.r + a.a0 + a.a1)), 'NaN in juggernaut wheel geometry');
 
 const jring = arcs.filter(wheel);
@@ -110,7 +110,7 @@ assert.strictEqual(jsectors, jnodes, `drew ${jsectors} sectors for ${jnodes} jug
 assert.strictEqual(jnodes, sandbox.JR_HULLS.length - 1,
   `${jnodes} sectors for ${sandbox.JR_HULLS.length - 1} hulls — the wheel is not one sector per hull`);
 
-// six bands, and every sector sits in exactly one of them
+// eight bands, and every sector sits in exactly one of them
 const JR = Math.min(canvas.width, canvas.height) / 2 * 0.985;
 const jbands = sandbox.treeBands(RINGS).map(f => +(JR * f).toFixed(3));
 const jspan = new Map();

@@ -18,15 +18,16 @@ function test(name, fn) { fn(); passed++; console.log('  ok  ' + name); }
 console.log('\nPhase 0 — data');
 test('74 base tanks load (54 from the dump + 7 added + 13 unobtainable), Trapper is id 31', () => {
   // The base table stops at id 111. Everything above that is the Mode Lab: the
-  // 96 Juggernaut Royale hulls at 120-215 and the Juggernaut at 255, all built
+  // 140 Juggernaut Royale hulls at 112-251 and the Juggernaut at 255, all built
   // into the table at load because the CLIENT draws them — a remote player in a
   // Bastion has to have a Bastion to draw, and online the client never runs a
   // mode's init(). Pinning the base range is what this test is actually for.
   // The wire writes a tank's class as one byte, so the whole Lab has to fit
   // between 112 and 255 — which is why the Juggernaut moved out of 200 when the
-  // royale roster grew past it.
+  // royale roster grew past it, and why the royale base itself moved down from
+  // 120 to sit directly on top of the real table when it reached 140 hulls.
   assert.equal(G('TANK_DEFS.filter(function (d, i) { return d && i < 112; }).length'), 74);
-  assert.equal(G('TANK_DEFS.filter(function (d, i) { return d && i >= 112 && i < 120; }).length'), 0);
+  assert.equal(G('TANK_DEFS.filter(function (d, i) { return d && i >= 112 && i <= 255; }).length'), 140);   // the Juggernaut at 255 is built on demand, not at load
   assert.equal(G('TANK_DEFS[31].name'), 'Trapper');
   // Sniper -> Assassin / Overseer / Hunter / Trapper. Settles the Trapper=30 vs 31 conflict.
   assert.equal(G('JSON.stringify(TANK_DEFS[6].upgrades)'), '[15,11,19,31]');

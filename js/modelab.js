@@ -26,6 +26,20 @@ var MODELAB = (function () {
   var open = false, current = null, filter = 'All';
   var api = { onPlay: null, onPlayOnline: null, diff: null };
 
+  // Juggernaut Royale only, for now: the two knobs that decide how long the
+  // 140-hull climb takes. Multipliers rather than spans, so they scale the
+  // mode's own size out of the table instead of repeating 18000 in here.
+  var MAP_SIZES = [
+    { k: 'xs', label: 'Extra Small', mul: 0.45, note: 'Knife-fight range. You meet the whole field inside a minute.' },
+    { k: 's', label: 'Small', mul: 0.7, note: 'Tight. Farming and fighting happen in the same square.' },
+    { k: 'm', label: 'Medium', mul: 1, note: 'The size the mode was tuned at.' },
+    { k: 'l', label: 'Large', mul: 1.45, note: 'Room to farm a tier up before anyone finds you.' },
+    { k: 'xl', label: 'Extra Large', mul: 2, note: 'Long walks between fights. Bring a hull that moves.' },
+    { k: 'colossal', label: 'Colossal', mul: 2.8, note: 'Eight times the floor. A crown can hide out here for a long time, and the sim works for it.' }
+  ];
+  var mapSize = 'm';
+  var botCap = null;                  // null = whatever the mode pins
+
   // --- styles ------------------------------------------------------------
   var CSS = [
     // ---- the button ----
@@ -146,6 +160,16 @@ var MODELAB = (function () {
     '  cursor:pointer;transition:all .18s;}',
     '#lab-panel .lab-dbtn:hover{color:#EAF2FF;border-color:rgba(255,255,255,.24);}',
     '#lab-panel .lab-dbtn.on{color:#08090E;border-color:transparent;font-weight:700;}',
+    '#lab-panel .lab-slide{display:flex;align-items:center;gap:14px;margin:0 0 22px;}',
+    '#lab-panel .lab-slide input[type=range]{flex:1;height:6px;-webkit-appearance:none;appearance:none;',
+    '  background:rgba(255,255,255,.12);border-radius:99px;outline:none;cursor:pointer;}',
+    '#lab-panel .lab-slide input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;',
+    '  width:18px;height:18px;border-radius:50%;background:#8FD9FF;cursor:pointer;',
+    '  box-shadow:0 2px 8px rgba(0,0,0,.6);}',
+    '#lab-panel .lab-slide input[type=range]::-moz-range-thumb{width:18px;height:18px;border:0;',
+    '  border-radius:50%;background:#8FD9FF;cursor:pointer;}',
+    '#lab-panel .lab-slideval{flex:none;min-width:2.6em;text-align:right;color:#EAF2FF;',
+    '  font:700 17px Ubuntu,Verdana,sans-serif;}',
     '#lab-panel .lab-dnote{font:400 13px Ubuntu,Verdana,sans-serif;color:#7C8DA6;margin:-14px 0 22px;min-height:2.6em;}',
     '#lab-panel .lab-acts{display:flex;gap:10px;flex-wrap:wrap;position:sticky;bottom:-38px;',
     '  padding:14px 0 0;background:linear-gradient(to top,#0C0E15 72%,rgba(12,14,21,0));}',
@@ -551,6 +575,47 @@ var MODELAB = (function () {
       p.appendChild(note);
     }
 
+    // Map size and field size, offline only: an online match is the server's
+    // arena, not yours. Scoped to the one mode whose whole shape is the length
+    // of the climb — every other mode is tuned to its own numbers.
+    if (m.key === 'juggerroyale') {
+      var base = modeSize(m.key);
+      p.appendChild(el('div', 'lab-h', 'Map size'));
+      var srow = el('div', 'lab-diff');
+      var snote = el('div', 'lab-dnote');
+      MAP_SIZES.forEach(function (sz) {
+        var b = el('button', 'lab-dbtn' + (sz.k === mapSize ? ' on' : ''), sz.label);
+        if (sz.k === mapSize) b.style.background = '#8FD9FF';
+        b.addEventListener('click', function () {
+          mapSize = sz.k;
+          srow.querySelectorAll('.lab-dbtn').forEach(function (x) { x.classList.remove('on'); x.style.background = ''; });
+          b.classList.add('on');
+          b.style.background = '#8FD9FF';
+          snote.textContent = sizeNote(sz, base);
+        });
+        srow.appendChild(b);
+      });
+      p.appendChild(srow);
+      snote.textContent = sizeNote(currentSize(), base);
+      p.appendChild(snote);
+
+      p.appendChild(el('div', 'lab-h', 'Bot amount'));
+      if (botCap === null) botCap = modeBots(m.key);
+      var brow = el('div', 'lab-slide');
+      var rng = el('input');
+      rng.type = 'range'; rng.min = '0'; rng.max = '100'; rng.step = '1'; rng.value = String(botCap);
+      var bval = el('div', 'lab-slideval', String(botCap));
+      var bnote = el('div', 'lab-dnote', botNote(botCap));
+      rng.addEventListener('input', function () {
+        botCap = +rng.value;
+        bval.textContent = String(botCap);
+        bnote.textContent = botNote(botCap);
+      });
+      brow.appendChild(rng); brow.appendChild(bval);
+      p.appendChild(brow);
+      p.appendChild(bnote);
+    }
+
     var acts = el('div', 'lab-acts');
     var go = el('button', 'lab-go', 'PLAY OFFLINE');
     go.addEventListener('click', function () { launch(m.key, false); });
@@ -562,12 +627,37 @@ var MODELAB = (function () {
     p.appendChild(acts);
   }
 
+  // The mode table is the single source for both defaults; the Lab only scales
+  // what it finds there.
+  function modeSize(key) {
+    var g = typeof GAMEMODES !== 'undefined' ? GAMEMODES[key] : null;
+    return (g && g.size) || 22300;
+  }
+  function modeBots(key) {
+    var g = typeof GAMEMODES !== 'undefined' ? GAMEMODES[key] : null;
+    return (g && g.rules && typeof g.rules.bots === 'number') ? g.rules.bots : 80;
+  }
+  function currentSize() {
+    return MAP_SIZES.filter(function (s) { return s.k === mapSize; })[0] || MAP_SIZES[2];
+  }
+  function sizeNote(sz, base) {
+    return Math.round(base * sz.mul).toLocaleString() + ' units across · ' + sz.note;
+  }
+  function botNote(n) {
+    if (!n) return 'Nobody else. The arena is yours to walk.';
+    return n + ' rival' + (n === 1 ? '' : 's') + ' at most — a kill frees a slot and something respawns into it.';
+  }
+
   function launch(key, online) {
     var fn = online ? api.onPlayOnline : api.onPlay;
     if (!fn) return;
     closeDetail(true);
     hide();
-    fn(key);
+    // Only the mode that owns the knobs sends them, and only offline.
+    var extra = (!online && key === 'juggerroyale')
+      ? { size: Math.round(modeSize(key) * currentSize().mul), botCap: botCap }
+      : undefined;
+    fn(key, extra);
   }
 
   function closeDetail(instant) {

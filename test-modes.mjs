@@ -106,9 +106,15 @@ for (const k of keys) {
   ok(k + ' survives three resets', true);
   const after = g.entities.filter((e) => e.modeEntity).length;
   // Modes that spawn per-round furniture rebuild the same amount; nothing should
-  // come back with three times as much.
-  ok(k + ' does not leak mode entities', after <= Math.max(4, modeEnts * 1.6),
-    modeEnts + ' -> ' + after);
+  // come back with three times as much. Juggernaut Royale is the exception and
+  // has to be: its furniture is per-TANK rather than per-round — a hull with the
+  // retinue trait keeps a live escort of turrets — so the count tracks how far
+  // up the tree the arena has climbed rather than how many rounds have run, and
+  // comparing it against a sample taken at tick 400 compares two different
+  // things. Measured, it settles around 25 with 24 bots and stays there; a flat
+  // cap well above that still catches a real leak, which runs to hundreds.
+  const cap = k === 'juggerroyale' ? 80 : Math.max(4, modeEnts * 1.6);
+  ok(k + ' does not leak mode entities', after <= cap, modeEnts + ' -> ' + after);
   ok(k + ' does not leak walls', g.walls.length <= (GAMEMODES[k].maze ? 4000 : 200),
     g.walls.length + ' walls');
 }
@@ -668,9 +674,9 @@ section('the fixes that have to hold everywhere');
     g.entities.filter((e) => e.type === 'shape' && !e.dead).length > 60);
 }
 {
-  // Juggernaut Royale: ninety-six hulls, eleven branches, seven tiers reaching
-  // level 100 — all of it wired into the real tank table rather than living
-  // beside it.
+  // Juggernaut Royale: a hundred and forty hulls, eleven branches, eight
+  // dynasties and nine tiers reaching level 200 — all of it wired into the real
+  // tank table rather than living beside it.
   const g = boot('juggerroyale');
   const B = sim.JR_BASE;
   const H = sim.JR_HULLS;
@@ -679,7 +685,7 @@ section('the fixes that have to hold everywhere');
     vm.runInContext(fs.readFileSync(f, 'utf8'), base0, { filename: f });
   const fresh0 = new Set(Object.keys(base0.TANK_DEFS).map(Number));
   const def = (h) => TANK_DEFS[B + h.id];
-  ok('ninety-six hulls exist', H.length === 96, H.length + ' hulls');
+  ok('a hundred and forty hulls exist', H.length === 140, H.length + ' hulls');
   ok('every hull is in the tank table', H.every((h) => !!def(h)));
   ok('ids are unique', new Set(H.map((h) => h.id)).size === H.length);
   ok('names are unique', new Set(H.map((h) => h.n)).size === H.length);
@@ -713,37 +719,100 @@ section('the fixes that have to hold everywhere');
   ok('eleven branches open at once', t1.length === 11 && TANK_DEFS[B].upgrades.length === 11,
     t1.length + ' heads');
   ok('every branch head is a different branch', new Set(t1.map((h) => h.br)).size === 11);
-  ok('seven tiers, and each hull sits on one', H.every((h) => h.t >= 0 && h.t <= 6));
+  ok('nine tiers, and each hull sits on one', H.every((h) => h.t >= 0 && h.t <= 8));
   ok('the tiers gate on level', H.every((h) => def(h).levelRequirement === sim.JR_LVL[h.t]));
   ok('and the wheel is told which ring that is', H.every((h) => def(h).treeRing === h.t - 1));
-  // The mode raises its own ceiling to 100; the tiers are laid out under it and
+  // The mode raises its own ceiling to 200; the tiers are laid out under it and
   // the top one sits exactly on it.
   const CAP = GAMEMODES.juggerroyale.rules.maxLevel;
-  ok('the mode runs to level 100', CAP === 100 && g.levelCap() === 100, String(g.levelCap()));
+  ok('the mode runs to level 200', CAP === 200 && g.levelCap() === 200, String(g.levelCap()));
   ok('and the score curve reaches that far', sim.LEVEL_CAP >= CAP && sim.LEVEL_SCORE[CAP] > 0);
-  ok('the top tier sits on the cap', sim.JR_LVL[6] === CAP, String(sim.JR_LVL[6]));
+  ok('the top tier sits on the cap', sim.JR_LVL[8] === CAP, String(sim.JR_LVL[8]));
   ok('the tiers climb', sim.JR_LVL.every((l, i) => i === 0 || l > sim.JR_LVL[i - 1]));
+  // diep's 6% per-level compounding is fine to 45 and steep to 100. Run it to
+  // 200 unchanged and the last hundred levels cost four hundred times the first
+  // hundred, so data.js goes flat past LEVEL_SOFT. The whole point is that the
+  // second half of the ladder is expensive, not impossible.
+  ok('the score curve stops compounding so 200 is reachable',
+    sim.LEVEL_SCORE[200] / sim.LEVEL_SCORE[100] < 12,
+    (sim.LEVEL_SCORE[200] / sim.LEVEL_SCORE[100]).toFixed(1) + 'x the climb to 100');
+  ok('and it still costs more than the climb to 100 did',
+    sim.LEVEL_SCORE[200] > sim.LEVEL_SCORE[100] * 4);
   // Raising the ceiling without softening diep's per-level curves leaves a
-  // level-100 hull two and a half times its own size at a quarter of its speed.
+  // level-200 hull nine times its own size at a twentieth of its speed.
   ok('the per-level curves are softened for the taller ladder',
     Math.pow(g.rule('lvlScale', 1.01), CAP - 1) < 2 && Math.pow(g.rule('lvlSlow', 1.015), CAP - 1) < 2.5);
 
-  // Every card is a group. This is the whole shape of the tree: no node in it
-  // hands you a single hull and calls that an upgrade.
-  ok('no node offers exactly one upgrade', H.every((h) => h.up.length !== 1),
-    H.filter((h) => h.up.length === 1).map((h) => h.n).join(','));
+  // Every card is a group, except the very last one — a crown is the end of a
+  // road you chose at level 52, not another fork.
+  ok('no node below the crowns offers exactly one upgrade',
+    H.every((h) => h.t >= 7 || h.up.length !== 1),
+    H.filter((h) => h.t < 7 && h.up.length === 1).map((h) => h.n).join(','));
+  ok('and the titans all point at their one crown',
+    H.filter((h) => h.t === 7).every((h) => h.up.length === 1));
   ok('every branch ends in at least two hulls', Object.values(
     H.filter((h) => h.t === 3).reduce((m, h) => ((m[h.br] = (m[h.br] || 0) + 1), m), {})
   ).every((n) => n >= 2));
 
   const leaves = H.filter((h) => h.up.length === 0);
-  ok('there are four endings', leaves.length === 4, String(leaves.length));
-  ok('and all four are tier 6', leaves.every((h) => h.t === 6));
+  ok('there are eight endings', leaves.length === 8, String(leaves.length));
+  ok('and all eight are tier 8', leaves.every((h) => h.t === 8));
   const fus = H.filter((h) => h.t === 4);
   ok('sixteen of them are fusions', fus.length === 16, String(fus.length));
-  ok('every fusion opens onto two apexes', fus.every((h) => h.up.length >= 2));
+  ok('every fusion opens onto two apexes', fus.every((h) => h.up.length === 2));
   ok('every hull past tier 3 burns two colours',
     H.filter((h) => h.t >= 4).every((h) => def(h).jrTone2 && def(h).jrTone2 !== def(h).jrTone));
+
+  // --- the dynasties ------------------------------------------------------
+  // The whole shape of the top half: from level 52 up the tree is eight sealed
+  // lines. If two dynasties ever shared a hull, the card at 70 would stop being
+  // proof of the card at 52 and the climb would go back to being a lattice.
+  const dyn = (h) => h.dy;
+  ok('every hull from the fusions up belongs to a dynasty',
+    H.filter((h) => h.t >= 4).every(dyn), H.filter((h) => h.t >= 4 && !h.dy).map((h) => h.n).join(','));
+  ok('and nothing below them does', H.filter((h) => h.t < 4).every((h) => !h.dy));
+  ok('there are eight of them', new Set(H.filter(dyn).map(dyn)).size === 8);
+  ok('every dynasty key is a real row', H.filter(dyn).every((h) => !!sim.JR_DYN[h.dy]));
+  {
+    const byT = {};
+    for (const h of H) if (h.dy) (byT[h.t] = byT[h.t] || {})[h.dy] = (byT[h.t][h.dy] || 0) + 1;
+    ok('two fusions, two apexes, two omegas and two titans per dynasty',
+      [4, 5, 6, 7].every((t) => Object.values(byT[t]).every((n) => n === 2) &&
+        Object.keys(byT[t]).length === 8),
+      JSON.stringify(byT[5]));
+    ok('and exactly one crown each',
+      Object.values(byT[8]).every((n) => n === 1) && Object.keys(byT[8]).length === 8);
+  }
+  ok('no hull past the fusions ever offers another dynasty\'s hull',
+    H.filter((h) => h.t >= 4).every((h) => h.up.every((u) => {
+      const k = H.find((o) => o.id === u);
+      return k && k.dy === h.dy;
+    })),
+    H.filter((h) => h.t >= 4).filter((h) => h.up.some((u) => {
+      const k = H.find((o) => o.id === u);
+      return !k || k.dy !== h.dy;
+    })).map((h) => h.n).join(','));
+  // ...and the other half of the same claim: nothing reaches a dynasty's hull
+  // except that dynasty, so the eight subtrees are genuinely disjoint.
+  {
+    const parents = {};
+    for (const h of H) for (const u of h.up) (parents[u] = parents[u] || []).push(h);
+    const bad = H.filter((h) => h.t >= 5 && (parents[h.id] || []).some((p) => p.dy !== h.dy));
+    ok('and nothing outside a dynasty can reach into it', bad.length === 0,
+      bad.map((h) => h.n).join(','));
+  }
+  // Below the fusions the same rule holds one level down: a branch is eleven
+  // different games and a card that crosses into another one undoes that.
+  ok('nothing crosses branches before tier 4', H.every((h) => h.t >= 3 || h.up.every((u) => {
+    const k = H.find((o) => o.id === u);
+    return !k || k.t === 4 || k.br === h.br || h.br === 'brute';
+  })), H.filter((h) => h.t < 3).filter((h) => h.up.some((u) => {
+    const k = H.find((o) => o.id === u);
+    return k && k.t !== 4 && k.br !== h.br && h.br !== 'brute';
+  })).map((h) => h.n).join(','));
+  ok('six wilds, all of them tier 3',
+    H.filter((h) => h.wd).length === 6 && H.filter((h) => h.wd).every((h) => h.t === 3));
+
   // The point of a taller ladder is that the top of it is worth climbing to.
   // Tier minimums overlap deliberately — a Leviathan is an 8,600 hp body at
   // tier 3 and a Wraithhive is a 7,800 hp drone hive at tier 4 — so the claim
@@ -752,30 +821,93 @@ section('the fixes that have to hold everywhere');
     const a = H.filter((h) => h.t === t).map((h) => h.hp).sort((x, y) => x - y);
     return a[a.length >> 1];
   };
-  for (const t of [1, 2, 3, 4, 5, 6]) {
+  for (const t of [1, 2, 3, 4, 5, 6, 7, 8]) {
     ok('tier ' + t + ' outguns the tier below it', medHp(t) > medHp(t - 1) * 1.3,
       medHp(t) + ' vs ' + medHp(t - 1));
   }
-  // A tier-3 hull may only ever be reached from its own branch: the branches
-  // are eleven different games, and merging them early is what makes them one.
-  // The six wilds are the deliberate exception and they say so in the data.
-  ok('nothing crosses branches before tier 4 but the wilds', H.every((h) => h.t >= 3 || h.up.every((u) => {
-    const k = H.find((o) => o.id === u);
-    return !k || k.t === 4 || k.wd || k.br === h.br || h.br === 'brute';
-  })));
-  ok('six wilds, all of them tier 3',
-    H.filter((h) => h.wd).length === 6 && H.filter((h) => h.wd).every((h) => h.t === 3));
+  // ...and the dividend says the same thing about everything that is not health.
+  ok('and every tier above the fusions takes less and hits harder than the last',
+    [6, 7, 8].every((t) => sim.JR_DIVIDEND[t][0] < sim.JR_DIVIDEND[t - 1][0] &&
+      sim.JR_DIVIDEND[t][1] < sim.JR_DIVIDEND[t - 1][1] &&
+      sim.JR_DIVIDEND[t][2] > sim.JR_DIVIDEND[t - 1][2]));
 
   // Every verb a row names has to exist, or the hull is a hull with a dead button.
   ok('every ability verb has a handler', H.every((h) => !h.ab || !!sim.JR_ABIL[h.ab]));
-  ok('every passive verb has a handler', H.every((h) => !h.ps || !!sim.JR_PASS[h.ps]));
+  ok('every autonomous verb has a handler',
+    H.every((h) => !h.abs || h.abs.every((a) => !!sim.JR_ABIL[a])));
+  ok('and no hull lists its own right-click button as an autonomous one',
+    H.every((h) => !h.abs || h.abs.indexOf(h.ab) === -1));
+  ok('every passive verb has a handler',
+    H.every((h) => !h.ps || [].concat(h.ps).every((x) => !!sim.JR_PASS[x])));
+  ok('every trait is in the roll call',
+    H.every((h) => !h.tr || h.tr.every((x) => Object.prototype.hasOwnProperty.call(sim.JR_TRAIT, x))),
+    H.filter((h) => h.tr && h.tr.some((x) => !(x in sim.JR_TRAIT))).map((h) => h.n).join(','));
   ok('every addon a hull asks for exists',
     H.every((h) => (!h.pre || !!sim.ADDONS[h.pre]) && (!h.post || !!sim.ADDONS[h.post])));
-  ok('thirty-odd ability verbs', new Set(H.filter((h) => h.ab).map((h) => h.ab)).size >= 32,
-    String(new Set(H.filter((h) => h.ab).map((h) => h.ab)).size));
+  ok('fifty-odd ability verbs', new Set(H.flatMap((h) => [h.ab || []].concat(h.abs || []).flat())).size >= 48,
+    String(new Set(H.flatMap((h) => [h.ab || []].concat(h.abs || []).flat())).size));
   ok('no two branch heads share an ability', new Set(t1.map((h) => h.ab)).size === t1.length);
   ok('every hull past the Brute has a button or a passive',
     H.every((h) => h.t === 0 || h.ab || h.ps));
+
+  // The tiers above the fusions are meant to be MORE than a bigger tank, and
+  // the shape of "more" is: another button that fires itself, another passive,
+  // another trait. Asserting the ramp is what stops a new tier-8 row from
+  // quietly being a tier-5 row with a bigger health number.
+  const psn = (h) => (h.ps ? [].concat(h.ps).length : 0);
+  ok('every apex and above carries at least one autonomous button',
+    H.filter((h) => h.t >= 5).every((h) => (h.abs || []).length >= 1));
+  ok('an omega carries two, a titan two or more, a crown four',
+    H.filter((h) => h.t === 6).every((h) => (h.abs || []).length >= 2) &&
+    H.filter((h) => h.t === 7).every((h) => (h.abs || []).length >= 2) &&
+    H.filter((h) => h.t === 8).every((h) => (h.abs || []).length === 4));
+  ok('and the traits and passives ramp with the tier',
+    H.filter((h) => h.t === 5).every((h) => (h.tr || []).length >= 2 && psn(h) >= 1) &&
+    H.filter((h) => h.t === 6).every((h) => (h.tr || []).length >= 3 && psn(h) >= 2) &&
+    H.filter((h) => h.t === 7).every((h) => (h.tr || []).length >= 4 && psn(h) >= 2) &&
+    H.filter((h) => h.t === 8).every((h) => (h.tr || []).length >= 6 && psn(h) >= 3));
+  ok('nothing below the fusions grew a second button or a trait',
+    H.filter((h) => h.t < 5).every((h) => !h.abs && !h.tr));
+  // growth and the jrGrant passives write the same single bonus slot, so a hull
+  // carrying both would ratchet its own health up and down every tick.
+  {
+    const GRANTS = ['graft', 'grow', 'stacks', 'invert', 'decay', 'far'];
+    ok('and nothing carries growth on top of a passive that already grants',
+      H.filter((h) => h.tr && h.tr.indexOf('growth') >= 0)
+        .every((h) => [].concat(h.ps || []).every((x) => GRANTS.indexOf(x) === -1)));
+  }
+
+  // --- deep stat bars -----------------------------------------------------
+  // Eight stats at seven pips each hold 56 points; level 200 hands out 84. The
+  // bar takes 28 instead and compresses each filled row into a single block, so
+  // it never gets any longer and it runs out at exactly seven ranks.
+  ok('every juggernaut stat runs deep', H.every((h) =>
+    def(h).stats.every((s) => s.max === 0 || s.max === sim.STAT_DEEP_MAX)));
+  ok('a deep bar is seven ranks and twenty-eight points',
+    sim.STAT_DEEP_MAX === 28 && sim.STAT_BANDS.length === 8 && sim.STAT_SLOTS === 7);
+  ok('and it always draws exactly seven pips', [0, 1, 6, 7, 8, 13, 22, 27, 28].every((n) => {
+    const b = sim.statBar(n, 28);
+    return b.full + b.slots === 7 && b.into >= 0 && b.into <= b.slots;
+  }));
+  ok('a full bar is maxed and says so', sim.statBar(28, 28).slots === 0 && sim.statBar(28, 28).full === 7);
+  ok('and an ordinary seven-pip bar is untouched',
+    sim.statBar(4, 7).full === 0 && sim.statBar(4, 7).into === 4 && sim.statBar(4, 7).slots === 7);
+  ok('the level-200 budget is exactly three maxed stats',
+    sim.statCount(200) === 3 * sim.STAT_DEEP_MAX, String(sim.statCount(200)));
+  {
+    // ...and the engine really hands them out and really stops at 28.
+    const t = g.player;
+    t.addScore(sim.LEVEL_SCORE[200]);
+    ok('a level-200 juggernaut has 84 points', t.level === 200 && t.statsAvailable === 84,
+      t.level + ' / ' + t.statsAvailable);
+    let spent = 0;
+    while (t.upgradeStat(6)) spent++;
+    ok('and one stat eats twenty-eight of them', spent === 28, String(spent));
+    ok('after which it refuses', t.upgradeStat(6) === false && t.stats[6] === 28);
+    // The two rules that make Max Health worth spending on a 96,000 hp hull.
+    ok('max health pays as a share of the hull, not a flat 20',
+      g.rule('statHealthPct', 0) > 0 && g.rule('statBodyPct', 0) > 0);
+  }
 
   // Silhouette and armament variety — "they all look the same" is the failure
   // mode this arena is built to avoid, so it is worth asserting.
@@ -795,9 +927,15 @@ section('the fixes that have to hold everywhere');
   ok('and the jobs are not all the same', jobs.size >= 4, [...jobs].join(','));
   ok('bodies are driven as bodies', H.filter((h) => h.me).every((h) => sim.jrJob(h) === 'ram'));
   ok('siege hulls plant themselves', sim.jrJob(H.find((h) => h.n === 'Tower')) === 'root');
+  // The sniper test is relative to the hull, not an absolute barrel length —
+  // jrFitGuns scales every barrel with the body, so an absolute one made every
+  // apex a sniper and walked them out of the fights they are built for.
+  ok('and a big hull is not a sniper just for being big',
+    H.filter((h) => h.t >= 5).some((h) => sim.jrJob(h) !== 'far'),
+    H.filter((h) => h.t >= 5).map((h) => sim.jrJob(h)).join(','));
 
-  ok('kills pay enough to climb six tiers', g.rule('killBounty', 0) >= 4000);
-  ok('and shapes pay for the rest of it', g.rule('shapeXp', 1) >= 2, String(g.rule('shapeXp', 1)));
+  ok('kills pay enough to climb eight tiers', g.rule('killBounty', 0) >= 8000);
+  ok('and shapes pay for the rest of it', g.rule('shapeXp', 1) >= 3, String(g.rule('shapeXp', 1)));
   ok('the field is dense enough to farm', g.rule('shapes', 0) >= 2000, String(g.rule('shapes', 0)));
   ok('the class wheel is rooted on the juggernauts', GAMEMODES.juggerroyale.treeRoot === B,
     String(GAMEMODES.juggerroyale.treeRoot));
@@ -825,10 +963,12 @@ section('the fixes that have to hold everywhere');
 {
   // Every hull, driven, with a live enemy parked inside every ability radius:
   // the point is that no verb throws and no hull leaves furniture behind when
-  // it stops being that hull. Seventy-two is too many to trust by reading.
+  // it stops being that hull. A hundred and forty is far too many to trust by
+  // reading, and the late hulls fire three or four verbs each on top of the one
+  // on right-click, so the autonomous path gets driven here too.
   const B = sim.JR_BASE;
   const threw = [], silent = [];
-  let fired = 0;
+  let fired = 0, autoFired = 0;
   for (const h of sim.JR_HULLS) {
     const g = new sim.Game('juggerroyale', 'tester', { difficulty: 'hard', botCount: 4 });
     g.wantedShapes = 40;
@@ -855,6 +995,13 @@ section('the fixes that have to hold everywhere');
       me.jrHeat = me.maxHealth;                       // so OVERLOAD has something to spend
       me.mouse = { x: me.x + 900, y: me.y };
       if (sim.jrAbility(g, me)) fired++; else if (h.ab) silent.push(h.n);
+      // ...and the buttons the hull presses for itself. Every one of them on
+      // its own cooldown, so a few ticks is enough to walk the whole list.
+      if (h.abs) {
+        const before = JSON.stringify(me.jrCools || {});
+        for (let k = 0; k < h.abs.length; k++) { me.jrCools = null; sim.jrAutoAbilities(g, me, h); }
+        if (JSON.stringify(me.jrCools || {}) !== before) autoFired++;
+      }
       run(g, 4 * TPS);
       sim.forceTankClass(me, B);                      // a different hull now: sweep
       me.jrDefId = undefined;
@@ -862,8 +1009,15 @@ section('the fixes that have to hold everywhere');
     } catch (e) { threw.push(h.n + ': ' + e.message); }
   }
   ok('no hull throws when its verb fires', threw.length === 0, threw.slice(0, 4).join(' | '));
-  ok('nearly every ability fires with a target in reach', fired >= 74, fired + ' fired');
-  ok('the ones that hold back are the conditional ones', silent.length <= 18, silent.join(','));
+  ok('nearly every ability fires with a target in reach', fired >= 110, fired + ' fired');
+  ok('the ones that hold back are the conditional ones', silent.length <= 24, silent.join(','));
+  // Not all of them: a hull whose autonomous list is ENTHRONE (fires under 45%
+  // health) or OVERLOAD (fires on a full heat bank) is correctly holding back on
+  // an undamaged test rig, which is the same thing the primary-button test says
+  // about the conditional verbs.
+  ok('and the autonomous buttons fire themselves too',
+    autoFired >= sim.JR_HULLS.filter((x) => x.abs).length * 0.6,
+    autoFired + '/' + sim.JR_HULLS.filter((x) => x.abs).length);
 }
 {
   // Chaos: a modifier has to reach a tank that spawned after it landed.
@@ -932,6 +1086,28 @@ section('the visual layer');
   ok('the modes that need a look have one', withFx.length >= 30, withFx.length + ' of ' + keys.length);
   ok('no effect is registered for a mode that does not exist',
     Object.keys(sim.MODE_FX).every((k) => !!LAB_MODES[k]));
+}
+
+// =========================================================================
+// The Mode Lab size / bot-cap knobs. Juggernaut Royale pins bots: 20 and an
+// 18000 arena; the picker has to be able to beat both, and the shape field
+// has to follow the floor or a colossal map is an empty one.
+section('size and bot-cap overrides');
+{
+  const base = new Game('juggerroyale', 't', { difficulty: 'easy' });
+  ok('the mode pin stands when nothing is passed', base.botCount === 20, 'got ' + base.botCount);
+  ok('and its own arena with it', base.arena.size === 18000, 'got ' + base.arena.size);
+
+  const big = new Game('juggerroyale', 't', { difficulty: 'easy', size: 18000 * 2.8, botCap: 7 });
+  ok('a passed cap beats the pin', big.botCount === 7, 'got ' + big.botCount);
+  ok('a passed size becomes the arena', big.arena.size === 50400 && big.arena.right === 25200);
+  ok('shapes scale with the floor, capped at 2.5x',
+    big.wantedShapes === Math.round(2600 * 2.5), 'got ' + big.wantedShapes);
+
+  const small = new Game('juggerroyale', 't', { difficulty: 'easy', size: 18000 * 0.45, botCap: 0 });
+  ok('zero bots means zero bots', small.botCount === 0, 'got ' + small.botCount);
+  ok('and a small floor thins the field',
+    small.wantedShapes === Math.round(2600 * 0.45 * 0.45), 'got ' + small.wantedShapes);
 }
 
 // =========================================================================

@@ -8,8 +8,15 @@ var GRID = 50;                 // background grid cell, diep units
 var ARENA_PADDING = 200;       // walkable grey margin outside the play field
 var MAX_LEVEL = 45;
 // A mode may raise its own ceiling with the `maxLevel` rule (Juggernaut Royale
-// runs to 100). LEVEL_SCORE is built this far so the curve is there when it does.
-var LEVEL_CAP = 100;
+// runs to 200). LEVEL_SCORE is built this far so the curve is there when it does.
+var LEVEL_CAP = 200;
+// diep's per-level cost compounds at 6%, which is fine to 45 and merely steep to
+// 100. Run it to 200 and level 199 alone costs four hundred times level 100 —
+// the ladder stops being a climb and becomes a wall. So the compounding stops
+// here and the cost goes flat: past this level every rung costs the same as this
+// one, which lands the whole 1..200 climb at 6.7x the 1..100 climb rather than
+// 400x. Nothing under level 100 moves by a single point.
+var LEVEL_SOFT = 100;
 var SPAWN_PROTECT_TICKS = 374; // ~15s
 var HYPER_REGEN_DELAY = 750;   // 30s undamaged
 var HASH_CELL = 128;           // 2^7
@@ -68,7 +75,8 @@ function uiToWire(i) { return 7 - i; }
 // scoreAtLevel[i] = scoreAtLevel[i-1] + (40/9) * 1.06^(i-2) * min(31, i-1)
 var LEVEL_SCORE = (function () {
   var t = [0, 0];
-  for (var i = 2; i <= LEVEL_CAP + 1; i++) t[i] = t[i - 1] + (40 / 9) * Math.pow(1.06, i - 2) * Math.min(31, i - 1);
+  for (var i = 2; i <= LEVEL_CAP + 1; i++)
+    t[i] = t[i - 1] + (40 / 9) * Math.pow(1.06, Math.min(i, LEVEL_SOFT) - 2) * Math.min(31, i - 1);
   return t;
 })();
 
@@ -85,6 +93,40 @@ function statCount(level) {
 }
 function respawnLevel(level) {
   return Math.min(Math.max(level - 1, 1), Math.floor(Math.sqrt(level) * 3.2796));
+}
+
+// --- deep stat bars ----------------------------------------------------
+// A stat pill is seven pips wide and that is not negotiable — it is a 210px
+// strip in the bottom-left corner and there are eight of them. A mode that runs
+// to level 200 hands out 84 points, which is more than the 56 that eight
+// seven-pip bars can hold, so the bar has to take more without getting longer.
+//
+// It compresses. Fill all seven pips and they collapse into ONE lit block on
+// the left; the row is seven pips wide again, but only six of them are empty.
+// Fill those six and they collapse into a second block, leaving five. And so
+// on: 7 + 6 + 5 + 4 + 3 + 2 + 1 = 28 points, at which point all seven pips are
+// compressed blocks, there is no room left in the row, and the stat is maxed —
+// the bar says so because it physically cannot say anything else.
+//
+// 28 * 3 = 84, which is exactly the level-200 budget: a full build at the cap is
+// three stats taken all the way and nothing else, so the last hundred levels of
+// the ladder are a real decision rather than a formality.
+var STAT_SLOTS = 7;                              // pips in a row, always
+var STAT_BANDS = (function () {                  // points at which a rank closes
+  var t = [0];
+  for (var i = 0; i < STAT_SLOTS; i++) t.push(t[i] + (STAT_SLOTS - i));
+  return t;                                      // [0,7,13,18,22,25,27,28]
+})();
+var STAT_DEEP_MAX = STAT_BANDS[STAT_SLOTS];      // 28
+
+// How the pill draws `cur` points: `full` compressed blocks on the left, then
+// `into` lit pips out of `slots` empty ones. A classic bar returns full 0 and
+// the pip count it always had, so nothing outside Juggernaut Royale changes.
+function statBar(cur, max) {
+  if (max <= STAT_SLOTS) return { full: 0, into: Math.min(cur, max), slots: max, rank: 1 };
+  var full = 0;
+  while (full < STAT_SLOTS && cur >= STAT_BANDS[full + 1]) full++;
+  return { full: full, into: cur - STAT_BANDS[full], slots: STAT_SLOTS - full, rank: full + 1 };
 }
 
 // --- shapes ------------------------------------------------------------
@@ -183,7 +225,24 @@ var ADDONS = {
                           { sides: 3, ratio: 1.66, spin: 0.05, offset: Math.PI / 3 },
                           { sides: 12, ratio: 1.40, spin: -0.08 },
                           { sides: 12, ratio: 1.24, spin: 0.14 },
-                          { sides: 6, ratio: 1.10, spin: -0.20 }] }
+                          { sides: 6, ratio: 1.10, spin: -0.20 }] },
+  // ...and the two above those. A titan wears a six-bladed sunburst over the
+  // omega's rings; a crown wears the lot plus a solid outer wheel, so the
+  // silhouette alone says how much of the round the pilot spent on it.
+  jrtitan:     { guards: [{ sides: 3, ratio: 1.80, spin: 0.04, offset: 0 },
+                          { sides: 3, ratio: 1.80, spin: 0.04, offset: Math.PI / 3 },
+                          { sides: 3, ratio: 1.62, spin: -0.07, offset: Math.PI / 6 },
+                          { sides: 3, ratio: 1.62, spin: -0.07, offset: Math.PI / 2 },
+                          { sides: 12, ratio: 1.36, spin: 0.11 },
+                          { sides: 6, ratio: 1.16, spin: -0.18 }] },
+  jrgod:       { guards: [{ sides: 3, ratio: 1.96, spin: 0.03, offset: 0 },
+                          { sides: 3, ratio: 1.96, spin: 0.03, offset: Math.PI / 3 },
+                          { sides: 3, ratio: 1.74, spin: -0.05, offset: Math.PI / 6 },
+                          { sides: 3, ratio: 1.74, spin: -0.05, offset: Math.PI / 2 },
+                          { sides: 24, ratio: 1.48, spin: 0.06 },
+                          { sides: 12, ratio: 1.30, spin: -0.12 },
+                          { sides: 6, ratio: 1.12, spin: 0.22 }] },
+  auto12:      { turrets: 12, arc: true }
 };
 // A mounted turret is a fixed 25-radius base carrying a 55 x 29.4 barrel, grown
 // only by the tank's LEVEL scale — diep sizes it off scaleFactor, never off the
@@ -395,5 +454,7 @@ if (typeof module !== 'undefined') module.exports = {
   TPS: TPS, MSPT: MSPT, GRID: GRID, C: C, SHAPES: SHAPES, ADDONS: ADDONS, BOSSES: BOSSES,
   LEVEL_SCORE: LEVEL_SCORE, levelFromScore: levelFromScore, statCount: statCount,
   respawnLevel: respawnLevel, uiToWire: uiToWire, GAMEMODES: GAMEMODES, MAX_LEVEL: MAX_LEVEL,
-  LEVEL_CAP: LEVEL_CAP
+  LEVEL_CAP: LEVEL_CAP, LEVEL_SOFT: LEVEL_SOFT,
+  STAT_SLOTS: STAT_SLOTS, STAT_BANDS: STAT_BANDS, STAT_DEEP_MAX: STAT_DEEP_MAX,
+  statBar: statBar
 };

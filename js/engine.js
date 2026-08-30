@@ -553,13 +553,21 @@ Tank.prototype.recompute = function () {
   // left the Dominator with a level-75 cannon bolted to a 160-unit body.
   this.scaleFactor = Math.pow(this.game.rule('lvlScale', 1.01), L - 1) * (this.scaleBoost || 1);
   this.size = this.baseSize * this.scaleFactor;
-  var mh = def.maxHealth + 2 * (L - 1) + st[S_HEALTH] * 20;
+  // Max Health and Body Damage are the two stats diep pays out as flat numbers,
+  // which is fine on a 3,000 hp Overlord and worthless on a 90,000 hp crown: 28
+  // points of Max Health would be +560 on a bar that long. These two rules let a
+  // mode pay them out as a share of the hull instead, so the stat is worth the
+  // same on the first hull as on the last. Both default to 0 — every other mode
+  // gets diep's own flat arithmetic, to the point.
+  var mh = def.maxHealth * (1 + st[S_HEALTH] * this.game.rule('statHealthPct', 0))
+    + 2 * (L - 1) + st[S_HEALTH] * 20;
   if (this.maxHealth) this.health = Math.min(this.health * (mh / this.maxHealth), mh);
   this.maxHealth = mh;
   this.regenPerTick = (mh * 4 * st[S_REGEN] + mh) / 25000 * this.game.rule('regen', 1);
   this.movementSpeed = def.speed * 2.55 * Math.pow(1.07, st[S_SPEED]) / Math.pow(this.game.rule('lvlSlow', 1.015), L - 1);
   this.reloadTime = 15 * Math.pow(0.914, st[S_RELOAD]) * this.game.rule('reloadMult', 1);
-  this.damagePerTick = 5 + st[S_BODY] + (def.bodyDamage || 0);
+  this.damagePerTick = 5 + st[S_BODY]
+    + (def.bodyDamage || 0) * (1 + st[S_BODY] * this.game.rule('statBodyPct', 0));
   this.absorb = def.absorbtionFactor;
   // absorbtionFactor is how hard you are *pushed*; pushFactor is how hard you push,
   // and diep leaves every tank on the entity default of 8.
@@ -2242,8 +2250,11 @@ function Game(modeKey, playerName, opts) {
   this.bountyTarget = null;         // the one thing every bot should be shooting at
   this.fx = null;                   // per-mode screen effect state, read by the renderer
 
-  var h = this.mode.size / 2;
-  this.arena = { left: -h, right: h, top: -h, bottom: h, size: this.mode.size };
+  // opts.size is the map-size picker: an absolute span that replaces the mode's
+  // own. Everything downstream reads this.arena, so nothing else has to know.
+  var span = opts.size || this.mode.size;
+  var h = span / 2;
+  this.arena = { left: -h, right: h, top: -h, bottom: h, size: span };
   this.teams = this.mode.teams;
 
   if (this.mode.maze) this.generateMaze();
@@ -2257,7 +2268,12 @@ function Game(modeKey, playerName, opts) {
 
   // Sumo, Diep Ball and the race modes want a clear floor; Locust wants it
   // knee-deep. Both are the same dial.
-  this.wantedShapes = this.rule('shapes', this.mode.sandbox ? 120 : 1000);
+  // Shape count follows the arena AREA, so the density a mode was tuned at
+  // survives a resize. Capped at 2.5x: a colossal map asks for six times the
+  // shapes and the sim will not carry that.
+  // ponytail: flat cap, revisit if the shape budget is ever actually measured.
+  var areaK = Math.min(2.5, (span * span) / (this.mode.size * this.mode.size));
+  this.wantedShapes = Math.round(this.rule('shapes', this.mode.sandbox ? 120 : 1000) * areaK);
   for (var i = 0; i < this.wantedShapes; i++) this.spawnShape();
 
   if (!this.headless) this.player = this.spawnTank({ name: playerName, isPlayer: true });
@@ -2266,6 +2282,12 @@ function Game(modeKey, playerName, opts) {
   // what a mode wants when it only needs a slightly thinner field than usual.
   var chosen = opts.botCount !== undefined ? opts.botCount : (this.mode.sandbox ? 64 : 80);
   this.botCount = Math.max(0, this.rule('bots', chosen) + this.rule('botsDelta', 0));
+  // ...and `botCap` is the picker's own slider, which outranks both. A number
+  // the player set is an answer, not a suggestion, so neither the pin nor the
+  // delta gets to argue with it. Deliberately not `botCount`: every existing
+  // caller passes that expecting the mode to still win, and a mode tuned for
+  // eight tanks is not the place to discover otherwise.
+  if (opts.botCap !== undefined) this.botCount = Math.max(0, opts.botCap);
   this.botRespawn = [];                // levels waiting to come back, one per dead bot
   for (var b = 0; b < this.botCount; b++) this.spawnBot();
 }

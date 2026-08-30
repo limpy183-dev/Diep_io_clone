@@ -688,6 +688,48 @@ var JR_AURA = {
     c.globalCompositeOperation = 'lighter';
     fxGlow(c, x, y, R * 0.7, jrRGBA('255,255,255', 0.16 + 0.06 * Math.sin(t * 3)), 1);
     c.restore();
+  },
+
+  // TIER 7: a court. The fusion aura with a second, much wider ring of barbs
+  // turning against it and a standing wheel of motes — a titan should read as
+  // "the arena is arranged around this" from further away than it can shoot.
+  sovereign: function (c, x, y, R, A, B, t, e, tier) {
+    B = B || A;
+    fxGlow(c, x, y, R * 3.4, jrRGBA(A, 0.2), 1);
+    fxGlow(c, x, y, R * 2.2, jrRGBA(B, 0.22), 1);
+    jrBarbs(c, x, y, R * 1.2, 12, t * 0.24, R * 0.3, jrRGBA(A, 0.55), jrRGBA(A, 0.95), Math.max(1, R * 0.02));
+    jrBarbs(c, x, y, R * 1.76, 8, -t * 0.16, R * 0.22, jrRGBA(B, 0.4), jrRGBA(B, 0.8), Math.max(1, R * 0.016));
+    jrDots(c, x, y, R * 2.15, 16, t * 0.1, Math.max(1.5, R * 0.055), jrRGBA(B, 0.7));
+    for (var i = 0; i < 3; i++) {
+      var ph = (t * 0.4 + i / 3) % 1;
+      fxRing(c, x, y, R * (1.1 + ph * 1.4), jrRGBA(i % 2 ? B : A, 0.4 * (1 - ph)), Math.max(1, R * 0.055 * (1 - ph)), 1);
+    }
+    c.save();
+    c.globalCompositeOperation = 'lighter';
+    fxGlow(c, x, y, R * 0.85, jrRGBA('255,255,255', 0.2 + 0.08 * Math.sin(t * 3)), 1);
+    c.restore();
+  },
+
+  // TIER 8: the crown. Everything the sovereign has, plus a solid outer wheel
+  // that does not pulse — it is simply there, all the time, and it is the one
+  // aura in the mode you can read at any zoom the camera will give you.
+  crown: function (c, x, y, R, A, B, t, e, tier) {
+    B = B || A;
+    fxGlow(c, x, y, R * 4.2, jrRGBA(A, 0.2), 1);
+    fxGlow(c, x, y, R * 2.6, jrRGBA(B, 0.24), 1);
+    jrBarbs(c, x, y, R * 1.22, 16, t * 0.18, R * 0.34, jrRGBA(A, 0.6), jrRGBA(A, 1), Math.max(1, R * 0.018));
+    jrBarbs(c, x, y, R * 1.9, 10, -t * 0.12, R * 0.26, jrRGBA(B, 0.45), jrRGBA(B, 0.9), Math.max(1, R * 0.015));
+    fxRing(c, x, y, R * 2.5, jrRGBA(A, 0.55), Math.max(1.5, R * 0.03), 1);
+    fxRing(c, x, y, R * 2.62, jrRGBA(B, 0.35), Math.max(1, R * 0.016), 1);
+    jrDots(c, x, y, R * 2.56, 24, -t * 0.07, Math.max(1.5, R * 0.045), jrRGBA('255,255,255', 0.8));
+    for (var i = 0; i < 4; i++) {
+      var ph = (t * 0.35 + i / 4) % 1;
+      fxRing(c, x, y, R * (1.15 + ph * 1.9), jrRGBA(i % 2 ? B : A, 0.42 * (1 - ph)), Math.max(1, R * 0.06 * (1 - ph)), 1);
+    }
+    c.save();
+    c.globalCompositeOperation = 'lighter';
+    fxGlow(c, x, y, R * 1.05, jrRGBA('255,255,255', 0.26 + 0.1 * Math.sin(t * 2.4)), 1);
+    c.restore();
   }
 };
 
@@ -729,6 +771,30 @@ function jrPaintStatus(r, c, g, e, x, y, R, t) {
     }
     c.restore();
   }
+  // --- the late-tier states -----------------------------------------------
+  // AEGIS reads as a hard shell that shrinks as it is eaten, so "the shield is
+  // nearly gone" is something you can see rather than something you infer.
+  if (e.jrShieldMax > 0 && e.jrShield > 0) {
+    var f = Math.min(1, e.jrShield / e.jrShieldMax);
+    c.save();
+    c.strokeStyle = 'rgba(190,225,255,' + (0.25 + 0.5 * f) + ')';
+    c.lineWidth = Math.max(1.5, R * 0.05 * (0.4 + f));
+    c.beginPath(); c.arc(x, y, R * (1.16 + 0.12 * f), 0, Math.PI * 2 * f); c.stroke();
+    c.restore();
+  }
+  // BLINKSTEP: it is not there. Nothing lands and the hull says so.
+  if (e.jrPhaseUntil && g.tick < e.jrPhaseUntil) {
+    fxRing(c, x, y, R * (1.3 + 0.4 * Math.sin(t * 9)), 'rgba(235,255,255,0.55)', Math.max(1, R * 0.05), 1);
+    fxGlow(c, x, y, R * 1.9, 'rgba(220,245,255,0.18)', 1);
+  }
+  // AVATAR: eight seconds of being twice the tank.
+  if (e.jrAvaOn) {
+    fxGlow(c, x, y, R * 2.8, 'rgba(255,225,170,0.24)', 1);
+    fxRing(c, x, y, R * 1.4, 'rgba(255,235,190,0.7)', Math.max(1.5, R * 0.06), 1);
+  }
+  // DOMINION: the window where everything it kills gets back up.
+  if (e.jrDominion && g.tick < e.jrDominion)
+    jrDots(c, x, y, R * 1.55, 8, -t * 0.8, Math.max(1.5, R * 0.06), 'rgba(200,60,90,0.8)');
 }
 
 // The links a hull is holding: a chain to whoever it tethered, a beam it is
@@ -971,15 +1037,19 @@ MODE_FX.juggerroyale = {
   },
 
   // Bottom-centre: what you are flying, what it does, and whether the button is
-  // loaded. Ninety-six hulls is too many to remember, so the mode says.
+  // loaded. A hundred and forty hulls is too many to remember, so the mode says
+  // — and past the fusions a hull is not one button any more, so the panel grows
+  // a row of pips for the verbs firing themselves and a line for the traits.
   screen: function (r, c, g) {
     var p = g.player;
     if (!p || p.dead || !p.def || p.def.jrAura === undefined) return;
     if (!p.def.jrAbility) return;                 // the Brute has no button to report
-    var w = r.canvas.width, h = r.canvas.height;
+    var w = r.canvas.width, h = r.canvas.height, i;
     var tone = p.def.jrTone, ready = g.tick >= (p.jrCool || 0);
     var left = Math.max(0, ((p.jrCool || 0) - g.tick) / TPS);
-    var bw = 300, bh = 46, bx = w / 2 - bw / 2, by = h - 108;
+    var autos = p.def.jrAuto || [], traits = p.def.jrTraits || [];
+    var extra = (autos.length ? 22 : 0) + (traits.length ? 15 : 0);
+    var bw = 320, bh = 46 + extra, bx = w / 2 - bw / 2, by = h - 108 - extra;
 
     c.save();
     c.textAlign = 'center'; c.textBaseline = 'middle';
@@ -991,20 +1061,47 @@ MODE_FX.juggerroyale = {
     } else {
       c.fillStyle = jrRGBA(tone, 0.28);
       c.beginPath();
-      c.roundRect(bx, by, bw * (1 - Math.min(1, left / 20)), bh, 8);
+      c.roundRect(bx, by, bw * (1 - Math.min(1, left / 20)), 46, 8);
       c.fill();
     }
     c.font = 'bold 15px Ubuntu, Verdana, sans-serif';
     c.lineWidth = 3.5; c.lineJoin = 'round'; c.strokeStyle = 'rgba(0,0,0,0.75)';
     var line = (p.def.jrAbility || '—').toUpperCase() + (ready ? '  ·  RIGHT-CLICK' : '  ·  ' + left.toFixed(1) + 's');
-    c.strokeText(line, w / 2, by + bh / 2 - 7);
+    c.strokeText(line, w / 2, by + 16);
     c.fillStyle = ready ? 'rgb(' + tone + ')' : 'rgba(255,255,255,0.75)';
-    c.fillText(line, w / 2, by + bh / 2 - 7);
+    c.fillText(line, w / 2, by + 16);
     c.font = '11px Ubuntu, Verdana, sans-serif';
     var sub = p.def.name + (p.def.jrPassive ? '  ·  ' + p.def.jrPassive : '');
-    c.lineWidth = 3; c.strokeText(sub, w / 2, by + bh / 2 + 11);
+    c.lineWidth = 3; c.strokeText(sub, w / 2, by + 34);
     c.fillStyle = 'rgba(255,255,255,0.8)';
-    c.fillText(sub, w / 2, by + bh / 2 + 11);
+    c.fillText(sub, w / 2, by + 34);
+
+    // The autonomous verbs. One pill each, lit when loaded, and they are not
+    // asking for a press — they are telling you what the hull is about to do.
+    if (autos.length) {
+      var pw = Math.min(76, (bw - 20) / autos.length - 5), y2 = by + 50;
+      var x0 = w / 2 - (autos.length * (pw + 5) - 5) / 2;
+      c.font = 'bold 9px Ubuntu, Verdana, sans-serif';
+      for (i = 0; i < autos.length; i++) {
+        var cd = (p.jrCools && p.jrCools[autos[i]]) || 0, up = g.tick >= cd;
+        var px = x0 + i * (pw + 5);
+        c.beginPath(); c.roundRect(px, y2, pw, 15, 4);
+        c.fillStyle = up ? jrRGBA(tone, 0.55) : 'rgba(255,255,255,0.13)';
+        c.fill();
+        c.lineWidth = 2.4; c.strokeStyle = 'rgba(0,0,0,0.7)';
+        c.strokeText(autos[i].toUpperCase(), px + pw / 2, y2 + 8);
+        c.fillStyle = up ? '#FFF' : 'rgba(255,255,255,0.55)';
+        c.fillText(autos[i].toUpperCase(), px + pw / 2, y2 + 8);
+      }
+    }
+    if (traits.length) {
+      c.font = '10px Ubuntu, Verdana, sans-serif';
+      c.lineWidth = 2.6; c.strokeStyle = 'rgba(0,0,0,0.7)';
+      var tl = traits.join(' · ');
+      c.strokeText(tl, w / 2, by + bh - 10);
+      c.fillStyle = jrRGBA(p.def.jrTone2 || tone, 0.95);
+      c.fillText(tl, w / 2, by + bh - 10);
+    }
     c.restore();
   }
 };
@@ -2547,7 +2644,7 @@ MODE_THUMB.juggerroyale = function (c, w, h, t) {
   tShape(c, cx, cy, cr, 13, t * 0.1, '#5A2E63', '#2A1430');
   fxRing(c, cx, cy, cr * 1.1, 'rgba(255,255,255,0.6)', 2, 1);
 
-  tText(c, w / 2, h - 13, '72 HULLS  ·  11 BRANCHES  ·  10 FUSIONS', 10, '#DCE6F5');
+  tText(c, w / 2, h - 13, '140 HULLS  ·  11 BRANCHES  ·  8 DYNASTIES', 10, '#DCE6F5');
 };
 
 if (typeof module !== 'undefined') module.exports = { MODE_FX: MODE_FX, MODE_THUMB: MODE_THUMB };

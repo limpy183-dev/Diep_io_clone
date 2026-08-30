@@ -475,13 +475,18 @@
     try { localStorage.setItem('ta_name', nameInput.value.trim()); localStorage.setItem('ta_server', serverInput.value.trim()); } catch (e) { /* private mode */ }
   }
 
-  function startOffline(modeKey) {
+  // `extra` is the Mode Lab's per-mode knobs (arena span, bot cap). The picker's
+  // own Play button wires straight to this as a click handler, so a non-string
+  // first argument is an Event and means "no mode named".
+  function startOffline(modeKey, extra) {
+    if (typeof modeKey !== "string") { extra = null; modeKey = ""; }
     online = false; net = null;
     saveName();
     setStatus('');
     closePicker();
     beginRender(new Game(modeKey || modeSelect.value, nameInput.value.trim(), {
-      difficulty: difficultyArg(), botCount: sel === 'custom' ? botCount : undefined
+      difficulty: difficultyArg(), botCount: sel === 'custom' ? botCount : undefined,
+      botCap: extra ? extra.botCap : undefined, size: extra ? extra.size : 0
     }));
     game.notify('Bots: ' + diffLabel(), 90);
   }

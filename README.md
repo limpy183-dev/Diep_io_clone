@@ -11,8 +11,8 @@ The other half is everything diep.io does not have. The headline is the **[Mode 
 — 39 extra gamemodes reached from a button on the main menu, from Gun Game and Prop Hunt to a
 black hole that starts as a speck and ends by swallowing the arena. Several bring their own
 visuals: real fog, a nightfall that actually dims your vision, an accretion disc, an ice sheet
-with cracks and skate marks, a twelve-sided custom Juggernaut, and ninety-six more custom hulls
-in a six-ring tree of their own that runs to level 100. On top of that there are 76 chat commands including a 50-strong cheat set,
+with cracks and skate marks, a twelve-sided custom Juggernaut, and a hundred and forty more custom
+hulls in an eight-ring tree of their own that runs to level 200. On top of that there are 76 chat commands including a 50-strong cheat set,
 bot difficulty down to six individual skill dials, 31 real community builds the bots draft from,
 and a class-tree wheel.
 
@@ -82,20 +82,22 @@ A few that are worth calling out:
   twelve minutes until its radius covers the whole board. The accretion disc, lensing ring and
   infalling debris are all drawn from the live pull value, so the picture is the physics.
 - **Juggernaut Royale** is the other side of that coin: *everybody* is a juggernaut, and
-  juggernauts grow. **Ninety-six custom hulls on eleven branches, seven tiers deep, to level
-  100**, wired into `TANK_DEFS` with real `upgrades` arrays and real level requirements — so the
-  upgrade cards, the class-tree overlay and the server-side gate in `upgradeTo` are the game's
+  juggernauts grow. **A hundred and forty custom hulls on eleven branches, nine tiers deep, to
+  level 200**, wired into `TANK_DEFS` with real `upgrades` arrays and real level requirements — so
+  the upgrade cards, the class-tree overlay and the server-side gate in `upgradeTo` are the game's
   own. A juggernaut tree is just another tree.
 
-  The level ceiling is a mode rule (`maxLevel`), not a fork: 45 everywhere else, 100 in here, with
-  the tiers gated at 1 / 12 / 24 / 36 / 52 / 70 / 100. Two more rules pay for it. `shapeXp` and
-  `killBounty` go up with the ceiling, because level 100 costs thirty-one times what level 45
-  does; `lvlScale` and `lvlSlow` soften diep's own per-level growth and slowdown curves, which
-  run to 2.7x size and a quarter speed if you take them to 100 unchanged.
+  The level ceiling is a mode rule (`maxLevel`), not a fork: 45 everywhere else, 200 in here, with
+  the tiers gated at 1 / 12 / 24 / 36 / 52 / 70 / 100 / 140 / 200. Four more rules pay for it.
+  `shapeXp` and `killBounty` go up with the ceiling; `lvlScale` and `lvlSlow` soften diep's own
+  per-level growth and slowdown curves, which run to 9x size and a twentieth of the speed if you
+  take them to 200 unchanged. `data.js` also stops the score curve's 6% compounding at level 100 —
+  left alone, level 199 alone costs four hundred times level 100 and the ladder stops being a
+  climb. Flattened, the whole 1..200 run costs 6.7x the 1..100 one.
 
-  **Every card is a group.** No node in the tree hands you a single hull: the worst case is a
-  choice of two and most of it offers three, which is what the second ending on five of the
-  branches and six more fusions were added for.
+  **Every card is a group.** No node in the tree hands you a single hull — the worst case is a
+  choice of two and most of it offers three. The one exception is the crown at level 200, which is
+  not a choice, because by then there is exactly one thing left to become.
 
   | Branch | What it is | Signature | Ends at |
   |---|---|---|---|
@@ -121,31 +123,96 @@ A few that are worth calling out:
   every time anybody anywhere dies), **Nomad** (scales with distance from the middle), **Wrecking
   Ball** (a mass on a chain) and **Devourer** (physically grows on what its field swallows).
 
-  Tier 4 is where the branches touch: sixteen **fusions**, each the marriage of two verbs, and
-  every branch is half of two or three of them — Thermocline, Ashbrood, Worldbreaker, Voidforge,
-  Necropolis, Wraithhive, Horologium, Aurora Lance, Plaguelord, Gorgon, Ironmaw, Caldera,
-  Bastille, Nullpoint, Frostbrood and Cordyceps. They burn two branch colours at once.
+  Tier 4 is where the branches touch for the last time: sixteen **fusions**, each the marriage of
+  two verbs, and every branch is half of two or three of them — Thermocline, Ashbrood,
+  Worldbreaker, Voidforge, Necropolis, Wraithhive, Horologium, Aurora Lance, Plaguelord, Gorgon,
+  Ironmaw, Caldera, Bastille, Nullpoint, Frostbrood and Cordyceps. They burn two branch colours at
+  once.
 
-  Tier 5 at **level 70** is eight **apexes** — Ragnarok, Absolute Zero, Oblivion, Legion,
-  Sepulchre, Paradox, Ordnance and Behemoth (20,000 hp, 74 contact damage, no barrels at all).
-  Tier 6 at **level 100** is four **Omegas** and the end of the wheel: **Apotheosis**, which
-  carries a piece of every branch's armament and whose `ASCEND` refills the bar, burns off every
-  status and shrugs off four seconds of anything; **Extinction**, whose `NOVA` detonates the width
-  of the screen; **Singularity**, a 204-unit body with a real well inside it; and **Ouroboros**,
-  which comes apart into two more of itself when it dies. Everything past fusion also draws a flat
-  tier dividend in `jrTickTank` — thicker skin, faster gun, more contact damage, doubled again at
-  tier 6 — so the top of the ladder is worth the climb rather than a wider row of numbers.
+  ### The dynasties — why the pick matters
 
-  Underneath it is one table. A hull is a row — silhouette, one `JR_GUNS` call, one ability verb,
-  one passive verb — and the ability dispatcher, the aura painter, the bot's range profile and the
-  wheel all read it off the def. Thirty-four ability verbs and thirty-nine passives, and four status
-  effects (burn, chill, freeze, bleed) that stack across branches because they are resolved in one
-  place. Nothing in the engine was forked to do it: `Tank.tick` rewrites `damageReduction` every
-  tick and `logic.tick` runs after it, so a mode override lands for exactly one tick and unwinds
-  itself.
+  Up to level 52 the tree is a lattice, and a fusion having two parents is the point of a fusion.
+  From 52 up it is not a lattice at all. The fusion you take seals you into one of eight
+  **dynasties**, and the apex at 70, the omega at 100, the titan at 140 and the crown at 200 above
+  it belong to that dynasty and to nothing else. No two dynasties share a hull, nothing outside a
+  dynasty can reach into it, and both halves of that are asserted rather than remembered. The cards
+  you are offered at level 70 are proof of what you took at 52.
+
+  | Dynasty | Fusions that lead in | Apexes | Omegas | Titans | Crown at 200 |
+  |---|---|---|---|---|---|
+  | **Pyre** | Caldera, Ashbrood | Ragnarok, Pyroclast | Extinction, Solaris | Sunkiller, Cataclysm | **Solar Tyrant** |
+  | **Glacier** | Thermocline, Frostbrood | Absolute Zero, Whiteout | Fimbulwinter, Glasswinter | Everwinter, Rimelord | **Absolute Winter** |
+  | **Titan** | Worldbreaker, Ironmaw | Behemoth, Atlas | Apotheosis, Godhulk | Worldspine, Colossus Prime | **World Engine** |
+  | **Ordnance** | Voidforge, Aurora Lance | Ordnance, Bombard | Annihilation, Siege Perilous | Siegebreaker, Ordinator | **Last Word** |
+  | **Bastion** | Bastille, Necropolis | Sepulchre, Rampart | Sanctum, Necrarch | Aegis Eternal, Dread Keep | **Eternal Bastion** |
+  | **Void** | Nullpoint, Wraithhive | Oblivion, Umbra | Singularity, Null Sovereign | Eventide, Abyssal | **Endless Night** |
+  | **Chrono** | Horologium, Gorgon | Paradox, Epoch | Eternity, Zero Hour | Aeon Engine, Causality | **Final Hour** |
+  | **Vermin** | Plaguelord, Cordyceps | Legion, Hollowbrood | Ouroboros, Hivegod | Swarm Sovereign, Carrion King | **The Devouring** |
+
+  ### More than a bigger number
+
+  To level 52 a hull is one ability on right-click and one passive. Above it that stops being
+  enough, and the answer is not "a third verb".
+
+  - **Autonomous buttons.** An apex carries one verb *on top of* its right-click one, an omega two,
+    a titan two or three, a crown four — and they fire **themselves**, each on its own cooldown,
+    each asking the same question the bot AI asks about the primary: is anybody in the right place,
+    and am I hurt enough for this to be worth it. You still drive one button. The hull drives the
+    rest, and that is the difference between a big tank and a boss fight with a pilot.
+  - **Traits** — the things that are not verbs at all, and the answer to "the level-100 hulls only
+    have one ability". `aegis` is a slab of armour in front of the health bar that regrows after
+    five seconds untouched. `revive` refuses the first death of a life outright and detonates on
+    the way back up. `bulwark` caps what any single hit is allowed to remove at 3% of the bar.
+    `retinue` keeps a permanent escort of turrets flying with the hull. `reflect` turns bullets
+    around inside the shell and hands them back with your name off them. `dread` makes everything
+    near it reload slower and hit softer. `pierce` goes through armour; `vampire` heals a fifth of
+    everything it deals; `tithe` takes score off everything it damages; `executioner` finishes
+    anything under a tenth of its health that touches it. Plus `wake`, `growth`, `regalia`,
+    `overclock`, `blinkstep`, `warcry` and `omniscient`. A crown carries **six at once**.
+  - **Fifty-one ability verbs** across the roster. The late half of them do not do rings around the
+    hull, because the things above the fusions are not really tanks any more: `METEOR` (nine shells
+    walked across the cursor), `RUPTURE` (the ground opened in a line), `COLLAPSE` (the screen
+    dragged to a point, then the point goes off), `STASIS` (everything visible held still),
+    `JUDGEMENT` (a share of everybody's maximum health, no travel time, no line of sight), `ARC`
+    (lightning walking tank to tank), `CITADEL` (a fort in one press), `UNMAKE` (every hostile shot
+    on screen deleted), `WARPSTORM`, `TERRAFORM`, `CONSCRIPT`, `DOMINION`, `AVATAR`, `EPOCH` (the
+    arena walked back three seconds), `ENTHRONE` and `APOCALYPSE`.
+  - **A steeper dividend.** `JR_DIVIDEND` in `jrTickTank` is a per-tier row of [damage taken,
+    reload multiplier, contact multiplier]: an apex takes 86% of what lands, an omega 70%, a titan
+    50% and a crown **33%**, while its contact damage runs at 3x what the row says.
+
+  Tier 8 at **level 200** is eight crowns, one per dynasty. **Solar Tyrant** fires `APOCALYPSE`,
+  which sets the *visible arena* on fire, and its `tyrant` passive bleeds everybody else in the
+  round while it leads. **World Engine** is 96,000 hp and 200 contact damage on thirty sides with
+  no barrel anywhere on it. **Last Word** carries nineteen barrels, twelve turrets and eight
+  escorts. **Endless Night** is three hundred units of invisible event horizon that sees everything
+  and is seen by nothing.
+
+  ### Skill points that keep going
+
+  A stat pill is a 210px strip and there are eight of them, so it cannot get longer — but eight
+  seven-pip bars hold 56 points and level 200 hands out 84. So the bar **compresses**: fill all
+  seven pips and they collapse into a single lit block, leaving six to fill, which collapse into
+  two, leaving five. Seven ranks — 7 + 6 + 5 + 4 + 3 + 2 + 1 = **28 points** — and then the row is
+  solid, there is physically nowhere left to put a point, and the label reads `MAX`. 28 x 3 = 84 is
+  exactly the level-200 budget, so a finished build at the cap is three stats taken all the way and
+  nothing else. `statBar()` in `data.js` owns the arithmetic; the renderer only paints it, and a
+  def whose stats cap at 7 draws exactly as it always did. Two mode rules, `statHealthPct` and
+  `statBodyPct`, pay Max Health and Body Damage as a share of the hull instead of diep's flat
+  +20/point, which is the difference between a point being worth something on a 900 hp Brute and on
+  a 96,000 hp World Engine.
+
+  Underneath it is one table. A hull is a row — silhouette, one `JR_GUNS` call, an ability verb, a
+  list of autonomous verbs, a list of passives and a list of traits — and the ability dispatcher,
+  the aura painter, the bot's range profile and the wheel all read it off the def. Four status
+  effects (burn, chill, freeze, bleed) stack across branches because they are resolved in one
+  place, and everything a hull does *at the moment something lands on it* is in one function,
+  `jrTakeDamage`, chained onto the tank at spawn exactly the way `onKill` already was. Nothing in
+  the engine was forked to do any of it: `Tank.tick` rewrites `damageReduction` every tick and
+  `logic.tick` runs after it, so a mode override lands for exactly one tick and unwinds itself.
 
   **Bots read their own hull.** Each is handed one of the eleven branches on spawn and climbs it
-  until the branches marry at tier 4, then takes whatever fusion or apex it is offered — so all
+  until the branches marry at tier 4, then follows whichever dynasty its fusion put it in — so all
   eleven get driven instead of twenty bots converging on whatever scores best — and the
   mode's `botDrive` hook then overrides the generic AI with the job the row implies: bodies charge
   to zero range, trap hulls close to 500, snipers back off anything inside 900, siege hulls plant
@@ -154,8 +221,8 @@ A few that are worth calling out:
   Press **Y** in there and the wheel shows *the juggernauts* — a mode can name its own
   `treeRoot`, so the class-tree overlay grows from the Brute rather than from the Basic tank you
   cannot reach a single node of from inside the mode. It also sets `treeUnique`, because past tier
-  3 every hull has two or three parents: drawn as a plain sunburst that is fourteen hundred
-  slivers, and drawn once per hull it is ninety-five readable sectors over six rings. The hulls are built into `TANK_DEFS` at
+  3 every hull has two or three parents: drawn as a plain sunburst that is thousands of slivers,
+  and drawn once per hull it is 139 readable sectors over eight rings. The hulls are built into `TANK_DEFS` at
   load rather than in `init()`, because the client draws them and online the client never runs a
   mode's `init()` at all: a remote player in a Bastion has to have a Bastion to draw.
 
