@@ -488,7 +488,7 @@
       difficulty: difficultyArg(), botCount: sel === 'custom' ? botCount : undefined,
       botCap: extra ? extra.botCap : undefined, size: extra ? extra.size : 0
     }));
-    game.notify('Bots: ' + diffLabel(), 90);
+    if (game.botCount) game.notify('Bots: ' + diffLabel(), 90);
   }
 
   // -------------------------------------------------- bot difficulty picker
@@ -675,9 +675,17 @@
 
   function setStatus(msg) { status.textContent = msg; }
 
-  playBtn.addEventListener('click', openPicker);
+  // Sandbox is solo, so there is no difficulty to pick: Play starts it straight
+  // away. The "change" link still opens the picker, since that edits the setting
+  // rather than committing to a match.
+  function playOffline() {
+    if ((GAMEMODES[modeSelect.value] || {}).sandbox) startOffline();
+    else openPicker();
+  }
+
+  playBtn.addEventListener('click', playOffline);
   onlineBtn.addEventListener('click', function () { startOnline(); });
-  nameInput.addEventListener('keydown', function (e) { if (e.key === 'Enter') openPicker(); });
+  nameInput.addEventListener('keydown', function (e) { if (e.key === 'Enter') playOffline(); });
 
   try {
     nameInput.value = localStorage.getItem('ta_name') || '';
@@ -740,6 +748,7 @@
       keys.sort(function (a, b) { return (a === value ? 0 : 1) - (b === value ? 0 : 1); });
       list.innerHTML = '';
       keys.forEach(function (k) { list.appendChild(makeItem(k)); });
+      document.getElementById('diffline').style.display = GAMEMODES[value].sandbox ? 'none' : '';
     }
 
     document.addEventListener('click', function () { root.classList.remove('open'); });

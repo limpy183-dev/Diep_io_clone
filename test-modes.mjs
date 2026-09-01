@@ -1,4 +1,4 @@
-// test-modes.mjs — the Mode Lab's 38 arenas.
+// test-modes.mjs — the Mode Lab's 40 arenas.
 //
 // The soak that matters is not "does it tick" — every mode ticked on the first
 // try. It is the round reset: a mode that leaks entities, walls or flags into
@@ -50,7 +50,7 @@ function forceRound(g) {
 // =========================================================================
 section('registration');
 const keys = Object.keys(LAB_MODES);
-ok('39 lab modes are registered', keys.length === 39, keys.length + ' found');
+ok('40 lab modes are registered', keys.length === 40, keys.length + ' found');
 
 for (const k of keys) {
   const m = GAMEMODES[k];
@@ -314,6 +314,60 @@ section('juggernaut — the custom hull, and the bots noticing it');
     run(g, 8 * TPS);
     const j2 = g.entities.find((e) => e.isJuggernaut && !e.dead);
     ok('the crown moves on', !!j2 && j2 !== j);
+  }
+}
+
+// =========================================================================
+// The crossover: the Royale's tree on exactly one tank, the Juggernaut's arena
+// around it, and a crown that does not move when the tank wearing it dies.
+section('last juggernaut — one crown, and it stays put');
+{
+  const g = boot('lastjugg');
+  run(g, 10 * TPS);
+  const p = g.player;
+  const jugg = (e) => !!sim.jrOf(e);
+  ok('the player is on the Royale tree', jugg(p), 'id ' + p.tankId);
+  const hulls = g.entities.filter((e) => e.type === 'tank' && !e.dead && jugg(e));
+  ok('and is the only one on it', hulls.length === 1, hulls.length + ' juggernauts');
+  ok('the arena is marked on it', g.bountyTarget === p && g.bountyGlobal === true);
+  const bots = g.entities.filter((e) => e.type === 'tank' && e.bot && !e.dead);
+  ok('every hunter is on one team', bots.length > 4 && bots.every((e) => e.team === 'blue'),
+    bots.length + ' hunters');
+  ok('and the juggernaut is alone on the other', p.team === 'red');
+  // 45 or a rung above it: a rammer that dies on your body is still a kill for
+  // somebody, and nothing in here is capped at the spawn level.
+  ok('hunters spawn finished', bots.every((e) => e.level >= 45));
+
+  // The mark is only half of it — botDrive is what makes them actually close.
+  bots.forEach((e, i) => {
+    const a = Math.PI * 2 * (i / bots.length);
+    e.x = p.x + Math.cos(a) * 3000; e.y = p.y + Math.sin(a) * 3000; e.vx = e.vy = 0;
+  });
+  run(g, 40);
+  ok('hunters pick it up', bots.filter((e) => !e.dead && e.aiTarget === p).length > 0);
+
+  // The whole mode: kill it and it comes back as itself, because there is
+  // nobody to hand the crown to.
+  ok('there is a card waiting at 45', p.pendingUpgrades.length > 0);
+  p.upgradeTo(p.pendingUpgrades[0]);
+  p.addScore(200000);
+  const was = { id: p.tankId, lvl: p.level, score: Math.round(p.score) };
+  ok('the climb is real', was.lvl > 45 && jugg(p), 'level ' + was.lvl);
+  // Spawn protection lasts until you shoot or drive, and a test player does
+  // neither — it would sit there immortal.
+  p.protectedUntil = 0;
+  run(g, 1);
+  p.applyDamage(1e9, bots[0]);
+  run(g, 2);
+  if (ok('the juggernaut can be killed', p.dead)) {
+    const p2 = g.respawnPlayer('tester', p);
+    ok('it gets back up on the same hull', p2.tankId === was.id, p2.tankId + ' vs ' + was.id);
+    ok('at the same level', p2.level === was.lvl, p2.level + ' vs ' + was.lvl);
+    ok('with the same score', Math.round(p2.score) === was.score);
+    ok('and nobody else was promoted',
+      g.entities.filter((e) => e.type === 'tank' && !e.dead && jugg(e)).length === 1);
+    run(g, 5 * TPS);
+    ok('the mark follows it back', g.bountyTarget === p2);
   }
 }
 
@@ -939,8 +993,11 @@ section('the fixes that have to hold everywhere');
   ok('the field is dense enough to farm', g.rule('shapes', 0) >= 2000, String(g.rule('shapes', 0)));
   ok('the class wheel is rooted on the juggernauts', GAMEMODES.juggerroyale.treeRoot === B,
     String(GAMEMODES.juggerroyale.treeRoot));
-  ok('no other mode claims a tree', Object.keys(GAMEMODES)
-    .filter((k) => GAMEMODES[k].treeRoot !== undefined).length === 1);
+  // treeRoot is opt-in, and the two modes that opt in point the wheel at the
+  // same tree — the juggernauts. Nothing else may end up with one by accident.
+  const rooted = Object.keys(GAMEMODES).filter((k) => GAMEMODES[k].treeRoot !== undefined);
+  ok('only the juggernaut modes claim a tree',
+    rooted.length === 2 && rooted.every((k) => GAMEMODES[k].treeRoot === B), rooted.join(','));
   // ...and the hulls exist before any Game does, because the wheel and the
   // upgrade cards are drawn client-side and online the client never runs init().
   const fresh = vm.createContext({ console, Math, JSON, Map, Set, Infinity, NaN });

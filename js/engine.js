@@ -2280,7 +2280,7 @@ function Game(modeKey, playerName, opts) {
   this.setDifficulty(opts.difficulty || 'medium');
   // `bots` pins a count; `botsDelta` nudges whatever the player chose, which is
   // what a mode wants when it only needs a slightly thinner field than usual.
-  var chosen = opts.botCount !== undefined ? opts.botCount : (this.mode.sandbox ? 64 : 80);
+  var chosen = opts.botCount !== undefined ? opts.botCount : 80;
   this.botCount = Math.max(0, this.rule('bots', chosen) + this.rule('botsDelta', 0));
   // ...and `botCap` is the picker's own slider, which outranks both. A number
   // the player set is an answer, not a suggestion, so neither the pin nor the

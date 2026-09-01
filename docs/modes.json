@@ -724,5 +724,26 @@
   "teams": 0,
   "size": 18000,
   "arena": "open"
+ },
+ {
+  "key": "lastjugg",
+  "name": "Last Juggernaut",
+  "family": "Asymmetry",
+  "tag": "you keep it",
+  "blurb": "You are the juggernaut and nobody else ever will be. Climb the Royale’s hundred and forty hulls to level 200 while thirty tanks on one team try to stop you — and when they manage it, you get back up on the same hull.",
+  "how": [
+   "You spawn as a Brute on the Juggernaut Royale tree — a hundred and forty hulls, nine tiers, level cap 200 — and you are the only tank in the arena on it.",
+   "Everybody else is an ordinary level-45 tank, and every one of them is on the same team, against you. Farming is switched off arena-wide, you are marked globally so they know where you are regardless of sight range, and their target is pinned to you rather than merely weighted toward you.",
+   "You start at level 45, which is three cards deep in the tree — branch, specialist, ending — plus 33 stat points. Spend them before you move: spawn protection lasts until you shoot or drive.",
+   "THE CROWN DOES NOT MOVE. Kill it and nothing happens to it; there is no next juggernaut. When you die you come back on the same hull, at the same level, with the same build, and the thirty of them start the job over.",
+   "Everything the Royale gives a juggernaut is here: the ability on right-click, the passive that never stops, the autonomous verbs an apex and above fire themselves, the traits, and stats that run to 28 points rather than 7.",
+   "Your economy is kills and polygons — a hunter is worth 16,000 on top of its score share, because unlike the Royale the things you kill never grow.",
+   "The bots hold just outside your collar and shoot in, orbiting rather than standing still, unless they are a body-damage build — in which case going all the way in is the plan. They respawn on a ring 2,600 to 4,000 units out, so the pile-on is continuous instead of a queue of people walking in one at a time.",
+   "The collar is read off your hull, so it grows with you: a crown at level 200 holds thirty tanks at arm’s length by being five hundred units across.",
+   "Press Y and the wheel shows the juggernauts — the same eight rings and eleven arms the Royale draws, and the only tree you can reach a node of in here."
+  ],
+  "teams": 2,
+  "size": 16000,
+  "arena": "open"
  }
 ]

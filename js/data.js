@@ -394,7 +394,9 @@ var GAMEMODES = {
   mothership: { name: 'Mothership',       teams: ['blue', 'red'],                    size: 22300, xp: 3, bases: false, logic: 'mothership' },
   breakout:   { name: 'Breakout',         teams: ['blue', 'red'],                    size: 22300, xp: 2, bases: false, logic: 'breakout', noBoss: true },
   ctf:        { name: 'Capture the Flag', teams: ['blue', 'red'],                    size: 22300, xp: 1, bases: true,  logic: 'ctf', noBoss: true },
-  sandbox:    { name: 'Sandbox',          teams: null,                               size: 6000,  xp: 1, bases: false, sandbox: true }
+  // Solo by design: bots pinned to 0 so the custom picker's slider cannot fill
+  // a 6000-unit box with 80 tanks. /botspawn puts back exactly what you want.
+  sandbox:    { name: 'Sandbox',          teams: null,                               size: 6000,  xp: 1, bases: false, sandbox: true, rules: { bots: 0 } }
 };
 
 // --- mode entities -----------------------------------------------------

@@ -2647,4 +2647,29 @@ MODE_THUMB.juggerroyale = function (c, w, h, t) {
   tText(c, w / 2, h - 13, '140 HULLS  ·  11 BRANCHES  ·  8 DYNASTIES', 10, '#DCE6F5');
 };
 
+// Last Juggernaut is the Royale seen from one hull, so it is drawn by the
+// Royale: the auras, the fields and the ability card all read the def and the
+// player rather than the mode key.
+MODE_FX.lastjugg = MODE_FX.juggerroyale;
+
+// Juggernaut's ring of hunters around Royale's growing hull. The hull steps up a
+// tier on a loop and the level runs with it, because what the mode is about is
+// that neither of them ever resets.
+MODE_THUMB.lastjugg = function (c, w, h, t) {
+  tBG(c, w, h, '#9A9AA6');
+  var cx = w / 2, cy = h * 0.46, i;
+  var step = Math.floor((t * 0.5) % 5);
+  var R = Math.min(w, h) * (0.10 + step * 0.035);
+  for (i = 0; i < 7; i++) {
+    var a = Math.PI * 2 * (i / 7) + t * 0.45, d = Math.min(w, h) * 0.4;
+    tTank(c, cx + Math.cos(a) * d, cy + Math.sin(a) * d, 8, a + Math.PI, BLUE[0], BLUE[1]);
+  }
+  fxGlow(c, cx, cy, R * 2.4, 'rgba(255,140,55,0.30)', 1);
+  fxGlow(c, cx, cy, R * 1.7, 'rgba(150,150,255,0.22)', 1);
+  tShape(c, cx, cy, R, 12 + step * 2, t * 0.12, '#2B2B33', '#16161B');
+  fxRing(c, cx, cy, R * 1.5, 'rgba(255,90,90,0.45)', 2, 1);
+  tText(c, cx, cy - R - 12, 'LVL ' + (45 + step * 39), 11, '#FFD9A0');
+  tText(c, w / 2, h - 13, 'IT NEVER CHANGES HANDS', 11, '#FFC0C4');
+};
+
 if (typeof module !== 'undefined') module.exports = { MODE_FX: MODE_FX, MODE_THUMB: MODE_THUMB };

@@ -6430,6 +6430,183 @@ labMode('juggerroyale', {
   }
 });
 
+// =========================================================================
+// Last Juggernaut — the Royale's tree, the Juggernaut's arena
+// =========================================================================
+//
+// The two asymmetry modes crossed. You are the only juggernaut there is and the
+// only one there ever will be: the arena runs Juggernaut Royale's hundred and
+// forty hulls for you and nobody else, and everything else on the board is an
+// ordinary level-45 tank on one team with one job. The crown does not change
+// hands when you die, because there is nobody to hand it to — you come back on
+// the hull you died on, at the level you died at, and the mob starts over.
+//
+// Nothing new is invented here. The player side is the Royale's own per-tank
+// pass (jrTickTank, the autonomous verbs, the button) and the arena side is the
+// Juggernaut's own bot handling (the mark, the ring respawn, the collar range)
+// with the target swapped from "whoever is wearing the crown" to "whoever is a
+// person". What the two modes did not already have between them is the memo
+// below, which is the whole point of the mode.
+
+labMode('lastjugg', {
+  name: 'Last Juggernaut', family: 'Asymmetry', tag: 'you keep it',
+  teams: ['blue', 'red'],
+  // Juggernaut's arena (thirty hunters, no farming, a tight map) on the
+  // Royale's economy (a 200-level climb and a percentage stat payout). The one
+  // number that is neither mode's is killBounty: in the Royale a kill is worth
+  // more every tier because the thing you killed grew too, and here it never
+  // does — the hunters are level 45 for the whole round — so the bounty has to
+  // carry the top half of the climb by itself.
+  rules: { spawnLevel: 45, bots: 30, shapes: 1400, botFarm: 0,
+    maxLevel: 200, killBounty: 16000, killShare: 0.45, shapeXp: 3.2, regen: 0.6,
+    lvlScale: 1.0032, lvlSlow: 1.0042, statHealthPct: 0.055, statBodyPct: 0.045 },
+  size: 16000,
+  treeRoot: JR_BASE,
+  treeUnique: true,
+  fx: true,
+  blurb: 'You are the juggernaut and nobody else ever will be. Climb the Royale’s hundred and forty hulls to level 200 while thirty tanks on one team try to stop you — and when they manage it, you get back up on the same hull.',
+  how: [
+    'You spawn as a Brute on the Juggernaut Royale tree — a hundred and forty hulls, nine tiers, level cap 200 — and you are the only tank in the arena on it.',
+    'Everybody else is an ordinary level-45 tank, and every one of them is on the same team, against you. Farming is switched off arena-wide, you are marked globally so they know where you are regardless of sight range, and their target is pinned to you rather than merely weighted toward you.',
+    'You start at level 45, which is three cards deep in the tree — branch, specialist, ending — plus 33 stat points. Spend them before you move: spawn protection lasts until you shoot or drive.',
+    'THE CROWN DOES NOT MOVE. Kill it and nothing happens to it; there is no next juggernaut. When you die you come back on the same hull, at the same level, with the same build, and the thirty of them start the job over.',
+    'Everything the Royale gives a juggernaut is here: the ability on right-click, the passive that never stops, the autonomous verbs an apex and above fire themselves, the traits, and stats that run to 28 points rather than 7.',
+    'Your economy is kills and polygons — a hunter is worth 16,000 on top of its score share, because unlike the Royale the things you kill never grow.',
+    'The bots hold just outside your collar and shoot in, orbiting rather than standing still, unless they are a body-damage build — in which case going all the way in is the plan. They respawn on a ring 2,600 to 4,000 units out, so the pile-on is continuous instead of a queue of people walking in one at a time.',
+    'The collar is read off your hull, so it grows with you: a crown at level 200 holds thirty tanks at arm’s length by being five hundred units across.',
+    'Press Y and the wheel shows the juggernauts — the same eight rings and eleven arms the Royale draws, and the only tree you can reach a node of in here.'
+  ],
+  logic: {
+    init: function (g) {
+      buildJuggHulls();
+      g.jrFx = []; g.jrFields = []; g.jrHusks = []; g.jrSeat = 0;
+      g.ljTarget = null;
+      // What survives your death. Keyed by name, because a mode hook is handed a
+      // tank and a tank is a fresh object every respawn.
+      // ponytail: two humans sharing a name share a memo; key on tank.client if
+      // this mode ever runs a real server lobby.
+      g.ljKeep = {};
+    },
+    onSpawn: function (g, t) {
+      buildJuggHulls();
+      if (t.isPlayer) {
+        var keep = g.ljKeep[t.name || ''];
+        if (keep) {
+          // Level before class: recompute() reads this.level, and forceTankClass
+          // is what runs it.
+          t.score = keep.score;
+          t.level = levelFromScore(t.score, g.levelCap());
+          forceTankClass(t, keep.id, keep.stats);
+        }
+        // The Royale's own per-tank wiring: the jr* fields, and the onKill and
+        // applyDamage chains every trait above the fusions lives in.
+        MODE_LOGIC.juggerroyale.onSpawn(g, t);
+        t.team = 'red';
+        g.paintTeam(t);
+        return;
+      }
+      t.team = 'blue';
+      g.paintTeam(t);
+      // Hunters come back within reach rather than anywhere in the arena. A
+      // hunter that spends eighteen seconds walking in is not hunting, it is
+      // commuting, and the juggernaut never drops below 99% health.
+      var j = g.ljTarget;
+      if (!j || j.dead) return;
+      var a = Math.random() * Math.PI * 2, r = 2600 + Math.random() * 1400;
+      var lim = g.arena.right - 300;
+      t.x = Math.max(-lim, Math.min(lim, j.x + Math.cos(a) * r));
+      t.y = Math.max(-lim, Math.min(lim, j.y + Math.sin(a) * r));
+      t.px = t.x; t.py = t.y;
+    },
+    // The memo, taken at the moment of death rather than read off the corpse
+    // later: orphan() and the respawn queue run in the same call.
+    onTankDeath: function (g, victim) {
+      if (!victim.isPlayer || !jrOf(victim)) return;
+      g.ljKeep[victim.name || ''] = {
+        id: victim.tankId, score: victim.score, stats: victim.stats.slice()
+      };
+      g.notify('The Juggernaut has fallen. It gets back up.', 80);
+    },
+    tick: function (g) {
+      var list = labTanks(g), i, t, j = null, hunters = 0;
+      for (i = 0; i < list.length; i++) {
+        t = list[i];
+        var h = jrOf(t);
+        if (h) {
+          jrTickTank(g, t);
+          jrAutoAbilities(g, t, h);
+          if (!t.bot && t.input.altFire) jrAbility(g, t);
+          t.team = 'red';
+          if (!j && t.isPlayer) j = t;
+          continue;
+        }
+        hunters++;
+        if (t.team !== 'blue') { t.team = 'blue'; g.paintTeam(t); }
+      }
+      jrTickFields(g);
+      jrTickHusks(g);
+      jrTickLoans(g);
+      if (g.jrFx && g.jrFx.length) {
+        while (g.jrFx.length && g.tick - g.jrFx[0].at > 2 * TPS) g.jrFx.shift();
+      }
+      g.fx = { royale: true, jrFx: g.jrFx };
+      // botDrive runs before logic.tick, so the bots read last tick's answer. A
+      // tank reference one frame old is fine; scanning the entity list thirty
+      // times a tick to avoid it is not.
+      g.ljTarget = j;
+      g.bountyTarget = j;
+      g.bountyGlobal = !!j;
+      g.teamCounts = j ? { blue: hunters, red: Math.max(0, Math.round(j.health)) } : {};
+      if (g.tick % 25) return;
+      var d = j && j.def;
+      setHud(g, j
+        ? 'LAST JUGGERNAUT  ·  ' + (d ? d.name : '?') + (d && d.jrTier ? '  T' + d.jrTier : '')
+          + '  lvl ' + j.level + '  ·  ' + Math.max(0, Math.round(j.health)) + ' hp  ·  '
+          + hunters + ' hunting'
+        : 'LAST JUGGERNAUT  ·  nobody is wearing it');
+    },
+    reset: function (g) {
+      jrKillList(g.jrHusks);
+      g.jrFx = []; g.jrFields = []; g.jrHusks = [];
+      g.bountyGlobal = false;
+      labReset(g, 'lastjugg');
+    },
+    // Both halves of Juggernaut's bot handling, pointed at the person rather
+    // than at whoever is wearing the crown. The goal is the hint; the drive is
+    // what makes them actually close, because the movement code treats a goal it
+    // was not told to touch as something to keep range from.
+    botGoal: function (g, t) {
+      var j = g.ljTarget;
+      if (!j || j.dead || t === j) return null;
+      var rammer = t.stats[S_BODY] >= 5 || t.stats[S_HEALTH] >= 5;
+      var want = rammer ? j.size * 1.1 : juggSpikeRange(j) * 1.9;
+      var d = Math.hypot(t.x - j.x, t.y - j.y);
+      if (Math.abs(d - want) < 260) return { e: j };
+      var a = Math.atan2(t.y - j.y, t.x - j.x);
+      return { x: j.x + Math.cos(a) * want, y: j.y + Math.sin(a) * want, vx: 0, vy: 0, touch: false, hard: true };
+    },
+    botDrive: function (g, t) {
+      var j = g.ljTarget;
+      if (!j || j.dead || t === j || jrOf(t)) return;
+      t.aiTarget = j;
+      t.aiEngaged = j;
+      t.aiFarm = null;
+      t.autoFire = true;
+      var rammer = t.stats[S_BODY] >= 5 || t.stats[S_HEALTH] >= 5;
+      var want = rammer ? j.size * 1.05 : juggSpikeRange(j) * 1.9;
+      var d = Math.hypot(t.x - j.x, t.y - j.y) || 1;
+      var a = Math.atan2(t.y - j.y, t.x - j.x);
+      if (Math.abs(d - want) < 160) {
+        var orbit = a + (t.id % 2 ? 0.35 : -0.35);
+        botDriveTo(t, j.x + Math.cos(orbit) * want, j.y + Math.sin(orbit) * want, 40);
+      } else {
+        botDriveTo(t, j.x + Math.cos(a) * want, j.y + Math.sin(a) * want, 40);
+      }
+    }
+  }
+});
+
+
 // Built at load rather than in init(): the class-tree overlay and the upgrade
 // cards are drawn by the client, and online the client never runs a mode's
 // init() at all — it only mirrors snapshots. The builder is idempotent.

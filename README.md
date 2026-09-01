@@ -58,7 +58,7 @@ as the tiles in the game. To publish it, turn on GitHub Pages with the source se
 |---|---|
 | **Rules** — one constant, whole new game | Chaos Rotation, Score Attack, Instagib, Vampire, Ice Rink, Blood Money, Locust |
 | **The Tree** — the 56 classes are the content | Gun Game, Draft Roulette, Mirror Match, Randomizer |
-| **Asymmetry** | Juggernaut, Juggernaut Royale, Infection, Boss Rush, Siege, Closer Gauntlet, Boss Royale |
+| **Asymmetry** | Juggernaut, Juggernaut Royale, Last Juggernaut, Infection, Boss Rush, Siege, Closer Gauntlet, Boss Royale |
 | **Physics** — knockback over damage | Sumo, Diep Ball, Grand Prix, Red Light Green Light, Singularity |
 | **Deception** | Prop Hunt, Hide and Seek, Fog of War, Nightfall |
 | **Territory** | King of the Hill, Payload, Alpha Hunt, Nest Wars, Roaming Domination, Bounty King |
@@ -232,6 +232,20 @@ A few that are worth calling out:
   literally nothing else — its bullet stats are capped at zero so the stat panel says so as
   plainly as the shape does. The field runs at 2,600 polygons in an 18,000-unit arena, about five
   times normal density, because climbing costs and farming is the half of it that isn't fighting.
+- **Last Juggernaut** is the two of them crossed, and it is almost entirely made of parts that
+  already existed. You climb the Royale tree — all 140 hulls, all nine tiers, the cap at 200 — and
+  you are the only tank in the arena on it; everybody else is an ordinary level-45 tank on one
+  team, handed the Juggernaut mode's own bot handling with the mark pointed at *whoever is a
+  person* rather than at whoever is wearing the crown. The mode's own code is three things: the
+  player half of the Royale's tick (the per-tank pass, the autonomous verbs, the button), the
+  Juggernaut's ring respawn and collar range, and a memo. **The crown never changes hands.** There
+  is no next juggernaut to promote, so `onTankDeath` stores your hull id, score and stat spread and
+  `onSpawn` puts them straight back: you come back on the same hull at the same level and the mob
+  starts the job over. `spawnLevel: 45` is what makes that survivable — it is three cards deep in
+  the tree plus 33 stat points, and spawn protection holds until you shoot or drive, so you go in
+  as a tier-3 hull rather than as a 900 hp Brute. `killBounty` is the one number neither parent
+  mode had: in the Royale a kill pays more every tier because the thing you killed grew too, and
+  here the hunters are level 45 all round, so the bounty carries the top half of the climb alone.
 - **Chaos Rotation** draws one of fifteen modifiers every ninety seconds from a Fisher-Yates
   shuffle, drawn without replacement. Each modifier is written as an arena part and a *per-tank*
   part, and the per-tank part re-applies on every spawn while it is live — otherwise a modifier
@@ -304,7 +318,7 @@ node -e "const fs=require('fs'),vm=require('vm');const s=vm.createContext({conso
 | `js/data.js` | Constants, palette, XP curve, shapes, addons, bosses, game modes |
 | `js/engine.js` | 25 Hz simulation: entities, physics, damage, barrels, projectiles, AI, bots |
 | `js/modes.js` | The six objective modes + possession (H) |
-| `js/modes-extra.js` | The Mode Lab's 39 arenas — rules, logic, the Juggernaut and the 72 Royale hulls |
+| `js/modes-extra.js` | The Mode Lab's 40 arenas — rules, logic, the Juggernaut and the 72 Royale hulls |
 | `js/modefx.js` | Per-mode screen effects and the animated menu thumbnails |
 | `js/modelab.js` | The Mode Lab button and its menu, markup and styles included |
 | `js/protocol.js` | Binary wire format, shared by client and server |
@@ -493,14 +507,14 @@ node -e "const fs=require('fs');fs.writeFileSync('js/tankdefs.js','var TANK_DEFS
   arena hides an objective completely, and a mode you cannot find reads as a mode where nothing
   is happening.
 - **All 11 of diep's game modes** — FFA, 2 Teams, 4 Teams, Maze (40×40 cells of 635 du, walls that eat
-  what is fired at them), Sandbox (+ cheats), plus the six objective modes below. Team bases with drone spawners, enemy-projectile
+  what is fired at them), Sandbox (solo, small arena, cheats always on), plus the six objective modes below. Team bases with drone spawners, enemy-projectile
   dissolve, and rammer ejection.
 - **UI** — scoreboard, score/level bars, stat panel with queueing, upgrade cards, minimap,
   leader arrow, notifications, class-tree overlay, death screen with killer attribution.
 - **Chat** — top-left overlay, arena-wide online, 76 slash commands including a cheat set
   that only unlocks offline or in a Sandbox arena. See above.
 - **28 bots** with real builds and class choices, so the leaderboard is alive. *Play
-  Offline* opens a difficulty picker first — Easy through Extreme, or Custom, which
+  Offline* opens a difficulty picker first (except in Sandbox, which is solo) — Easy through Extreme, or Custom, which
   exposes the six skill dials (aim, reflexes, dodging, footwork, aggression, game sense)
   and the bot count. The setting is also reachable from the menu's *change* link and from
   `/difficulty <name>` in chat. Bots lead their shots, strafe, dodge incoming fire, pick
