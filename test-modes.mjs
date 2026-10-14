@@ -1130,6 +1130,7 @@ section('the visual layer');
     },
     set() { return true; }
   });
+  sim.document = { createElement: () => ({ getContext: () => stub }) };
   let broke = null;
   for (const k of keys) {
     try { MODE_THUMB[k](stub, 300, 190, 3.7); }

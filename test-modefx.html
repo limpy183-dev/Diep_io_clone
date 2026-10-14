@@ -1,0 +1,93 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Darkness compositing regression</title>
+<style>body{background:#121822;color:#dae5f3;font:16px system-ui}canvas{width:480px;max-width:100%;margin:8px}pre{white-space:pre-wrap}</style>
+<pre id="result">Running...</pre>
+<script src="js/render.js"></script>
+<script src="js/modefx.js"></script>
+<script>
+// Open in a browser: exercise real Canvas compositing, including buffer reuse.
+const results = [];
+function check(condition, message) {
+  if (!condition) throw new Error(message);
+}
+try {
+  for (const [mode, night, width, height] of [
+    ['fog', 0, 960, 600], ['nightfall', 0, 960, 600],
+    ['nightfall', 0.001, 960, 600], ['nightfall', 0.5, 960, 600],
+    ['nightfall', 1, 960, 600], ['fog', 0, 600, 900]
+  ]) {
+    const canvas = document.createElement('canvas');
+    canvas.width = width; canvas.height = height;
+    document.body.append(canvas);
+    const c = canvas.getContext('2d');
+    c.fillStyle = '#b8bec6'; c.fillRect(0, 0, width, height);
+    c.strokeStyle = '#a4aab2'; c.lineWidth = 1;
+    for (let x = 0; x < width; x += 24) { c.beginPath(); c.moveTo(x, 0); c.lineTo(x, height); c.stroke(); }
+    for (let y = 0; y < height; y += 24) { c.beginPath(); c.moveTo(0, y); c.lineTo(width, y); c.stroke(); }
+    const player = { x: width * 0.43, y: height * 0.57 };
+    c.fillStyle = '#89939f'; c.fillRect(player.x, player.y - 8, 42, 16);
+    c.fillStyle = '#00b2e1'; c.beginPath(); c.arc(player.x, player.y, 20, 0, Math.PI * 2); c.fill();
+    const pixel = (x, y) => [...c.getImageData(x, y, 1, 1).data];
+    const before = pixel(player.x, player.y);
+    const edgeBefore = pixel(4, 4);
+    const game = { player, entities: [], arena: { size: 22300 }, fx: { night, seed: 42 } };
+    const renderer = { canvas, game, toScreen: (x, y) => ({ x, y }), scaling: () => 0.7 };
+    MODE_FX[mode].screen(renderer, c, game, 30);
+    check(pixel(player.x, player.y).every((v, i) => v === before[i]), mode + ': tank color changed');
+    const pixels = c.getImageData(0, 0, width, height).data;
+    for (let i = 3; i < pixels.length; i += 4) check(pixels[i] === 255, mode + ': arena was erased');
+    const edge = pixel(4, 4);
+    if (mode === 'fog' || night > 0.1) check(edge[0] < edgeBefore[0] * 0.8, mode + ': missing darkness');
+    if (mode === 'nightfall' && night < 0.01) check(Math.abs(edge[0] - edgeBefore[0]) <= 2, 'daylight must start smoothly');
+    results.push(mode + ' ' + night + ' ' + width + 'x' + height + ': PASS');
+  }
+  for (const mode of ['fog', 'nightfall']) {
+    const canvas = document.createElement('canvas');
+    canvas.width = 300; canvas.height = 190;
+    const c = canvas.getContext('2d');
+    MODE_THUMB[mode](c, 300, 190, 3.7);
+    const x = mode === 'fog' ? 150 : 126, y = mode === 'fog' ? 95 : 114;
+    check([...c.getImageData(x, y, 1, 1).data].join() === '0,178,225,255', mode + ': thumbnail tank obscured');
+    const pixels = c.getImageData(0, 0, 300, 190).data;
+    for (let i = 3; i < pixels.length; i += 4) check(pixels[i] === 255, mode + ': thumbnail erased');
+    results.push(mode + ' thumbnail: PASS');
+  }
+  {
+    const canvas = document.createElement('canvas');
+    canvas.width = 960; canvas.height = 600;
+    const c = canvas.getContext('2d');
+    const shooter = { x: 700, px: 700, y: 300, py: 300, angle: 0, pa: 0, size: 30, psize: 30, type: 'tank',
+      barrels: [{ recoilAnim: 0, def: { size: 80, width: 20, angle: 0, offset: 12 } }] };
+    const game = { player: { x: 480, y: 300 }, entities: [shooter], arena: { size: 22300 }, fx: { seed: 42 } };
+    const renderer = { canvas, game, toScreen: (x, y) => ({ x, y }), scaling: () => 0.7 };
+    function shot(recoil) {
+      shooter.barrels[0].recoilAnim = recoil;
+      c.fillStyle = '#b8bec6'; c.fillRect(0, 0, 960, 600);
+      MODE_FX.fog.screen(renderer, c, game, 30);
+      const a = shooter.angle + shooter.barrels[0].def.angle;
+      return [...c.getImageData(shooter.x + Math.cos(a) * 70.4 - Math.sin(a) * 12,
+        shooter.y + Math.sin(a) * 70.4 + Math.cos(a) * 12, 1, 1).data];
+    }
+    for (const x of [700, 480]) {
+      shooter.x = shooter.px = x;
+      const idle = shot(0), firing = shot(1), faded = shot(0.3);
+      const rise = firing.map((v, i) => v - idle[i]);
+      check(rise[0] > rise[1] && rise[1] > rise[2] && rise[0] > 50, 'shot flash must be warm yellow, including inside the clear area');
+      check(faded.every((v, i) => v === idle[i]), 'shot flash must disappear after recoil');
+      check(firing[3] === 255, 'shot flash must not erase the scene');
+      const body = [...c.getImageData(x, shooter.y, 1, 1).data];
+      shot(1);
+      check([...c.getImageData(x, shooter.y, 1, 1).data].every((v, i) => v === body[i]), 'flash must originate at the muzzle, not the body');
+      shooter.angle = shooter.pa = Math.PI / 2;
+      const rotatedIdle = shot(0), rotatedShot = shot(1);
+      check(rotatedShot[0] - rotatedIdle[0] > 50, 'flash must follow turret aim');
+      shooter.angle = shooter.pa = 0;
+    }
+    results.push('warm firing flash and fade: PASS');
+  }
+  document.getElementById('result').textContent = 'PASS\n' + results.join('\n');
+} catch (error) {
+  document.getElementById('result').textContent = 'FAIL: ' + error.stack;
+}
+</script>

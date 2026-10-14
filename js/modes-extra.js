@@ -1993,11 +1993,11 @@ labMode('nightfall', {
 
 labMode('fog', {
   name: 'Fog of War', family: 'Deception', tag: 'blind',
-  rules: { fov: 0.5, shapes: 900 },
-  blurb: 'Half the view distance, and a real fog bank rolling over the field. You find out about people by being shot.',
+  rules: { fov: 1.5, shapes: 900 },
+  blurb: 'Two-thirds view distance, and a real fog bank rolling over the field. You find out about people by being shot.',
   fx: true,
   how: [
-    'Field of view is halved for everybody, permanently.',
+    'Field of view is reduced to two-thirds for everybody, permanently.',
     'A layered fog bank drifts across the arena and thickens in patches, so visibility is not even constant.',
     'A soft light falls off around your own tank, and muzzle flashes bloom through the murk — firing gives away roughly where you are.',
     'The minimap is the only reliable information you have, which makes it worth reading for the first time.',

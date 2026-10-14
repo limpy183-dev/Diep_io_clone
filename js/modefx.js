@@ -29,11 +29,25 @@ function fxTint(c, w, h, color, alpha, op) {
   c.restore();
 }
 
-// A soft hole in whatever was just drawn — the light around your own tank.
+// Only erase an isolated effect layer, never the arena beneath it.
+var _fxDarkCanvas = null;
+function fxDarkLayer(w, h) {
+  if (!_fxDarkCanvas) _fxDarkCanvas = document.createElement('canvas');
+  if (_fxDarkCanvas.width !== w) _fxDarkCanvas.width = w;
+  if (_fxDarkCanvas.height !== h) _fxDarkCanvas.height = h;
+  var c = _fxDarkCanvas.getContext('2d');
+  c.clearRect(0, 0, w, h);
+  return c;
+}
+
+// A clear core and a smooth, eased falloff into the surrounding darkness.
 function fxHole(c, x, y, r, soft) {
   var gr = c.createRadialGradient(x, y, r * (soft === undefined ? 0.25 : soft), x, y, r);
   gr.addColorStop(0, 'rgba(0,0,0,1)');
-  gr.addColorStop(0.65, 'rgba(0,0,0,0.55)');
+  for (var i = 1; i < 16; i++) {
+    var u = i / 16;
+    gr.addColorStop(u, 'rgba(0,0,0,' + (1 - u * u * (3 - 2 * u)) + ')');
+  }
   gr.addColorStop(1, 'rgba(0,0,0,0)');
   c.save();
   c.globalCompositeOperation = 'destination-out';
@@ -215,27 +229,37 @@ function drawFogBank(r, c, g, t, density, tintTop, tintBottom) {
 MODE_FX.fog = {
   screen: function (r, c, g, t) {
     var w = r.canvas.width, h = r.canvas.height, me = fxSelf(r);
+    var scene = c;
+    c = fxDarkLayer(w, h);
     // 1. the murk itself, world-anchored so you move through it
-    drawFogBank(r, c, g, t, 0.85, 'rgba(196,204,214,0.30)', 'rgba(148,158,172,0.36)');
+    drawFogBank(r, c, g, t, 0.45, 'rgba(115,139,160,0.22)', 'rgba(63,83,107,0.28)');
     // 2. a flat dark layer with your own lantern punched out of it
     c.save();
     c.fillStyle = 'rgba(24,30,40,0.62)';
     c.fillRect(0, 0, w, h);
-    if (me) fxHole(c, me.x, me.y, Math.min(w, h) * 0.34, 0.05);
     c.restore();
-    // 3. muzzle flashes bloom through it — firing tells everyone roughly where
-    //    you are, which is the trade the mode is built on
+    fxVignette(c, w, h, 0.62, 'rgba(10,14,20,0.9)');
+    if (me) fxHole(c, me.x, me.y, Math.min(w, h) * 0.42, 0.22);
+    scene.drawImage(c.canvas, 0, 0);
+    // Add flashes to the finished scene so the darkness cannot desaturate
+    // them and the player's clear sight area cannot erase them.
     for (var i = 0; i < g.entities.length; i++) {
       var e = g.entities[i];
       if (e.type !== 'tank' || e.dead || !e.barrels) continue;
-      var lit = 0;
-      for (var b = 0; b < e.barrels.length; b++) if (e.barrels[b].recoilAnim > 0.35) lit = Math.max(lit, e.barrels[b].recoilAnim);
-      if (!lit) continue;
-      var s = r.toScreen(e.x, e.y);
-      fxGlow(c, s.x, s.y, 260 * lit, 'rgba(255,228,150,0.5)', 0.75);
+      var p = ipos(e, r.alpha || 0), scale = e.scaleFactor || 1;
+      for (var b = 0; b < e.barrels.length; b++) {
+        var barrel = e.barrels[b], lit = barrel.recoilAnim;
+        if (lit <= 0.35) continue;
+        // Match drawBarrel's interpolated pose, lateral offset and recoil.
+        var d = barrel.def, a = p.a + d.angle;
+        var len = d.size * scale * (1 - lit * 0.12), off = d.offset * scale;
+        if (d.addon === 'trapLauncher') len += d.size * scale * 0.28;
+        var s = r.toScreen(p.x + Math.cos(a) * len - Math.sin(a) * off,
+                           p.y + Math.sin(a) * len + Math.cos(a) * off);
+        var radius = Math.max(18, d.width * scale * r.scaling() * 2.2) * lit;
+        fxGlow(scene, s.x, s.y, radius, 'rgba(255,205,70,0.5)', 0.75);
+      }
     }
-    if (me) fxGlow(c, me.x, me.y, Math.min(w, h) * 0.16, 'rgba(180,215,255,0.13)', 1);
-    fxVignette(c, w, h, 0.62, 'rgba(10,14,20,0.9)');
   }
 };
 
@@ -247,18 +271,18 @@ MODE_FX.nightfall = {
   screen: function (r, c, g, t) {
     var w = r.canvas.width, h = r.canvas.height;
     var f = (g.fx && g.fx.night) || 0;
-    if (f <= 0.02) return;
+    if (f <= 0) return;
     var me = fxSelf(r);
+    var scene = c;
+    c = fxDarkLayer(w, h);
     // sky first: warm dusk sliding to deep blue
     var sky = c.createLinearGradient(0, 0, 0, h);
     var warm = Math.max(0, 1 - f * 2.2);
     sky.addColorStop(0, 'rgba(' + Math.round(30 + warm * 90) + ',' + Math.round(28 + warm * 40) + ',' + Math.round(64 + warm * 20) + ',' + (f * 0.78) + ')');
     sky.addColorStop(1, 'rgba(6,8,20,' + (f * 0.9) + ')');
     c.save(); c.fillStyle = sky; c.fillRect(0, 0, w, h);
-    if (me) fxHole(c, me.x, me.y, Math.min(w, h) * (0.42 - f * 0.24), 0.05);
     c.restore();
     drawFogBank(r, c, g, t, f * 0.5, 'rgba(90,110,170,0.26)', 'rgba(40,54,96,0.3)');
-    if (me) fxGlow(c, me.x, me.y, Math.min(w, h) * (0.2 - f * 0.09), 'rgba(150,190,255,' + (0.08 + f * 0.14) + ')', 1);
     // a cold moon rising as it gets late
     if (f > 0.3) {
       var mx = w * 0.86, my = h * (0.34 - (f - 0.3) * 0.16);
@@ -268,7 +292,9 @@ MODE_FX.nightfall = {
       c.fillStyle = '#E9F1FF'; c.fill();
       c.restore();
     }
-    fxVignette(c, w, h, 0.35 + f * 0.4, 'rgba(2,4,12,' + (0.55 + f * 0.4) + ')');
+    fxVignette(c, w, h, 0.35 + f * 0.4, 'rgba(2,4,12,' + (f * 0.9) + ')');
+    if (me) fxHole(c, me.x, me.y, Math.min(w, h) * (0.46 - f * 0.22), 0.26);
+    scene.drawImage(c.canvas, 0, 0);
   }
 };
 
@@ -1925,9 +1951,10 @@ MODE_THUMB.chaos = function (c, w, h, t) {
 MODE_THUMB.fog = function (c, w, h, t) {
   tBG(c, w, h, '#A8AEB6');
   tTank(c, w / 2, h / 2, 13, Math.sin(t * 0.6) * 0.5, BLUE[0], BLUE[1]);
+  var scene = c;
+  c = fxDarkLayer(w, h);
   c.save();
   c.fillStyle = 'rgba(30,36,46,0.72)'; c.fillRect(0, 0, w, h);
-  fxHole(c, w / 2, h / 2, w * 0.3, 0.08);
   c.restore();
   for (var i = 0; i < 6; i++) {
     var x = ((i * 61 + t * (9 + i * 3)) % (w + 90)) - 45;
@@ -1935,22 +1962,27 @@ MODE_THUMB.fog = function (c, w, h, t) {
     fxGlow(c, x, y, 40 + i * 7, 'rgba(200,208,220,0.13)', 1);
   }
   fxVignette(c, w, h, 0.6, 'rgba(12,16,24,0.85)');
+  fxHole(c, w / 2, h / 2, w * 0.38, 0.22);
+  scene.drawImage(c.canvas, 0, 0);
 };
 
 MODE_THUMB.nightfall = function (c, w, h, t) {
   var f = (Math.sin(t * 0.5) * 0.5 + 0.5);
   tBG(c, w, h, '#B8BCC4');
   tTank(c, w * 0.42, h * 0.6, 12, 0.3, BLUE[0], BLUE[1]);
+  var scene = c;
+  c = fxDarkLayer(w, h);
   var sky = c.createLinearGradient(0, 0, 0, h);
   sky.addColorStop(0, 'rgba(' + Math.round(30 + (1 - f) * 90) + ',30,70,' + (0.35 + f * 0.5) + ')');
   sky.addColorStop(1, 'rgba(6,8,22,' + (0.45 + f * 0.5) + ')');
   c.save(); c.fillStyle = sky; c.fillRect(0, 0, w, h);
-  fxHole(c, w * 0.42, h * 0.6, w * (0.3 - f * 0.14), 0.06);
   c.restore();
   fxGlow(c, w * 0.8, h * 0.26, 34, 'rgba(190,215,255,0.4)', f);
   c.save(); c.globalAlpha = f; c.fillStyle = '#E9F1FF';
   c.beginPath(); c.arc(w * 0.8, h * 0.26, 9, 0, Math.PI * 2); c.fill(); c.restore();
   fxVignette(c, w, h, 0.45 + f * 0.3, 'rgba(2,4,14,0.85)');
+  fxHole(c, w * 0.42, h * 0.6, w * (0.38 - f * 0.14), 0.26);
+  scene.drawImage(c.canvas, 0, 0);
 };
 
 MODE_THUMB.scoreattack = function (c, w, h, t) {
