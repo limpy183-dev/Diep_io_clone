@@ -5,9 +5,8 @@
 // base menu changes.
 //
 // Three pieces:
-//   1. the button, which is deliberately not a diep button — an obsidian slab
-//      with a rotating spectrum halo and a canvas of polygons that bloom out
-//      of it on hover;
+//   1. the button, a candy sticker with a tiny tank farming shapes inside it
+//      and a canvas of polygons that bloom out of it on hover;
 //   2. the wall, 38 live-rendered tiles (MODE_THUMB does the drawing) with
 //      family filters;
 //   3. the detail view, which the tile FLIPs into — measure, promote to fixed,
@@ -43,37 +42,63 @@ var MODELAB = (function () {
   // --- styles ------------------------------------------------------------
   var CSS = [
     // ---- the button ----
-    '#lab-launch{position:relative;display:block;margin:16px auto 0;width:290px;padding:0;border:0;',
-    '  background:none;cursor:pointer;-webkit-tap-highlight-color:transparent;}',
+    // A candy sticker rather than a diep button: a flowing spectrum face, a
+    // white rim, a ledge it sits on, and a little tank inside that farms the
+    // shapes drifting across it (and fires at your cursor when you hover).
+    '#lab-launch{position:relative;display:block;margin:20px auto 6px;width:300px;padding:0;border:0;',
+    '  background:none;cursor:pointer;-webkit-tap-highlight-color:transparent;perspective:600px;}',
     '#lab-launch .lab-aura{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);',
     '  width:430px;height:210px;pointer-events:none;}',
-    '#lab-launch .lab-slab{position:relative;display:flex;flex-direction:column;align-items:center;',
-    '  justify-content:center;gap:2px;height:66px;border-radius:16px;',
-    '  background:linear-gradient(155deg,#191C24 0%,#0E1016 55%,#15121F 100%);',
-    '  box-shadow:0 10px 26px -8px rgba(0,0,0,.75),inset 0 1px 0 rgba(255,255,255,.09);',
-    '  overflow:hidden;transition:transform .32s cubic-bezier(.2,.9,.25,1.2);}',
-    '#lab-launch:hover .lab-slab,#lab-launch:focus-visible .lab-slab{transform:translateY(-3px) scale(1.035);}',
-    '#lab-launch:active .lab-slab{transform:translateY(0) scale(.99);}',
-    // rotating spectrum ring, sitting just outside the slab
-    '#lab-launch .lab-ring{position:absolute;inset:-2px;border-radius:18px;padding:2px;z-index:0;',
-    '  background:conic-gradient(from 0deg,#00B2E1,#00E16E,#FFDE43,#F14E54,#BF7FF5,#00B2E1);',
-    '  -webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);',
-    '  -webkit-mask-composite:xor;mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);',
-    '  mask-composite:exclude;animation:labspin 5.5s linear infinite;opacity:.85;}',
-    '#lab-launch:hover .lab-ring{opacity:1;animation-duration:2.4s;}',
-    '@keyframes labspin{to{transform:rotate(1turn);}}',
+    '#lab-launch .lab-slab{--rx:0deg;--ry:0deg;--lift:0px;--ledge:7px;position:relative;display:flex;',
+    '  flex-direction:column;align-items:center;justify-content:center;gap:3px;height:80px;',
+    '  border-radius:20px;border:4px solid #FFF;box-sizing:border-box;',
+    '  box-shadow:0 var(--ledge) 0 #7A4FB8,0 calc(var(--ledge) + 10px) 22px -6px rgba(70,40,120,.45);',
+    '  transform:translateY(var(--lift)) rotateX(var(--rx)) rotateY(var(--ry));',
+    '  transition:transform .3s cubic-bezier(.2,.9,.25,1.4),box-shadow .3s cubic-bezier(.2,.9,.25,1.4);}',
+    '#lab-launch:hover .lab-slab,#lab-launch:focus-visible .lab-slab{--lift:-4px;--ledge:10px;',
+    '  transition:transform .12s ease-out,box-shadow .3s cubic-bezier(.2,.9,.25,1.4);}',
+    '#lab-launch:active .lab-slab{--lift:5px;--ledge:2px;transition-duration:.06s;}',
+    '#lab-launch .lab-face{position:absolute;inset:0;border-radius:16px;overflow:hidden;',
+    '  background:linear-gradient(110deg,#00C8F0,#00E16E,#FFE14D,#FF8A7A,#C47CF7,#7C8CFF,#00C8F0);',
+    '  background-size:300% 100%;animation:labflow 7s linear infinite;}',
+    '#lab-launch:hover .lab-face{animation-duration:2.6s;}',
+    '@keyframes labflow{to{background-position:-300% 0;}}',
+    // candy stripes crawling across the face
+    '#lab-launch .lab-face::before{content:"";position:absolute;inset:0;',
+    '  background:repeating-linear-gradient(-55deg,rgba(255,255,255,.17) 0 12px,transparent 12px 26px);',
+    '  background-size:63.4px 100%;animation:labstripe 1.6s linear infinite;}',
+    '@keyframes labstripe{to{background-position:63.4px 0;}}',
     // the sheen that sweeps across on hover
-    '#lab-launch .lab-slab::after{content:"";position:absolute;inset:0;',
-    '  background:linear-gradient(105deg,transparent 38%,rgba(255,255,255,.16) 50%,transparent 62%);',
+    '#lab-launch .lab-face::after{content:"";position:absolute;inset:0;',
+    '  background:linear-gradient(105deg,transparent 38%,rgba(255,255,255,.55) 50%,transparent 62%);',
     '  transform:translateX(-130%);transition:transform .75s cubic-bezier(.3,.7,.3,1);}',
-    '#lab-launch:hover .lab-slab::after{transform:translateX(130%);}',
-    '#lab-launch .lab-title{font:700 20px Ubuntu,Verdana,sans-serif;letter-spacing:.16em;',
-    '  background:linear-gradient(92deg,#7FE9FF,#B7FFD4 30%,#FFE9A0 62%,#FFB3C8);',
-    '  -webkit-background-clip:text;background-clip:text;color:transparent;',
-    '  filter:drop-shadow(0 0 12px rgba(120,220,255,.35));position:relative;z-index:1;}',
-    '#lab-launch .lab-sub{font:500 11px Ubuntu,Verdana,sans-serif;letter-spacing:.1em;',
-    '  color:rgba(210,222,240,.62);position:relative;z-index:1;text-transform:uppercase;}',
-    '#lab-launch:hover .lab-sub{color:rgba(232,242,255,.9);}',
+    '#lab-launch:hover .lab-face::after{transform:translateX(130%);}',
+    '#lab-launch .lab-play{position:absolute;inset:0;width:100%;height:100%;}',
+    // chunky diep lettering: white fill, dark outline, each letter on a wave
+    '#lab-launch .lab-title{--amp:2;position:relative;z-index:1;pointer-events:none;',
+    '  font:700 25px Ubuntu,Verdana,sans-serif;letter-spacing:.08em;color:#FFF;white-space:pre;',
+    '  text-shadow:2px 0 #3B2A5C,-2px 0 #3B2A5C,0 2px #3B2A5C,0 -2px #3B2A5C,',
+    '  2px 2px #3B2A5C,-2px 2px #3B2A5C,2px -2px #3B2A5C,-2px -2px #3B2A5C,0 4px #3B2A5C;}',
+    '#lab-launch .lab-title span{display:inline-block;animation:labwave 1.8s ease-in-out infinite;',
+    '  animation-delay:calc(var(--i) * -0.13s);}',
+    '#lab-launch:hover .lab-title{--amp:6;}',
+    '#lab-launch:hover .lab-title span{animation-duration:.8s;}',
+    '@keyframes labwave{0%,100%{transform:translateY(calc(var(--amp) * 1px)) rotate(-2deg);}',
+    '  50%{transform:translateY(calc(var(--amp) * -1px)) rotate(2deg);}}',
+    '#lab-launch .lab-sub{position:relative;z-index:1;pointer-events:none;',
+    '  font:700 10.5px Ubuntu,Verdana,sans-serif;letter-spacing:.12em;text-transform:uppercase;',
+    '  color:#FFF;background:rgba(59,42,92,.55);padding:3px 10px;border-radius:99px;}',
+    // the count, as a sticker slapped on the corner
+    '#lab-launch .lab-badge{position:absolute;z-index:2;top:-16px;right:-14px;width:46px;height:46px;',
+    '  display:flex;flex-direction:column;align-items:center;justify-content:center;pointer-events:none;',
+    '  background:#FFE14D;border:3px solid #FFF;border-radius:50%;color:#3B2A5C;line-height:1;',
+    '  box-shadow:0 3px 0 #C9A82A,0 6px 12px -4px rgba(0,0,0,.35);',
+    '  font:700 17px Ubuntu,Verdana,sans-serif;animation:labbob 2.2s ease-in-out infinite;}',
+    '#lab-launch .lab-badge small{font-size:8px;letter-spacing:.1em;}',
+    '#lab-launch:hover .lab-badge{animation:labpop .6s cubic-bezier(.2,.9,.25,1.4) both;}',
+    '@keyframes labbob{0%,100%{transform:rotate(12deg) scale(1);}50%{transform:rotate(-6deg) scale(1.08);}}',
+    '@keyframes labpop{0%{transform:rotate(12deg) scale(1);}60%{transform:rotate(380deg) scale(1.3);}',
+    '  100%{transform:rotate(372deg) scale(1.15);}}',
 
     // ---- the overlay ----
     '#lab{position:fixed;inset:0;z-index:60;display:none;opacity:0;',
@@ -186,7 +211,7 @@ var MODELAB = (function () {
     '  #lab .lab-head,#lab .lab-chips,#lab .lab-grid{padding-left:18px;padding-right:18px;}',
     '}',
     '@media (prefers-reduced-motion:reduce){',
-    '  #lab-launch .lab-ring{animation:none;}',
+    '  #lab-launch *,#lab-launch *::before{animation:none !important;}',
     '  .lab-tile,#lab-stage,#lab-panel,#lab-detail .lab-scrim{transition-duration:.01ms;}',
     '}'
   ].join('\n');
@@ -276,6 +301,175 @@ var MODELAB = (function () {
     return cv;
   }
 
+  // --- the tank inside the button --------------------------------------
+  // A tiny diep round: shapes drift in from the right, a tank on the left
+  // farms them. Hovered, the barrel follows the cursor and fires fast; a click
+  // is a spread shot. Purely decorative, so it skips drawing while the menu is
+  // hidden and stays still under reduced motion.
+  function playCanvas(btn) {
+    var cv = el('canvas', 'lab-play');
+    var c = cv.getContext('2d');
+    var W = 292, H = 72;                  // the face inside the 4px rim
+    var dpr = Math.min(2, window.devicePixelRatio || 1);
+    cv.width = W * dpr; cv.height = H * dpr;
+    c.scale(dpr, dpr);
+    // diep's own shapes: [sides, radius, fill, stroke, hp, xp]
+    var KINDS = [[4, 8, '#FFE869', '#BFAE4E', 1, 10], [3, 9, '#FC7677', '#BD585A', 1, 25],
+      [5, 11, '#768DFC', '#5869BD', 3, 130]];
+    var tank = { x: 26, y: H / 2, ang: 0, recoil: 0 };
+    var shapes = [], shots = [], parts = [], texts = [];
+    var mouse = { x: 0, y: 0, in: false }, cool = 600, last = 0;
+    var still = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+    function addShape(x) {
+      var k = KINDS[Math.random() < 0.15 ? 2 : (Math.random() * 2) | 0];
+      shapes.push({ x: x, y: 13 + Math.random() * (H - 26), vx: -(0.18 + Math.random() * 0.3),
+        k: k, hp: k[4], rot: Math.random() * 6.3, spin: (Math.random() - 0.5) * 0.04, hit: 0, die: -1 });
+    }
+    for (var i = 0; i < 4; i++) addShape(90 + i * 55);
+
+    function poly(sides, r) {
+      c.beginPath();
+      for (var s = 0; s < sides; s++) {
+        var a = Math.PI * 2 * s / sides;
+        if (s) c.lineTo(Math.cos(a) * r, Math.sin(a) * r); else c.moveTo(r, 0);
+      }
+      c.closePath();
+    }
+    function fire(spread) {
+      var a = tank.ang + spread;
+      shots.push({ x: tank.x + Math.cos(a) * 21, y: tank.y + Math.sin(a) * 21,
+        vx: Math.cos(a) * 4.6, vy: Math.sin(a) * 4.6 });
+      tank.recoil = 4;
+    }
+    function target() {
+      if (mouse.in) return mouse;
+      var best = null;
+      for (var i = 0; i < shapes.length; i++) {
+        var s = shapes[i];
+        if (s.die < 0 && s.x > 60 && s.x < W - 6 && (!best || s.x < best.x)) best = s;
+      }
+      return best;
+    }
+
+    function frame(now) {
+      if (!still) requestAnimationFrame(frame);
+      if (!btn.offsetParent) { last = 0; return; }   // menu hidden: nothing to draw
+      var dt = last ? Math.min(50, now - last) : 16; last = now;
+      var step = dt / 16.7;
+      if (shapes.length < 6 && Math.random() < 0.02 * step) addShape(W + 14);
+
+      var tg = target();
+      if (tg) {
+        var want = Math.atan2(tg.y - tank.y, tg.x - tank.x);
+        var d = Math.atan2(Math.sin(want - tank.ang), Math.cos(want - tank.ang));
+        tank.ang += d * Math.min(1, 0.25 * step);
+        cool -= dt;
+        if (cool <= 0 && Math.abs(d) < 0.3) { fire(0); cool = mouse.in ? 130 : 700; }
+      }
+      tank.recoil *= Math.pow(0.8, step);
+
+      var i, j, s;
+      for (i = shots.length - 1; i >= 0; i--) {
+        var b = shots[i];
+        b.x += b.vx * step; b.y += b.vy * step;
+        var gone = b.x > W + 8 || b.x < -8 || b.y < -8 || b.y > H + 8;
+        for (j = 0; j < shapes.length && !gone; j++) {
+          s = shapes[j];
+          if (s.die >= 0) continue;
+          var dx = b.x - s.x, dy = b.y - s.y, rr = s.k[1] + 3.5;
+          if (dx * dx + dy * dy > rr * rr) continue;
+          gone = true; s.hit = 1; s.x += b.vx * 0.8; s.y += b.vy * 0.8;
+          if (--s.hp <= 0) {
+            s.die = 0;
+            texts.push({ x: s.x, y: s.y, t: 0, s: '+' + s.k[5] });
+            for (var p = 0; p < 7; p++) {
+              var pa = Math.random() * 6.3, sp = 0.6 + Math.random() * 1.6;
+              parts.push({ x: s.x, y: s.y, vx: Math.cos(pa) * sp, vy: Math.sin(pa) * sp, t: 0, col: s.k[2] });
+            }
+          }
+        }
+        if (gone) shots.splice(i, 1);
+      }
+
+      c.clearRect(0, 0, W, H);
+      c.lineJoin = 'round';
+      for (i = shapes.length - 1; i >= 0; i--) {
+        s = shapes[i];
+        s.x += s.vx * step; s.rot += s.spin * step; s.hit *= Math.pow(0.8, step);
+        if (s.die >= 0) s.die += step / 14;
+        if (s.x < -20 || s.die >= 1) { shapes.splice(i, 1); continue; }
+        c.save();
+        c.translate(s.x, s.y); c.rotate(s.rot);
+        if (s.die >= 0) { c.globalAlpha = 1 - s.die; c.scale(1 + s.die * 0.7, 1 + s.die * 0.7); }
+        poly(s.k[0], s.k[1]);
+        c.fillStyle = s.k[2]; c.fill();
+        if (s.hit > 0.05) { c.fillStyle = 'rgba(255,255,255,' + s.hit * 0.8 + ')'; c.fill(); }
+        c.strokeStyle = s.k[3]; c.lineWidth = 2.5; c.stroke();
+        c.restore();
+      }
+      for (i = parts.length - 1; i >= 0; i--) {
+        var q = parts[i];
+        q.t += step / 26; q.x += q.vx * step; q.y += q.vy * step;
+        if (q.t >= 1) { parts.splice(i, 1); continue; }
+        c.globalAlpha = 1 - q.t; c.fillStyle = q.col;
+        c.fillRect(q.x - 2, q.y - 2, 4, 4);
+      }
+      c.globalAlpha = 1;
+      c.fillStyle = '#00B2E1'; c.strokeStyle = '#0085A8'; c.lineWidth = 1.6;
+      for (i = 0; i < shots.length; i++) {
+        c.beginPath(); c.arc(shots[i].x, shots[i].y, 3.4, 0, 6.3); c.fill(); c.stroke();
+      }
+      // the tank: barrel under body, the way diep draws it
+      c.save();
+      c.translate(tank.x, tank.y); c.rotate(tank.ang);
+      c.fillStyle = '#999'; c.strokeStyle = '#727272'; c.lineWidth = 2.5;
+      c.fillRect(0, -4.5, 21 - tank.recoil, 9); c.strokeRect(0, -4.5, 21 - tank.recoil, 9);
+      c.beginPath(); c.arc(0, 0, 11, 0, 6.3);
+      c.fillStyle = '#00B2E1'; c.fill(); c.strokeStyle = '#0085A8'; c.stroke();
+      c.restore();
+      c.font = '700 11px Ubuntu,Verdana,sans-serif'; c.textAlign = 'center';
+      for (i = texts.length - 1; i >= 0; i--) {
+        var tx = texts[i];
+        tx.t += step / 45;
+        if (tx.t >= 1) { texts.splice(i, 1); continue; }
+        c.globalAlpha = 1 - tx.t * tx.t;
+        c.lineWidth = 3; c.strokeStyle = '#3B2A5C';
+        c.strokeText(tx.s, tx.x, tx.y - 6 - tx.t * 16);
+        c.fillStyle = '#FFF'; c.fillText(tx.s, tx.x, tx.y - 6 - tx.t * 16);
+      }
+      c.globalAlpha = 1;
+    }
+    requestAnimationFrame(frame);
+
+    btn.addEventListener('mousemove', function (e) {
+      var r = cv.getBoundingClientRect();
+      mouse.x = (e.clientX - r.left) * W / r.width;
+      mouse.y = (e.clientY - r.top) * H / r.height;
+      mouse.in = true;
+    });
+    btn.addEventListener('mouseleave', function () { mouse.in = false; });
+    btn.addEventListener('click', function () {
+      for (var i = -3; i <= 3; i++) fire(i * 0.16);
+      if (still) frame(performance.now());
+    });
+    return cv;
+  }
+
+  // The slab leans toward the cursor.
+  function tilt(btn, slab) {
+    btn.addEventListener('mousemove', function (e) {
+      var r = btn.getBoundingClientRect();
+      var px = (e.clientX - r.left) / r.width - 0.5, py = (e.clientY - r.top) / r.height - 0.5;
+      slab.style.setProperty('--rx', (-py * 14).toFixed(2) + 'deg');
+      slab.style.setProperty('--ry', (px * 10).toFixed(2) + 'deg');
+    });
+    btn.addEventListener('mouseleave', function () {
+      slab.style.setProperty('--rx', '0deg');
+      slab.style.setProperty('--ry', '0deg');
+    });
+  }
+
   // --- drifting polygons behind the wall --------------------------------
   function bgCanvas() {
     var cv = el('canvas', 'lab-bg');
@@ -334,11 +528,23 @@ var MODELAB = (function () {
     btn.setAttribute('aria-label', 'Open the Mode Lab');
     btn.appendChild(auraCanvas(btn));
     var slab = el('div', 'lab-slab');
-    slab.appendChild(el('div', 'lab-ring'));
-    slab.appendChild(el('div', 'lab-title', 'MODE LAB'));
+    var face = el('div', 'lab-face');
+    face.appendChild(playCanvas(btn));
+    slab.appendChild(face);
+    var title = el('div', 'lab-title');
+    'MODE LAB'.split('').forEach(function (ch, i) {
+      var sp = el('span', '', ch);
+      sp.style.setProperty('--i', i);
+      title.appendChild(sp);
+    });
+    slab.appendChild(title);
     var n = Object.keys(LAB_MODES).length;
-    slab.appendChild(el('div', 'lab-sub', n + ' experimental gamemodes'));
+    slab.appendChild(el('div', 'lab-sub', 'experimental gamemodes'));
+    var badge = el('div', 'lab-badge', String(n));
+    badge.appendChild(el('small', '', 'MODES'));
+    slab.appendChild(badge);
     btn.appendChild(slab);
+    tilt(btn, slab);
     btn.addEventListener('click', show);
     var anchor = document.getElementById('diffline');
     if (anchor && anchor.parentNode) anchor.parentNode.insertBefore(btn, anchor.nextSibling);
