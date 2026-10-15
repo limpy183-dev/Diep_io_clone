@@ -7593,7 +7593,10 @@ labMode('juggarmageddon', {
   //     capped traps also go down with it rather than standing for a minute.
   rules: { forceClass: JR_BASE, shapes: 2600, bots: 22, killBounty: 24000, killShare: 0.45,
     shapeXp: 2.6, regen: 0.6, maxLevel: 500, lvlScale: 1.003, lvlSlow: 1.0022,
-    statHealthPct: 0.07, statBodyPct: 0.06, jrStack: 1, jrHaste: 0.75, shotCap: 360, trapCap: 90, bulletCap: 450 },
+    statHealthPct: 0.07, statBodyPct: 0.06, jrStack: 1, jrHaste: 0.75, shotCap: 360, trapCap: 90, bulletCap: 450,
+    // fovSize: the view widens with the hull (size/78)^0.4, on top of the tier
+    // and level pull-back, so a level-500 Armageddon is not 30% of the screen.
+    fovSize: 0.4 },
   size: 28000,
   treeRoot: JR_BASE,
   treeUnique: true,

@@ -1101,6 +1101,20 @@ section('the fixes that have to hold everywhere');
   ok('the tiers gate on level', JH.every((h) => def(h).levelRequirement === sim.JR_LVL[h.t]));
   ok('the top tier sits on the cap', sim.JR_LVL[13] === CAP);
   ok('and the Royale still ends on its own', sim.JR_LVL[8] === GAMEMODES.juggerroyale.rules.maxLevel);
+  {
+    // fovSize: the camera widens with the hull, so the top hull is a smaller
+    // share of the screen than the same hull would be without the rule.
+    const me = g.player;
+    me.addScore(sim.LEVEL_SCORE[CAP]);
+    sim.forceTankClass(me, JB + 42);
+    me.recompute();
+    const share = me.size * me.fov;
+    g.ruleOverride = { fovSize: 0 }; me.recompute();
+    const bare = me.size * me.fov;
+    g.ruleOverride = null; me.recompute();
+    ok('a level-500 Armageddon takes a smaller share of the screen than without fovSize',
+      share < bare * 0.5, share.toFixed(1) + ' vs ' + bare.toFixed(1));
+  }
   const per = [9, 10, 11, 12, 13].map((t) => JH.filter((h) => h.t === t).length).join(',');
   ok('sixteen, sixteen, eight, two, one', per === '16,16,8,2,1', per);
 

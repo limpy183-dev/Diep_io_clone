@@ -595,6 +595,11 @@ Tank.prototype.recompute = function () {
   // it reads a live value off the game rather than a fixed rule.
   this.fov = 0.55 * def.fieldFactor / Math.pow(this.game.rule('lvlScale', 1.01), (L - 1) / 2)
     * (this.game.fovScale !== undefined ? this.game.fovScale : this.game.rule('fov', 1));
+  // fovSize: a mode whose hulls run far past diep's size range widens the view
+  // with the hull, so a huge tank takes a steady share of the screen instead of
+  // filling it. 0 (the default) leaves every other mode alone.
+  var fovSize = this.game.rule('fovSize', 0);
+  if (fovSize && this.size > 78) this.fov *= Math.pow(78 / this.size, fovSize);
   // bonusPoints is the /points cheat; the floor keeps an over-spent build (also
   // a cheat) from wrapping to 255 when it goes out on the wire as a u8.
   this.statsAvailable = Math.max(0, statCount(L) + (this.bonusPoints || 0) - st.reduce(function (a, b) { return a + b; }, 0));
