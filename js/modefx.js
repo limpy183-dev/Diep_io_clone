@@ -896,22 +896,32 @@ function jrPaintLinks(r, c, g, e, s, R, t, k) {
     c.restore();
   }
   if (e.jrLit) fxPointer(r, c, e.x, e.y, 'rgb(' + e.def.jrTone + ')', (e.def.name || 'BEACON').toUpperCase());
+  if ((e.def.jrTier || 0) > 8 || e.jaLift) jaPaintLinks(r, c, g, e, s, R, t, k);
 }
 
 // Burning ground and ice sheets. Drawn here rather than as entities, because a
 // flat twelve-sided polygon is not what a burning patch looks like.
+//
+// Off-screen patches are skipped, and only the first ten burning patches on
+// screen get a glow: a crown that leaves fire behind it lays thirty of them on
+// top of each other, and thirty additive glows over a light floor is a white
+// smear that also costs the frame several milliseconds. The embers still draw
+// for every one of them, so the ground reads as just as much on fire.
 function jrPaintFields(r, c, g, t, k) {
   if (!g.jrFields || !g.jrFields.length) return;
+  var glows = 0, W = r.canvas.width, H = r.canvas.height;
   for (var i = 0; i < g.jrFields.length; i++) {
     var f = g.jrFields[i];
     if (f.dead) continue;
     var s = r.toScreen(f.x, f.y), R = f.size * k;
+    if (s.x < -R * 2.7 || s.y < -R * 2.7 || s.x > W + R * 2.7 || s.y > H + R * 2.7) continue;
     var life = Math.max(0.001, f.jrDie - f.jrBorn);
     var fade = Math.max(0, Math.min(1, (f.jrDie - g.tick) / life));
+    if (f.jrKind === 'well') { jaPaintWell(r, c, g, f, s, R, t, Math.min(1, fade * 4)); continue; }
     if (f.jrKind === 'burn') {
       c.save();
       c.globalCompositeOperation = 'lighter';
-      fxGlow(c, s.x, s.y, R * 1.2, 'rgba(255,110,40,' + (0.22 * fade) + ')', 1);
+      if (glows++ < 10) fxGlow(c, s.x, s.y, R * 1.2, 'rgba(255,110,40,' + (0.22 * fade) + ')', 1);
       for (var j = 0; j < 9; j++) {
         var ph = (t * 1.3 + j * 0.31) % 1, a = j * 2.399 + f.id;
         var rad = R * (0.15 + 0.8 * ((j * 7 % 10) / 10));
@@ -1011,6 +1021,16 @@ MODE_FX.juggerroyale = {
     var list = g.jrFx || (g.fx && g.fx.jrFx) || [];
     for (i = 0; i < list.length; i++) {
       var fx = list[i], age = (g.tick - fx.at) / TPS;
+      // Armageddon's verbs carry painters of their own, each with its own life.
+      var ja = JA_BURST[fx.kind];
+      if (ja) {
+        if (age >= 0 && age <= ja.life) {
+          c.save();
+          ja.draw(r, c, g, fx, r.toScreen(fx.x, fx.y), age, 1 - age / ja.life, k, t);
+          c.restore();
+        }
+        continue;
+      }
       if (age < 0 || age > 1.1) continue;
       var spec = JR_BURST[fx.kind] || JR_BURST.slam;
       var fade = 1 - age / 1.1, tone = fx.tone || '255,255,255';
@@ -1055,11 +1075,14 @@ MODE_FX.juggerroyale = {
           fxRing(c, p.x, p.y, fx.r * k * (spec.m === 'in' ? grow + off : grow - off),
             jrRGBA(tone, fade * (1 - q * 0.28)), Math.max(2, fx.r * k * spec.w * fade), 1);
         }
-        fxGlow(c, p.x, p.y, R2 * 0.9, jrRGBA(spec.hot ? '255,150,60' : tone, 0.5 * fade), 1);
+        fxGlow(c, p.x, p.y, R2 * 0.9, jrRGBA(spec.hot ? '255,150,60' : tone, 0.5 * fade),
+          JA_SOFT.dim ? jaCover(c, R2 * 0.9) : 1);
         if (spec.dots) jrDots(c, p.x, p.y, R2, spec.dots, age * (spec.m === 'in' ? -1.4 : 1.1),
           Math.max(1.5, fx.r * k * 0.045), jrRGBA(tone, fade));
       }
     }
+    // Everything past the crowns drew its soft light into a quarter-res buffer.
+    jaFlushSoft(c);
   },
 
   // Bottom-centre: what you are flying, what it does, and whether the button is
@@ -1075,7 +1098,8 @@ MODE_FX.juggerroyale = {
     var left = Math.max(0, ((p.jrCool || 0) - g.tick) / TPS);
     var autos = p.def.jrAuto || [], traits = p.def.jrTraits || [];
     var extra = (autos.length ? 22 : 0) + (traits.length ? 15 : 0);
-    var bw = 320, bh = 46 + extra, bx = w / 2 - bw / 2, by = h - 108 - extra;
+    // Wide enough for the pills: four fit in 320, ten (an Armageddon) do not.
+    var bw = Math.max(320, autos.length * 66 + 20), bh = 46 + extra, bx = w / 2 - bw / 2, by = h - 108 - extra;
 
     c.save();
     c.textAlign = 'center'; c.textBaseline = 'middle';
@@ -2702,6 +2726,710 @@ MODE_THUMB.lastjugg = function (c, w, h, t) {
   fxRing(c, cx, cy, R * 1.5, 'rgba(255,90,90,0.45)', 2, 1);
   tText(c, cx, cy - R - 12, 'LVL ' + (45 + step * 39), 11, '#FFD9A0');
   tText(c, w / 2, h - 13, 'IT NEVER CHANGES HANDS', 11, '#FFC0C4');
+};
+
+// =========================================================================
+// Juggernaut Armageddon
+// =========================================================================
+//
+// The Royale's painters still draw every hull up to the crowns. Everything here
+// is what comes after: five auras, each one the aura below it with another layer
+// bolted on the outside, so a tier is legible from how much of the screen it
+// lights; the ground and links the new verbs leave; a burst painter per verb;
+// and a screen layer that flashes, desaturates and shakes when the arena is
+// being unmade near you.
+
+function jaHash(i) { var s = Math.sin(i * 127.1 + 311.7) * 43758.5453; return s - Math.floor(s); }
+
+// Lightning from one point to another: a jagged line whose kinks re-roll every
+// time the seed changes, a wide soft pass in the caster's colour under a thin
+// white core.
+function jaBolt(c, x1, y1, x2, y2, seed, w, tone, alpha) {
+  var dx = x2 - x1, dy = y2 - y1, len = Math.hypot(dx, dy) || 1;
+  var nx = -dy / len, ny = dx / len, n = Math.max(4, Math.min(14, Math.round(len / 40)));
+  var pts = [x1, y1], i;
+  for (i = 1; i < n; i++) {
+    var f = i / n, j = (jaHash(seed * 31 + i) - 0.5) * len * 0.22 * Math.sin(f * Math.PI);
+    pts.push(x1 + dx * f + nx * j, y1 + dy * f + ny * j);
+  }
+  pts.push(x2, y2);
+  c.save();
+  c.globalCompositeOperation = 'lighter';
+  c.lineCap = 'round'; c.lineJoin = 'round';
+  for (var pass = 0; pass < 2; pass++) {
+    c.globalAlpha = (alpha === undefined ? 1 : alpha) * (pass ? 0.95 : 0.5);
+    c.strokeStyle = pass ? 'rgba(255,255,255,0.95)' : jrRGBA(tone || '200,220,255', 0.9);
+    c.lineWidth = Math.max(1, pass ? w * 0.35 : w);
+    c.beginPath(); c.moveTo(pts[0], pts[1]);
+    for (i = 2; i < pts.length; i += 2) c.lineTo(pts[i], pts[i + 1]);
+    c.stroke();
+  }
+  c.restore();
+}
+
+// A star of n points between two radii.
+function jaStar(c, x, y, r0, r1, n, rot) {
+  c.beginPath();
+  for (var i = 0; i < n * 2; i++) {
+    var a = rot + Math.PI * i / n, rr = i % 2 ? r1 : r0;
+    var px = x + Math.cos(a) * rr, py = y + Math.sin(a) * rr;
+    if (i) c.lineTo(px, py); else c.moveTo(px, py);
+  }
+  c.closePath();
+}
+
+// God rays: n wedges of light from r0 out toward r1, each breathing in length.
+function jaRays(c, x, y, r0, r1, n, rot, tone, alpha, t, width) {
+  c.save();
+  c.globalCompositeOperation = 'lighter';
+  var wd = width || 0.06;
+  for (var i = 0; i < n; i++) {
+    var a = rot + Math.PI * 2 * (i / n), fl = 0.72 + 0.28 * Math.sin(t * 4.3 + i * 1.7);
+    var len = r0 + (r1 - r0) * fl;
+    var gr = c.createLinearGradient(x + Math.cos(a) * r0, y + Math.sin(a) * r0, x + Math.cos(a) * len, y + Math.sin(a) * len);
+    gr.addColorStop(0, jrRGBA(tone, alpha));
+    gr.addColorStop(1, jrRGBA(tone, 0));
+    c.fillStyle = gr;
+    c.beginPath();
+    c.moveTo(x + Math.cos(a - wd) * r0, y + Math.sin(a - wd) * r0);
+    c.lineTo(x + Math.cos(a) * len, y + Math.sin(a) * len);
+    c.lineTo(x + Math.cos(a + wd) * r0, y + Math.sin(a + wd) * r0);
+    c.closePath(); c.fill();
+  }
+  c.restore();
+}
+
+// Sparks lifting off a hull and burning out.
+function jaSparks(c, x, y, R, tone, t, n, reach) {
+  c.save();
+  c.globalCompositeOperation = 'lighter';
+  for (var i = 0; i < n; i++) {
+    var ph = (t * (0.35 + jaHash(i) * 0.3) + jaHash(i + 50)) % 1;
+    var a = jaHash(i + 9) * Math.PI * 2 + t * 0.05, d = R * (1.1 + ph * reach);
+    c.fillStyle = jrRGBA(ph < 0.3 ? '255,255,255' : tone, 0.85 * (1 - ph));
+    c.beginPath();
+    c.arc(x + Math.cos(a) * d, y + Math.sin(a) * d - ph * R * 0.8, Math.max(1, R * 0.05 * (1 - ph)), 0, Math.PI * 2);
+    c.fill();
+  }
+  c.restore();
+}
+
+// The dark a top-tier hull is lit against: an annulus from just outside the
+// shell outward, so the arena around it dims and the hull itself does not.
+function jaDark(c, x, y, r0, r1, alpha) {
+  var gr = c.createRadialGradient(x, y, r0, x, y, r1);
+  gr.addColorStop(0, 'rgba(8,4,16,' + alpha + ')');
+  gr.addColorStop(0.5, 'rgba(8,4,16,' + alpha * 0.45 + ')');
+  gr.addColorStop(1, 'rgba(8,4,16,0)');
+  c.save();
+  c.fillStyle = gr;
+  c.beginPath(); c.arc(x, y, r1, 0, Math.PI * 2); c.arc(x, y, r0, 0, Math.PI * 2, true); c.fill('evenodd');
+  c.restore();
+}
+
+// --- the soft layer -----------------------------------------------------------
+// Every glow, god-ray and darkening up here covers most of the screen, and on a
+// rasterised canvas that is what a frame pays for: measured, each full-screen
+// gradient cost 2-3 ms, and the Armageddon stacked ten of them for 33 ms of aura
+// alone. So they are drawn into two quarter-resolution buffers — one additive,
+// one darkening — and laid over the arena once at the end of the world layer.
+// A soft gradient upscaled is still a soft gradient, and the cost no longer
+// grows with how many of them there are.
+var JA_SOFT = { k: 0.25, light: null, dark: null, usedL: false, usedD: false, dim: false };
+
+// How much of a burst's glow survives, given how much of the screen it covers.
+// A glow wider than the screen is not a glow any more, it is the screen turning
+// white; past that point it fades in proportion, and the rings and rays — which
+// are what the burst actually looks like — are left alone.
+function jaCover(c, R) {
+  var diag = Math.hypot(c.canvas.width, c.canvas.height);
+  return Math.min(1, diag * 0.8 / Math.max(1, R));
+}
+
+function jaSoftCtx(kind, w, h) {
+  if (typeof document === 'undefined') return null;
+  var S = JA_SOFT, bw = Math.max(2, Math.ceil(w * S.k)), bh = Math.max(2, Math.ceil(h * S.k));
+  if (!S.light) { S.light = document.createElement('canvas'); S.dark = document.createElement('canvas'); }
+  if (S.light.width !== bw || S.light.height !== bh) {
+    S.light.width = S.dark.width = bw; S.light.height = S.dark.height = bh;
+    S.usedL = S.usedD = false;
+  }
+  var dark = kind === 'dark', bc = (dark ? S.dark : S.light).getContext('2d');
+  if (!bc) return null;
+  if (dark ? !S.usedD : !S.usedL) {
+    bc.setTransform(1, 0, 0, 1, 0, 0);
+    bc.globalAlpha = 1;
+    bc.globalCompositeOperation = 'source-over';
+    bc.clearRect(0, 0, bw, bh);
+    if (dark) S.usedD = true; else S.usedL = true;
+  }
+  bc.globalCompositeOperation = dark ? 'source-over' : 'lighter';
+  return bc;
+}
+
+// fxGlow, into the additive buffer. Respects the hull's own opacity.
+function jaGlow(c, x, y, r, color, alpha) {
+  var bc = jaSoftCtx('light', c.canvas.width, c.canvas.height);
+  if (!bc) return fxGlow(c, x, y, r, color, alpha);
+  var k = JA_SOFT.k, rr = Math.max(1, r * k);
+  var gr = bc.createRadialGradient(x * k, y * k, 0, x * k, y * k, rr);
+  gr.addColorStop(0, color);
+  gr.addColorStop(1, 'rgba(0,0,0,0)');
+  bc.globalAlpha = (alpha === undefined ? 1 : alpha) * (c.globalAlpha === undefined ? 1 : c.globalAlpha);
+  bc.fillStyle = gr;
+  bc.beginPath(); bc.arc(x * k, y * k, rr, 0, Math.PI * 2); bc.fill();
+  bc.globalAlpha = 1;
+}
+
+// jaRays, into the additive buffer.
+function jaSoftRays(c, x, y, r0, r1, n, rot, tone, alpha, t, width) {
+  var bc = jaSoftCtx('light', c.canvas.width, c.canvas.height), k = JA_SOFT.k;
+  if (!bc) return jaRays(c, x, y, r0, r1, n, rot, tone, alpha, t, width);
+  bc.globalAlpha = c.globalAlpha === undefined ? 1 : c.globalAlpha;
+  jaRays(bc, x * k, y * k, r0 * k, r1 * k, n, rot, tone, alpha, t, width);
+  bc.globalAlpha = 1;
+}
+
+// jaDark, into the darkening buffer.
+function jaSoftDark(c, x, y, r0, r1, alpha) {
+  var bc = jaSoftCtx('dark', c.canvas.width, c.canvas.height), k = JA_SOFT.k;
+  if (!bc) return jaDark(c, x, y, r0, r1, alpha);
+  jaDark(bc, x * k, y * k, r0 * k, r1 * k, alpha * (c.globalAlpha === undefined ? 1 : c.globalAlpha));
+}
+
+// Lay both buffers over the arena and empty them. Called once, at the end of
+// the world layer, and a no-op on any frame nothing past the crowns drew.
+function jaFlushSoft(c) {
+  var S = JA_SOFT;
+  if (!S.usedL && !S.usedD) return;
+  var w = c.canvas.width, h = c.canvas.height;
+  c.save();
+  c.setTransform(1, 0, 0, 1, 0, 0);
+  c.globalAlpha = 1;
+  c.imageSmoothingEnabled = true;
+  if (S.usedD) { c.globalCompositeOperation = 'source-over'; c.drawImage(S.dark, 0, 0, w, h); }
+  // 'screen' rather than 'lighter': it brightens toward white without ever
+  // reaching it, which on diep's light floor is the difference between light
+  // and a white-out once three verbs land on the same frame.
+  if (S.usedL) { c.globalCompositeOperation = 'screen'; c.drawImage(S.light, 0, 0, w, h); }
+  c.restore();
+  S.usedL = S.usedD = false;
+}
+
+// The crown's own layers with its glows moved into the soft buffer: the base
+// every aura past it is built on.
+function jaCrown(c, x, y, R, A, B, t) {
+  jaGlow(c, x, y, R * 4.2, jrRGBA(A, 0.2), 1);
+  jaGlow(c, x, y, R * 2.6, jrRGBA(B, 0.24), 1);
+  jrBarbs(c, x, y, R * 1.22, 16, t * 0.18, R * 0.34, jrRGBA(A, 0.6), jrRGBA(A, 1), Math.max(1, R * 0.018));
+  jrBarbs(c, x, y, R * 1.9, 10, -t * 0.12, R * 0.26, jrRGBA(B, 0.45), jrRGBA(B, 0.9), Math.max(1, R * 0.015));
+  fxRing(c, x, y, R * 2.5, jrRGBA(A, 0.55), Math.max(1.5, R * 0.03), 1);
+  fxRing(c, x, y, R * 2.62, jrRGBA(B, 0.35), Math.max(1, R * 0.016), 1);
+  jrDots(c, x, y, R * 2.56, 24, -t * 0.07, Math.max(1.5, R * 0.045), jrRGBA('255,255,255', 0.8));
+  for (var i = 0; i < 4; i++) {
+    var ph = (t * 0.35 + i / 4) % 1;
+    fxRing(c, x, y, R * (1.15 + ph * 1.9), jrRGBA(i % 2 ? B : A, 0.42 * (1 - ph)), Math.max(1, R * 0.06 * (1 - ph)), 1);
+  }
+  jaGlow(c, x, y, R * 1.05, 'rgba(255,255,255,' + (0.26 + 0.1 * Math.sin(t * 2.4)) + ')', 1);
+}
+
+// TIER 9: the crown with a sunburst behind it, an eight-point star turning over
+// the top, and sparks coming off it all the time.
+JR_AURA.ascendant = function (c, x, y, R, A, B, t, e, tier) {
+  B = B || A;
+  jaSoftRays(c, x, y, R * 1.1, R * 4.6, 12, t * 0.12, A, 0.3, t, 0.07);
+  jaCrown(c, x, y, R, A, B, t);
+  c.save();
+  c.strokeStyle = jrRGBA(B, 0.75); c.lineWidth = Math.max(1.5, R * 0.025);
+  jaStar(c, x, y, R * 2.95, R * 2.35, 8, -t * 0.1); c.stroke();
+  c.restore();
+  jaSparks(c, x, y, R, A, t, 12, 2.6);
+};
+
+// TIER 10: four wings of light that beat slowly, runes on an orbit, and
+// lightning hopping around the outer ring.
+JR_AURA.archon = function (c, x, y, R, A, B, t, e, tier) {
+  B = B || A;
+  JR_AURA.ascendant(c, x, y, R, A, B, t, e, tier);
+  var beat = 0.5 + 0.5 * Math.sin(t * 1.6), i;
+  c.save();
+  c.globalCompositeOperation = 'lighter';
+  // One path per colour rather than a fill per feather.
+  for (var col = 0; col < 2; col++) {
+    c.beginPath();
+    for (var wi = 0; wi < 4; wi++) {
+      var wa = Math.PI / 4 + Math.PI / 2 * wi + Math.sin(t * 1.4 + wi) * 0.08;
+      for (var f = col; f < 7; f += 2) {
+        var fa = wa + (f - 3) * 0.11 * (1 + beat * 0.4);
+        var fl = R * (2.3 + (3 - Math.abs(f - 3)) * 0.35) * (0.9 + beat * 0.15);
+        c.moveTo(x + Math.cos(fa - 0.05) * R * 1.3, y + Math.sin(fa - 0.05) * R * 1.3);
+        c.lineTo(x + Math.cos(fa) * fl, y + Math.sin(fa) * fl);
+        c.lineTo(x + Math.cos(fa + 0.05) * R * 1.3, y + Math.sin(fa + 0.05) * R * 1.3);
+        c.closePath();
+      }
+    }
+    c.fillStyle = jrRGBA(col ? A : B, 0.2);
+    c.fill();
+  }
+  c.restore();
+  c.save();
+  c.strokeStyle = jrRGBA(A, 0.85); c.lineWidth = Math.max(1.2, R * 0.022);
+  c.beginPath();
+  for (i = 0; i < 6; i++) {
+    var ra = t * 0.4 + i * Math.PI / 3, rx = x + Math.cos(ra) * R * 3.15, ry = y + Math.sin(ra) * R * 3.15;
+    var sides = 3 + (i % 3), rot = -t * 0.9 + i;
+    for (var s = 0; s <= sides; s++) {
+      var sa = rot + Math.PI * 2 * (s / sides);
+      if (s) c.lineTo(rx + Math.cos(sa) * R * 0.17, ry + Math.sin(sa) * R * 0.17);
+      else c.moveTo(rx + Math.cos(sa) * R * 0.17, ry + Math.sin(sa) * R * 0.17);
+    }
+  }
+  c.stroke();
+  c.restore();
+  var q = Math.floor(t * 9);
+  for (i = 0; i < 3; i++) {
+    var a0 = jaHash(q * 7 + i) * Math.PI * 2, a1 = a0 + 0.6 + jaHash(q * 13 + i) * 0.8;
+    jaBolt(c, x + Math.cos(a0) * R * 2.5, y + Math.sin(a0) * R * 2.5,
+      x + Math.cos(a1) * R * 2.5, y + Math.sin(a1) * R * 2.5, q * 3 + i, Math.max(1.5, R * 0.05), B, 0.8);
+  }
+};
+
+// TIER 11: two dynasties' light chasing each other round the hull, two
+// twelve-point stars turning against each other, and two planets on an orbit.
+JR_AURA.primordial = function (c, x, y, R, A, B, t, e, tier) {
+  B = B || A;
+  var i, k;
+  jaGlow(c, x, y, R * 5.2, jrRGBA(A, 0.16), 1);
+  jaGlow(c, x + Math.cos(t * 0.7) * R * 0.9, y + Math.sin(t * 0.7) * R * 0.9, R * 3.6, jrRGBA(A, 0.2), 1);
+  jaGlow(c, x - Math.cos(t * 0.7) * R * 0.9, y - Math.sin(t * 0.7) * R * 0.9, R * 3.6, jrRGBA(B, 0.2), 1);
+  JR_AURA.archon(c, x, y, R, A, B, t, e, tier);
+  c.save();
+  c.lineWidth = Math.max(1.5, R * 0.03);
+  c.strokeStyle = jrRGBA(A, 0.8); jaStar(c, x, y, R * 3.55, R * 2.85, 12, t * 0.15); c.stroke();
+  c.strokeStyle = jrRGBA(B, 0.8); jaStar(c, x, y, R * 3.55, R * 2.85, 12, -t * 0.15 + Math.PI / 12); c.stroke();
+  c.restore();
+  c.save();
+  c.globalCompositeOperation = 'lighter';
+  for (i = 0; i < 2; i++) {
+    var pa = t * 0.9 + i * Math.PI;
+    for (k = 0; k < 6; k++) {
+      var ta = pa - k * 0.11;
+      c.fillStyle = jrRGBA(i ? B : A, 0.55 * (1 - k / 6));
+      c.beginPath();
+      c.arc(x + Math.cos(ta) * R * 3.95, y + Math.sin(ta) * R * 3.95, Math.max(1, R * 0.2 * (1 - k / 8)), 0, Math.PI * 2);
+      c.fill();
+    }
+    jaGlow(c, x + Math.cos(pa) * R * 3.95, y + Math.sin(pa) * R * 3.95, R * 0.7, jrRGBA(i ? B : A, 0.8), 1);
+  }
+  c.restore();
+  var q = Math.floor(t * 10);
+  for (i = 0; i < 6; i++) {
+    var b0 = Math.PI * 2 * (i / 6) + t * 0.15, b1 = b0 + Math.PI / 6 + (jaHash(q + i) - 0.5) * 0.4;
+    jaBolt(c, x + Math.cos(b0) * R * 3.55, y + Math.sin(b0) * R * 3.55,
+      x + Math.cos(b1) * R * 3.55, y + Math.sin(b1) * R * 3.55, q * 6 + i, Math.max(1.5, R * 0.045), i % 2 ? B : A, 0.7);
+  }
+};
+
+// TIER 12: the arena dims around it, two dozen rays reach past the edge of the
+// light, a halo of forty-eight stars, and shock rings that never stop leaving.
+JR_AURA.eschaton = function (c, x, y, R, A, B, t, e, tier) {
+  B = B || A;
+  if (tier < 13) jaSoftDark(c, x, y, R * 1.15, R * 7.5, 0.42);
+  jaSoftRays(c, x, y, R * 1.2, R * 7, 24, t * 0.06, A, 0.32, t, 0.04);
+  JR_AURA.primordial(c, x, y, R, A, B, t, e, tier);
+  jrDots(c, x, y, R * 4.5, 48, t * 0.05, Math.max(1.5, R * 0.04), jrRGBA('255,255,255', 0.85));
+  fxRing(c, x, y, R * 4.5, jrRGBA(A, 0.6), Math.max(1.5, R * 0.03), 1);
+  fxRing(c, x, y, R * 4.68, jrRGBA(B, 0.4), Math.max(1, R * 0.018), 1);
+  for (var i = 0; i < 3; i++) {
+    var ph = (t * 0.3 + i / 3) % 1;
+    fxRing(c, x, y, R * (2 + ph * 5), jrRGBA(i % 2 ? B : A, 0.5 * (1 - ph)), Math.max(2, R * 0.08 * (1 - ph)), 1);
+  }
+};
+
+// TIER 13: a black sun. The dark goes further, the corona burns white and red,
+// a sigil turns in the middle of it, lightning comes off the shell twelve times
+// a second, and a red heartbeat runs out to the edge of the light.
+JR_AURA.armageddon = function (c, x, y, R, A, B, t, e, tier) {
+  B = B || A;
+  var i;
+  jaSoftDark(c, x, y, R * 1.1, R * 10, 0.55);
+  jaSoftRays(c, x, y, R * 1.05, R * 9, 36, t * 0.05, B, 0.34, t, 0.035);
+  jaSoftRays(c, x, y, R * 1.05, R * 5.8, 24, -t * 0.08, '255,255,255', 0.36, t * 1.3, 0.05);
+  JR_AURA.eschaton(c, x, y, R, A, B, t, e, tier);
+  c.save();
+  c.lineWidth = Math.max(2, R * 0.035);
+  c.strokeStyle = jrRGBA(B, 0.85); jaStar(c, x, y, R * 5.2, R * 4.1, 24, -t * 0.07); c.stroke();
+  c.strokeStyle = 'rgba(255,255,255,0.7)'; jaStar(c, x, y, R * 1.95, R * 1.45, 12, t * 0.3); c.stroke();
+  c.restore();
+  fxRing(c, x, y, R * 1.95, jrRGBA(B, 0.7), Math.max(1.5, R * 0.03), 1);
+  var q = Math.floor(t * 12);
+  for (i = 0; i < 8; i++) {
+    var a = jaHash(q * 11 + i) * Math.PI * 2, l = R * (2.5 + jaHash(q * 5 + i) * 4.5);
+    var a2 = a + (jaHash(i + q * 3) - 0.5) * 0.6;
+    jaBolt(c, x + Math.cos(a) * R, y + Math.sin(a) * R, x + Math.cos(a2) * l, y + Math.sin(a2) * l,
+      q * 8 + i, Math.max(2, R * 0.06), i % 3 ? B : A, 0.9);
+  }
+  var hb = (t / 1.4) % 1;
+  fxRing(c, x, y, R * (1.2 + hb * 8.5), jrRGBA(B, 0.7 * (1 - hb)), Math.max(3, R * 0.14 * (1 - hb)), 1);
+  jaSparks(c, x, y, R, B, t * 1.4, 18, 5);
+  // A black sun has no white core: the light is the corona round the rim.
+  fxRing(c, x, y, R * 1.08, 'rgba(255,240,220,' + (0.75 + 0.2 * Math.sin(t * 7)) + ')', Math.max(2, R * 0.05), 1);
+  jaGlow(c, x, y, R * 1.7, jrRGBA(B, 0.35 + 0.1 * Math.sin(t * 7)), 1);
+};
+
+// --- the ground and the links ---------------------------------------------
+
+// A BLACK HOLE on the floor: a core with no light in it, spiral arms of hot gas
+// falling in, motes going with them, and the bright thin ring at the edge.
+function jaPaintWell(r, c, g, f, s, R, t, fade) {
+  var tone = (f.jrBy && f.jrBy.def && f.jrBy.def.jrTone) || '190,160,255', j;
+  var gr = c.createRadialGradient(s.x, s.y, 0, s.x, s.y, R * 2.6);
+  gr.addColorStop(0, 'rgba(0,0,0,' + 0.96 * fade + ')');
+  gr.addColorStop(0.14, 'rgba(0,0,0,' + 0.92 * fade + ')');
+  gr.addColorStop(0.42, 'rgba(10,6,24,' + 0.45 * fade + ')');
+  gr.addColorStop(1, 'rgba(10,6,24,0)');
+  c.save();
+  c.fillStyle = gr; c.beginPath(); c.arc(s.x, s.y, R * 2.6, 0, Math.PI * 2); c.fill();
+  c.globalCompositeOperation = 'lighter'; c.lineCap = 'round';
+  for (var arm = 0; arm < 4; arm++) {
+    c.strokeStyle = jrRGBA(arm % 2 ? tone : '255,200,140', 0.5 * fade);
+    c.lineWidth = Math.max(1.5, R * 0.06);
+    c.beginPath();
+    for (j = 0; j <= 24; j++) {
+      var u = j / 24, rr = R * (0.36 + u * 2.2), a = t * 2.4 + arm * Math.PI / 2 + u * 3.6;
+      if (j) c.lineTo(s.x + Math.cos(a) * rr, s.y + Math.sin(a) * rr);
+      else c.moveTo(s.x + Math.cos(a) * rr, s.y + Math.sin(a) * rr);
+    }
+    c.stroke();
+  }
+  for (j = 0; j < 18; j++) {
+    var ph = (t * 0.8 + j / 18) % 1, ma = j * 2.399 + ph * 4, md = R * 2.6 * (1 - ph) + R * 0.3;
+    c.fillStyle = jrRGBA(tone, 0.8 * fade * ph);
+    c.beginPath(); c.arc(s.x + Math.cos(ma) * md, s.y + Math.sin(ma) * md, Math.max(1, R * 0.05), 0, Math.PI * 2); c.fill();
+  }
+  c.restore();
+  fxRing(c, s.x, s.y, R * 0.36, 'rgba(255,232,200,' + 0.9 * fade + ')', Math.max(1.5, R * 0.04), 1);
+}
+
+// What a hull past the crowns is holding: its godray, its blades, the lift
+// under anything it has raptured, and the deaths it has left to refuse.
+function jaPaintLinks(r, c, g, e, s, R, t, k) {
+  var i;
+  if (e.jaRay && g.tick < e.jaRay) {
+    var a = e.jaRayA === undefined ? e.angle : e.jaRayA, len = (9000 + e.size * 4) * k;
+    var ex = s.x + Math.cos(a) * len, ey = s.y + Math.sin(a) * len;
+    var gr = c.createLinearGradient(s.x, s.y, ex, ey);
+    gr.addColorStop(0, 'rgba(255,255,240,0.8)');
+    gr.addColorStop(0.4, jrRGBA(e.def.jrTone2 || e.def.jrTone, 0.5));
+    gr.addColorStop(1, jrRGBA(e.def.jrTone2 || e.def.jrTone, 0));
+    c.save();
+    c.globalCompositeOperation = 'lighter';
+    c.lineCap = 'round';
+    c.strokeStyle = gr; c.lineWidth = R * (0.75 + 0.2 * Math.sin(t * 26));
+    c.beginPath(); c.moveTo(s.x, s.y); c.lineTo(ex, ey); c.stroke();
+    c.lineWidth = R * 0.2; c.strokeStyle = 'rgba(255,255,255,0.85)';
+    c.beginPath(); c.moveTo(s.x, s.y); c.lineTo(ex, ey); c.stroke();
+    c.restore();
+    var q = Math.floor(t * 14);
+    for (i = 0; i < 3; i++) {
+      var f0 = jaHash(q + i * 5) * 0.8, f1 = f0 + 0.08 + jaHash(q * 3 + i) * 0.15;
+      jaBolt(c, s.x + (ex - s.x) * f0, s.y + (ey - s.y) * f0, s.x + (ex - s.x) * f1, s.y + (ey - s.y) * f1,
+        q * 3 + i, Math.max(2, R * 0.12), e.def.jrTone, 0.8);
+    }
+    jaGlow(c, s.x, s.y, R * 1.6, 'rgba(255,250,230,0.4)', jaCover(c, R * 1.6));
+  }
+  if (e.jaBlades && e.jaBlades.length) {
+    c.save();
+    c.globalCompositeOperation = 'lighter';
+    c.strokeStyle = jrRGBA(e.def.jrTone, 0.35); c.lineWidth = Math.max(2, R * 0.12); c.lineCap = 'round';
+    for (i = 0; i < e.jaBlades.length; i++) {
+      var bl = e.jaBlades[i];
+      if (!bl || bl.dead || bl.jrPhase === undefined) continue;
+      c.beginPath(); c.arc(s.x, s.y, R * 2.7, bl.jrPhase - 0.55, bl.jrPhase); c.stroke();
+      var bp = r.toScreen(bl.x, bl.y);
+      fxGlow(c, bp.x, bp.y, bl.size * k * 2.2, jrRGBA(e.def.jrTone2 || e.def.jrTone, 0.5), 1);
+    }
+    c.restore();
+  }
+  if (e.jaLift && g.tick - e.jaLift < 1.6 * TPS) {
+    var lf = (g.tick - e.jaLift) / (1.6 * TPS);
+    var col = c.createLinearGradient(s.x, s.y, s.x, s.y - R * 9);
+    col.addColorStop(0, 'rgba(255,250,220,' + 0.55 * (1 - lf * 0.5) + ')');
+    col.addColorStop(1, 'rgba(255,250,220,0)');
+    c.save();
+    c.globalCompositeOperation = 'lighter';
+    c.fillStyle = col;
+    c.fillRect(s.x - R * 0.9, s.y - R * 9, R * 1.8, R * 9);
+    c.restore();
+    fxRing(c, s.x, s.y, R * (1.3 + lf * 0.6), 'rgba(255,250,220,0.7)', Math.max(1.5, R * 0.06), 1);
+  }
+  // IMMORTAL: three pips over the hull, one going dark for each death refused.
+  if (e.def.jrTraits && e.def.jrTraits.indexOf('immortal') >= 0) {
+    var left = 3 - (e.jaRefused || 0);
+    for (i = 0; i < 3; i++) {
+      var px = s.x + (i - 1) * R * 0.32, py = s.y - R * 1.55;
+      c.save();
+      c.beginPath(); c.arc(px, py, Math.max(2, R * 0.09), 0, Math.PI * 2);
+      c.fillStyle = i < left ? jrRGBA(e.def.jrTone2 || e.def.jrTone, 0.95) : 'rgba(0,0,0,0.45)';
+      c.fill();
+      c.lineWidth = Math.max(1, R * 0.02); c.strokeStyle = 'rgba(255,255,255,0.7)'; c.stroke();
+      c.restore();
+    }
+  }
+}
+
+// TIME STOP's bullets, hanging in the air with frost on them.
+function jaPaintFrozen(r, c, g, t, k) {
+  if (!g.jaFrozen || !g.jaFrozen.length) return;
+  c.save();
+  c.strokeStyle = 'rgba(200,235,255,0.75)';
+  for (var i = 0; i < g.jaFrozen.length; i++) {
+    var e = g.jaFrozen[i];
+    if (e.dead) continue;
+    var s = r.toScreen(e.x, e.y), R = Math.max(3, e.size * k);
+    c.lineWidth = Math.max(1, R * 0.14);
+    fxPoly(c, s.x, s.y, R * 1.45, 6, t * 0.3 + e.id); c.stroke();
+  }
+  c.restore();
+}
+
+// --- the bursts -------------------------------------------------------------
+// One painter per verb, each with how long it lasts. The Royale's burst loop
+// hands any kind it finds in here to this table instead of its own.
+var JA_BURST = {
+  supernova: { life: 1.4, draw: function (r, c, g, fx, p, age, fade, k, t) {
+    var R = fx.r * k, A = fx.tone || '255,255,255', B = fx.tone2 || A, grow = 0.12 + age * 0.9;
+    jaGlow(c, p.x, p.y, R * grow * 0.45, 'rgba(255,255,255,' + 0.3 * fade * fade + ')', jaCover(c, R * grow * 0.45));
+    for (var i = 0; i < 3; i++) {
+      var off = i * 0.12;
+      if (age < off) continue;
+      fxRing(c, p.x, p.y, R * (grow - off * 0.8), jrRGBA(i % 2 ? B : A, fade * (1 - i * 0.22)), Math.max(3, Math.min(36, R * 0.05) * fade), 1);
+    }
+    // Three waves and an echo put six of these on screen at once, so each one is faint.
+    jaSoftRays(c, p.x, p.y, R * grow * 0.2, R * grow, 12, age * 0.6, A, 0.12 * fade * jaCover(c, R * grow * 0.5), t, 0.05);
+  } },
+
+  overdrive: { life: 1.2, draw: function (r, c, g, fx, p, age, fade, k, t) {
+    var R = fx.r * k, A = fx.tone || '255,255,255', B = fx.tone2 || A;
+    c.save();
+    c.lineWidth = Math.max(2, R * 0.04 * fade);
+    c.strokeStyle = jrRGBA(A, fade); jaStar(c, p.x, p.y, R * (0.3 + age * 1.1), R * (0.2 + age * 0.8), 16, age * 2); c.stroke();
+    c.strokeStyle = jrRGBA(B, fade); jaStar(c, p.x, p.y, R * (0.25 + age * 0.9), R * (0.16 + age * 0.6), 16, -age * 2); c.stroke();
+    c.restore();
+    jaSoftRays(c, p.x, p.y, R * 0.2, R * (0.5 + age * 1.2), 16, age, B, 0.18 * fade * jaCover(c, R * (0.5 + age * 1.2)), t, 0.04);
+  } },
+
+  blackhole: { life: 1.0, draw: function (r, c, g, fx, p, age, fade, k) {
+    var R = fx.r * k;
+    for (var i = 0; i < 3; i++) {
+      var g2 = Math.max(0.05, 1.4 - age * 1.3 - i * 0.18);
+      fxRing(c, p.x, p.y, R * g2, jrRGBA(fx.tone || '190,160,255', fade * (1 - i * 0.25)), Math.max(2, Math.min(24, R * 0.03)), 1);
+    }
+  } },
+
+  skyfall: { life: 0.9, draw: function (r, c, g, fx, p, age, fade, k, t) {
+    var R = fx.r * k, w = Math.max(6, Math.min(90, R * 0.4) * (1 - age * 0.6));
+    var col = c.createLinearGradient(p.x, 0, p.x, p.y);
+    col.addColorStop(0, jrRGBA(fx.tone || '255,255,255', 0));
+    col.addColorStop(0.7, jrRGBA(fx.tone || '255,255,255', 0.35 * fade));
+    col.addColorStop(1, 'rgba(255,255,255,' + 0.8 * fade + ')');
+    c.save();
+    c.globalCompositeOperation = 'lighter';
+    c.fillStyle = col;
+    c.fillRect(p.x - w / 2, 0, w, p.y);
+    c.restore();
+    jaGlow(c, p.x, p.y, R * (0.6 + age), 'rgba(255,240,210,' + 0.7 * fade + ')', jaCover(c, R * (0.6 + age)));
+    fxRing(c, p.x, p.y, R * (0.3 + age * 1.4), jrRGBA(fx.tone || '255,255,255', fade), Math.max(2, R * 0.08 * fade), 1);
+  } },
+
+  timestop: { life: 1.6, draw: function (r, c, g, fx, p, age, fade, k) {
+    var R = fx.r * k * Math.min(1, 0.15 + age * 1.6);
+    fxRing(c, p.x, p.y, R, 'rgba(190,225,255,' + fade + ')', Math.max(2, fx.r * k * 0.012), 1);
+    jrDots(c, p.x, p.y, R, 12, 0, Math.max(2, fx.r * k * 0.012), 'rgba(225,245,255,' + fade + ')');
+    c.save();
+    c.strokeStyle = 'rgba(225,245,255,' + fade + ')'; c.lineCap = 'round';
+    c.lineWidth = Math.max(2, fx.r * k * 0.01);
+    c.beginPath(); c.moveTo(p.x, p.y); c.lineTo(p.x + Math.cos(-age * 9) * R * 0.8, p.y + Math.sin(-age * 9) * R * 0.8); c.stroke();
+    c.lineWidth = Math.max(3, fx.r * k * 0.016);
+    c.beginPath(); c.moveTo(p.x, p.y); c.lineTo(p.x + Math.cos(-age * 1.5) * R * 0.5, p.y + Math.sin(-age * 1.5) * R * 0.5); c.stroke();
+    c.restore();
+  } },
+
+  rapture: { life: 1.6, draw: function (r, c, g, fx, p, age, fade, k) {
+    var R = fx.r * k;
+    fxRing(c, p.x, p.y, R * Math.max(0.05, 1.2 - age * 0.7), 'rgba(255,250,220,' + fade + ')', Math.max(2, R * 0.015), 1);
+    c.save();
+    c.globalCompositeOperation = 'lighter';
+    for (var i = 0; i < 10; i++) {
+      var a = jaHash(fx.at + i) * Math.PI * 2, d = R * jaHash(fx.at * 3 + i);
+      var x = p.x + Math.cos(a) * d, y = p.y + Math.sin(a) * d, h = R * 0.6 * age;
+      c.fillStyle = 'rgba(255,250,220,' + 0.35 * fade + ')';
+      c.fillRect(x - R * 0.015, y - h, R * 0.03, h);
+    }
+    c.restore();
+  } },
+
+  genesis: { life: 1.2, draw: function (r, c, g, fx, p, age, fade, k) {
+    var R = fx.r * k;
+    fxRing(c, p.x, p.y, R * (0.2 + age), jrRGBA(fx.tone || '255,255,255', fade), Math.max(2, Math.min(30, R * 0.05) * fade), 1);
+    for (var i = 0; i < 18; i++) {
+      var a = Math.PI * 2 * (i / 18) + age * 2, d = R * (0.3 + age * 0.9);
+      fxGlow(c, p.x + Math.cos(a) * d, p.y + Math.sin(a) * d, R * 0.1, 'rgba(220,255,200,' + 0.8 * fade + ')', 1);
+    }
+  } },
+
+  bolt: { life: 0.4, draw: function (r, c, g, fx, p, age, fade, k) {
+    var w = Math.max(2.5, Math.min(14, (fx.r || 200) * k * 0.05));
+    if (fx.sky) {
+      jaBolt(c, p.x + (jaHash(fx.at + p.x) - 0.5) * 220, -20, p.x, p.y, fx.at * 7 + Math.floor(age * 30), w, fx.tone, fade);
+      fxGlow(c, p.x, p.y, (fx.r || 200) * k * 0.9, 'rgba(230,240,255,' + 0.7 * fade + ')', 1);
+    } else {
+      var to = r.toScreen(fx.tx, fx.ty);
+      jaBolt(c, p.x, p.y, to.x, to.y, fx.at * 5 + Math.floor(age * 30), w, fx.tone, fade);
+      fxGlow(c, to.x, to.y, (fx.r || 200) * k * 0.7, 'rgba(230,240,255,' + 0.6 * fade + ')', 1);
+    }
+  } },
+
+  fissure: { life: 1.1, draw: function (r, c, g, fx, p, age, fade, k) {
+    var to = r.toScreen(fx.tx, fx.ty), reach = Math.min(1, age * 4);
+    var x2 = p.x + (to.x - p.x) * reach, y2 = p.y + (to.y - p.y) * reach;
+    jaBolt(c, p.x, p.y, x2, y2, fx.at + Math.round(fx.tx), Math.max(4, Math.hypot(to.x - p.x, to.y - p.y) * 0.04 * fade),
+      fx.tone || '255,150,60', fade);
+  } },
+
+  godray: { life: 0.8, draw: function (r, c, g, fx, p, age, fade, k) {
+    fxGlow(c, p.x, p.y, fx.r * k * (1 + age), 'rgba(255,250,230,' + 0.6 * fade + ')', 1);
+    fxRing(c, p.x, p.y, fx.r * k * (0.5 + age * 1.5), 'rgba(255,250,230,' + fade + ')', Math.max(2, fx.r * k * 0.04), 1);
+  } },
+
+  bigbang: { life: 2.0, draw: function (r, c, g, fx, p, age, fade, k, t) {
+    var R = fx.r * k, A = fx.tone || '255,255,255', B = fx.tone2 || A;
+    for (var i = 0; i < 5; i++) {
+      var off = i * 0.1;
+      if (age < off) continue;
+      fxRing(c, p.x, p.y, R * (age - off) * 0.7, jrRGBA(i % 2 ? B : A, fade), Math.max(4, Math.min(44, R * 0.02) * fade), 1);
+    }
+    jaSoftRays(c, p.x, p.y, R * 0.05, R * (0.2 + age * 0.6), 32, age * 0.4, B,
+      0.25 * fade * jaCover(c, R * (0.1 + age * 0.3)), t, 0.03);
+    jaGlow(c, p.x, p.y, R * (0.1 + age * 0.3), 'rgba(255,255,255,' + 0.5 * fade * fade + ')', jaCover(c, R * (0.1 + age * 0.3)));
+  } }
+};
+
+// How hard each kind of burst shakes the world, in pixels at point-blank.
+var JA_SHAKE = { bigbang: 34, supernova: 22, overdrive: 12, fissure: 10, skyfall: 7, rapture: 6,
+  apocalypse: 14, overload: 8, quake: 6, slam: 4, rupture: 6, bolt: 2, collapse: 7, meteor: 5 };
+
+// Everything in the screen layer that is not the ability card: the white-out
+// when the arena is unmade nearby, the grey-out while the clock is stopped, and
+// a red bruise at the edges whenever something past the archons is on screen.
+function jaScreen(r, c, g, t) {
+  var w = r.canvas.width, h = r.canvas.height, i;
+  var list = g.jrFx || [], flash = 0;
+  for (i = 0; i < list.length; i++) {
+    var fx = list[i], age = (g.tick - fx.at) / TPS;
+    var peak = fx.kind === 'bigbang' ? 0.5 : fx.kind === 'supernova' ? 0.16 : fx.kind === 'overdrive' ? 0.08 : 0;
+    if (!peak || age < 0 || age > 0.3) continue;
+    var p = r.toScreen(fx.x, fx.y);
+    var near = Math.max(0, 1 - Math.hypot(p.x - w / 2, p.y - h / 2) / (Math.max(w, h) * 1.2));
+    flash = Math.max(flash, peak * near * Math.pow(1 - age / 0.3, 2));
+  }
+  var ts = g.jaTimestop;
+  if (ts && g.tick < ts.until) {
+    var s = r.toScreen(ts.x, ts.y), k = r.scaling();
+    var on = Math.min(1, (g.tick - ts.at) / 6, (ts.until - g.tick) / 10);
+    fxTint(c, w, h, '#808080', 0.8 * on, 'saturation');
+    fxTint(c, w, h, 'rgb(120,160,255)', 0.12 * on, 'screen');
+    fxRing(c, s.x, s.y, ts.r * k, 'rgba(200,230,255,' + 0.5 * on + ')', Math.max(2, ts.r * k * 0.006), 1);
+  }
+  var big = 0;
+  for (i = 0; i < g.entities.length; i++) {
+    var e = g.entities[i];
+    if (e.type !== 'tank' || e.dead || !e.def || (e.def.jrTier || 0) < 11) continue;
+    var sp = r.toScreen(e.x, e.y), R = e.size * r.scaling();
+    if (sp.x < -R * 4 || sp.y < -R * 4 || sp.x > w + R * 4 || sp.y > h + R * 4) continue;
+    big = Math.max(big, e.def.jrTier - 10);
+  }
+  if (big) fxVignette(c, w, h, 0.32 + big * 0.05,
+    'rgba(70,0,14,' + (0.22 + big * 0.08 + 0.06 * Math.sin((t || 0) * 2.4)) + ')');
+  if (flash > 0.01) fxTint(c, w, h, '#FFFFFF', flash, 'lighter');
+}
+
+// The sky darkens when one of these walks in. diep's arena is a light grey, and
+// additive light on light grey is white in two layers — so whenever a hull past
+// the crowns is near the screen the floor is multiplied down toward a bruised
+// purple, harder the higher the tier and the closer it is. Hue survives a
+// multiply, so every tank on the screen still reads as its own colour.
+function jaDusk(r, c, g) {
+  var w = r.canvas.width, h = r.canvas.height, k = r.scaling(), dark = 0, diag = Math.hypot(w, h);
+  for (var i = 0; i < g.entities.length; i++) {
+    var e = g.entities[i];
+    if (e.type !== 'tank' || e.dead || !e.def || (e.def.jrTier || 0) < 9) continue;
+    var s = r.toScreen(e.x, e.y);
+    var off = Math.max(0, Math.hypot(s.x - w / 2, s.y - h / 2) - e.size * k * 6);
+    var near = Math.max(0, 1 - off / diag);
+    dark = Math.max(dark, (0.2 + (e.def.jrTier - 9) * 0.07) * near);
+  }
+  if (dark > 0.01) fxTint(c, w, h, 'rgb(60,44,92)', Math.min(0.5, dark), 'multiply');
+}
+
+MODE_FX.juggarmageddon = {
+  world: function (r, c, g, t) {
+    jaDusk(r, c, g);
+    // The Royale's burst painter dims its screen-sized glows while this is set.
+    JA_SOFT.dim = true;
+    try { MODE_FX.juggerroyale.world(r, c, g, t); } finally { JA_SOFT.dim = false; }
+    jaPaintFrozen(r, c, g, t, r.scaling());
+  },
+  screen: function (r, c, g) {
+    jaScreen(r, c, g, g.tick / TPS);
+    MODE_FX.juggerroyale.screen(r, c, g);
+  },
+  // The renderer asks this once a frame and moves the camera that far for the
+  // world pass alone. Bursts near the middle of the screen shake it most.
+  shake: function (r, g) {
+    var list = g.jrFx || [], w = r.canvas.width, h = r.canvas.height, amt = 0;
+    for (var i = 0; i < list.length; i++) {
+      var fx = list[i], s = JA_SHAKE[fx.kind];
+      if (!s) continue;
+      var age = (g.tick - fx.at) / TPS;
+      if (age < 0 || age > 0.7) continue;
+      var p = r.toScreen(fx.x, fx.y);
+      var near = Math.max(0, 1 - Math.hypot(p.x - w / 2, p.y - h / 2) / (Math.max(w, h) * 1.4));
+      amt += s * near * Math.pow(1 - age / 0.7, 2);
+    }
+    return amt;
+  }
+};
+
+// A black sun over a field of crowns, lightning off it, and the level running.
+MODE_THUMB.juggarmageddon = function (c, w, h, t) {
+  tBG(c, w, h, '#3A1A22');
+  var cx = w / 2, cy = h * 0.46, R = Math.min(w, h) * 0.13, i;
+  for (i = 0; i < 8; i++) {
+    var a = Math.PI * 2 * (i / 8) + t * 0.18, d = Math.min(w, h) * 0.38;
+    var x = cx + Math.cos(a) * d * 1.25, y = cy + Math.sin(a) * d * 0.82;
+    fxGlow(c, x, y, 18, 'rgba(255,190,140,0.35)', 1);
+    tShape(c, x, y, 7, 6 + (i % 3) * 3, t * 0.3 + i, '#4A2A30', '#1A0C10');
+  }
+  jaDark(c, cx, cy, R * 1.1, R * 3.6, 0.6);
+  jaRays(c, cx, cy, R * 1.05, R * 3.4, 24, t * 0.15, '255,70,80', 0.45, t, 0.05);
+  jaRays(c, cx, cy, R * 1.05, R * 2.4, 16, -t * 0.22, '255,255,255', 0.4, t * 1.3, 0.06);
+  c.save();
+  c.lineWidth = 1.5; c.strokeStyle = 'rgba(255,90,100,0.85)';
+  jaStar(c, cx, cy, R * 2.05, R * 1.6, 12, t * 0.25); c.stroke();
+  c.restore();
+  var q = Math.floor(t * 8);
+  for (i = 0; i < 4; i++) {
+    var ba = jaHash(q * 5 + i) * Math.PI * 2;
+    jaBolt(c, cx + Math.cos(ba) * R, cy + Math.sin(ba) * R,
+      cx + Math.cos(ba + 0.3) * R * 2.8, cy + Math.sin(ba + 0.3) * R * 2.8, q * 4 + i, 2.4, '255,90,100', 0.9);
+  }
+  tShape(c, cx, cy, R, 24, t * 0.1, '#1A0B10', '#000000');
+  fxGlow(c, cx, cy, R * 1.2, 'rgba(255,255,255,0.35)', 1);
+  var hb = (t / 1.4) % 1;
+  fxRing(c, cx, cy, R * (1.2 + hb * 2.6), 'rgba(255,60,70,' + (0.8 * (1 - hb)) + ')', 2.5, 1);
+  tText(c, cx, cy - R * 2.35, 'LVL ' + (200 + Math.floor((t * 37) % 301)), 11, '#FFD0C0');
+  tText(c, w / 2, h - 13, '183 HULLS  ·  LEVEL 500  ·  IT ALL STACKS', 10, '#FFD6DA');
 };
 
 if (typeof module !== 'undefined') module.exports = { MODE_FX: MODE_FX, MODE_THUMB: MODE_THUMB };

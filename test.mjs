@@ -18,14 +18,13 @@ function test(name, fn) { fn(); passed++; console.log('  ok  ' + name); }
 console.log('\nPhase 0 — data');
 test('74 base tanks load (54 from the dump + 7 added + 13 unobtainable), Trapper is id 31', () => {
   // The base table stops at id 111. Everything above that is the Mode Lab: the
-  // 140 Juggernaut Royale hulls at 112-251 and the Juggernaut at 255, all built
-  // into the table at load because the CLIENT draws them — a remote player in a
-  // Bastion has to have a Bastion to draw, and online the client never runs a
-  // mode's init(). Pinning the base range is what this test is actually for.
-  // The wire writes a tank's class as one byte, so the whole Lab has to fit
-  // between 112 and 255 — which is why the Juggernaut moved out of 200 when the
-  // royale roster grew past it, and why the royale base itself moved down from
-  // 120 to sit directly on top of the real table when it reached 140 hulls.
+  // 140 Juggernaut Royale hulls at 112-251, the Juggernaut at 255 and the 43
+  // Juggernaut Armageddon hulls from 256, all built into the table at load
+  // because the CLIENT draws them — a remote player in a Bastion has to have a
+  // Bastion to draw, and online the client never runs a mode's init(). Pinning
+  // the base range is what this test is actually for. The wire used to write a
+  // class as one byte, which is why the Royale is packed in under 256; it is a
+  // u16 now, which is what let Armageddon's tiers go above it.
   assert.equal(G('TANK_DEFS.filter(function (d, i) { return d && i < 112; }).length'), 74);
   assert.equal(G('TANK_DEFS.filter(function (d, i) { return d && i >= 112 && i <= 255; }).length'), 140);   // the Juggernaut at 255 is built on demand, not at load
   assert.equal(G('TANK_DEFS[31].name'), 'Trapper');
@@ -33,8 +32,10 @@ test('74 base tanks load (54 from the dump + 7 added + 13 unobtainable), Trapper
   assert.equal(G('JSON.stringify(TANK_DEFS[6].upgrades)'), '[15,11,19,31]');
   // ...and nothing the Lab adds can leak into the tree a player actually climbs.
   assert.equal(G('playableTankIds().filter(function (i) { return i >= 112; }).length'), 0);
-  // Every class the wire can name has to fit in the byte it is named with.
-  assert.equal(G('TANK_DEFS.filter(function (d, i) { return d && i > 255; }).length'), 0);
+  // Armageddon's roster sits directly above the byte, and every class the wire
+  // can name has to fit in the u16 it is named with.
+  assert.equal(G('TANK_DEFS.filter(function (d, i) { return d && i >= 256; }).length'), 43);
+  assert.equal(G('TANK_DEFS.filter(function (d, i) { return d && i > 65535; }).length'), 0);
 });
 
 console.log('\nPhase 1 — physics');

@@ -266,6 +266,22 @@ try {
   }, 8000, 'movement to keep replicating');
   test('the entity stream stays aligned when the turret count changes');
 
+  // Class ids run past 255 now — Juggernaut Armageddon's tiers live at 256 and
+  // up — so the id rides the wire as a u16. A u8 wraps 298 round to 42 and the
+  // client quietly draws a different tank.
+  await chatty(c, '/class armageddon');
+  await waitFor(() => carol() && carol().def && carol().def.name === 'Armageddon', 4000, 'a class id past 255');
+  assert.ok(carol().tankId > 255, 'the id survived the wire (' + carol().tankId + ')');
+  assert.equal(c.player.tankId, carol().tankId, 'and the HUD agrees with the entity');
+  assert.equal(carol().turrets.length, 24, 'its twenty-four turrets rebuilt');
+  const cx1 = carol().x;
+  await waitFor(() => {
+    c.sendInput({ left: 1 }, { x: carol().x - 500, y: carol().y }, {});
+    return Math.abs(carol().x - cx1) > 30;
+  }, 8000, 'movement on the big hull');
+  test('a class id above 255 replicates intact and the stream stays aligned');
+  await chatty(c, '/class booster');
+
   // /view parks the camera on someone else, so the client's own tank position
   // has to ship separately — the minimap still draws your arrow.
   if (d.player.dead) { d.respawn(); await waitFor(() => !d.player.dead, 6000, 'Dave respawning'); }

@@ -903,14 +903,18 @@ var TREE_INTRO = 380;                            // ms: grow + swing into place
 // Juggernaut Royale hull past tier 3 has two or three parents, and expanding
 // every path is fourteen hundred slivers instead of ninety-six sectors. A mode
 // asks for it with treeUnique.
-function buildClassTree(id, depth, base, seen) {
+//
+// `graft` is a mode's own extra edges, {id: [ids]}, for a tree that keeps going
+// past where the tank table stops: Armageddon's tiers hang off the Royale's
+// crowns, which are leaves in the table because the Royale ends there.
+function buildClassTree(id, depth, base, seen, graft) {
   var d = TANK_DEFS[id];
   if (!d || d.flags.devOnly) return null;
   if (seen) { if (seen[id]) return null; seen[id] = 1; }
   if (base === undefined) base = d.levelRequirement || 0;
-  var kids = [];
-  if (seen || depth < 4) for (var i = 0; i < d.upgrades.length; i++) {
-    var k = buildClassTree(d.upgrades[i], depth + 1, base, seen);
+  var kids = [], ups = graft && graft[id] ? d.upgrades.concat(graft[id]) : d.upgrades;
+  if (seen || depth < 4) for (var i = 0; i < ups.length; i++) {
+    var k = buildClassTree(ups[i], depth + 1, base, seen, graft);
     if (k) kids.push(k);
   }
   var w = 0;
@@ -952,11 +956,14 @@ Renderer.prototype.drawClassTree = function () {
   // A mode can own its own tree. Juggernaut Royale has thirteen hulls of its
   // own and showing the player the Basic-tank wheel there is showing them a
   // tree they cannot reach a single node of.
-  var root = (this.game.mode && this.game.mode.treeRoot) || 0;
-  if (!this.tree || this.treeRoot !== root) {
+  var mode = this.game.mode, root = (mode && mode.treeRoot) || 0;
+  // Keyed on the mode as well as the root: the Royale and Armageddon grow the
+  // same root into two different wheels.
+  if (!this.tree || this.treeRoot !== root || this.treeMode !== mode) {
     this.tree = buildClassTree(root, 0, undefined,
-      (this.game.mode && this.game.mode.treeUnique) ? {} : null);
+      (mode && mode.treeUnique) ? {} : null, mode && mode.treeGraft);
     this.treeRoot = root;
+    this.treeMode = mode;
     this.treeRings = this.tree ? treeDepth(this.tree) : 3;
     this.treeRadii = treeBands(this.treeRings);
   }
@@ -1175,6 +1182,20 @@ Renderer.prototype.drawModeFX = function (layer) {
   c.restore();
 };
 
+// How hard a mode wants the world shaken this frame, in screen pixels. A mode
+// effect may carry a `shake` hook; nothing else in the game shakes, and nothing
+// does for a player who has asked the system for less motion.
+Renderer.prototype.modeShake = function () {
+  if (typeof MODE_FX === 'undefined') return 0;
+  var spec = MODE_FX[this.game.modeKey];
+  if (!spec || !spec.shake) return 0;
+  if (this.calm === undefined)
+    this.calm = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if (this.calm) return 0;
+  try { return Math.max(0, Math.min(40, spec.shake(this, this.game) || 0)); }
+  catch (e) { return 0; }
+};
+
 // The one line of mode state a player has to be able to read: a wave number, a
 // lap, a clock. It rides the map-state packet, so it changes once a second.
 Renderer.prototype.drawModeHud = function () {
@@ -1202,6 +1223,14 @@ Renderer.prototype.render = function (alpha) {
   var g = this.game, c = this.ctx;
   this.alpha = alpha;
   c.setTransform(1, 0, 0, 1, 0, 0);
+  // A shake moves the camera for the world pass only, and is handed back before
+  // the HUD, so nothing the player reads ever jitters.
+  var shake = this.modeShake(), sx = 0, sy = 0;
+  if (shake) {
+    var ks = this.scaling() || 1;
+    sx = (Math.random() - 0.5) * 2 * shake / ks; sy = (Math.random() - 0.5) * 2 * shake / ks;
+    this.cam.x += sx; this.cam.y += sy;
+  }
   this.drawGrid();
   this.drawBorders();
   this.drawLeaderArrow();
@@ -1216,6 +1245,7 @@ Renderer.prototype.render = function (alpha) {
   this.drawModeFX('world');
   for (i = 0; i < sorted.length; i++) if (sorted[i].name) this.drawName(sorted[i], alpha);
   for (i = 0; i < sorted.length; i++) this.drawHealthBar(sorted[i], alpha);
+  this.cam.x -= sx; this.cam.y -= sy;
   // ...and the full-screen ones over the lot, but under the HUD, so a fog bank
   // never hides your own stat panel.
   this.drawModeFX('screen');

@@ -41,8 +41,13 @@ function NetGame(url, name, mode, hooks) {
 // render.js reads the level ceiling off the game to draw the XP bar, and online
 // the client has a mode but no Game to ask.
 NetGame.prototype.levelCap = function () {
+  return Math.min(LEVEL_CAP, this.rule('maxLevel', MAX_LEVEL));
+};
+// The handful of mode rules the client mirrors (the per-level size and speed
+// curves). Same answer Game.rule gives, read off the mode table.
+NetGame.prototype.rule = function (k, d) {
   var r = this.mode && this.mode.rules;
-  return Math.min(LEVEL_CAP, (r && r.maxLevel) || MAX_LEVEL);
+  return r && r[k] !== undefined ? r[k] : d;
 };
 
 NetGame.prototype.blankPlayer = function () {
@@ -123,7 +128,7 @@ NetGame.prototype.readMapState = function (b) {
     var pod = { text: b.rstr(), players: b.ru16(), top: [] };
     var rows = b.ru8();
     for (var pi = 0; pi < rows; pi++) {
-      pod.top.push({ name: b.rstr(), score: b.ru32(), level: b.ru8(),
+      pod.top.push({ name: b.rstr(), score: b.ru32(), level: b.ru16(),
         kills: b.ru16(), tank: b.rstr(), isPlayer: !!b.ru8() });
     }
     this.podium = pod;
@@ -169,8 +174,8 @@ NetGame.prototype.readDeath = function (b) {
   var p = this.player;
   p.killedBy = b.rstr();
   p.score = b.ru32();
-  p.level = b.ru8();
-  p.tankId = b.ru8();
+  p.level = b.ru16();
+  p.tankId = b.ru16();
   p.def = TANK_DEFS[p.tankId] || TANK_DEFS[0];
   // Fill the mirror in enough for drawPortrait: online it is all the death
   // screen has to draw from, and a bare circle is not what you died as.
@@ -200,20 +205,20 @@ NetGame.prototype.readUpdate = function (b) {
   if (alive) {
     p.dead = false;
     p.score = b.ru32();
-    p.level = b.ru8();
-    p.tankId = b.ru8();
+    p.level = b.ru16();
+    p.tankId = b.ru16();
     p.def = TANK_DEFS[p.tankId] || TANK_DEFS[0];
     p.statsAvailable = b.ru8();
     for (i = 0; i < 8; i++) p.stats[i] = b.ru8();
     n = b.ru8();
     p.pendingUpgrades = [];
-    for (i = 0; i < n; i++) p.pendingUpgrades.push(b.ru8());
+    for (i = 0; i < n; i++) p.pendingUpgrades.push(b.ru16());
     p.autoFire = !!b.ru8();
     p.autoSpin = !!b.ru8();
     p.spawnTick = b.ru32();
     p.kills = b.ru8();
     svx = b.ri16() / 64; svy = b.ri16() / 64;
-    p.scaleFactor = Math.pow(1.01, p.level - 1);
+    p.scaleFactor = Math.pow(this.rule('lvlScale', 1.01), p.level - 1);
     // drop queued points the server has already granted
     while (p.queued.length && p.statsAvailable === 0) p.queued.shift();
   }
@@ -223,7 +228,7 @@ NetGame.prototype.readUpdate = function (b) {
   this.watched = null;
   this.self = null;
   if (b.ru8()) {
-    var wid = b.ru8(), wlvl = b.ru8(), ws = [];
+    var wid = b.ru16(), wlvl = b.ru16(), ws = [];
     for (i = 0; i < 8; i++) ws.push(b.ru8());
     this.watched = {
       tankId: wid, def: TANK_DEFS[wid] || TANK_DEFS[0], level: wlvl,
@@ -238,7 +243,7 @@ NetGame.prototype.readUpdate = function (b) {
   n = b.ru8();
   this.leaderboard = [];
   for (i = 0; i < n; i++) {
-    var name = b.rstr(), score = b.ru32(), tankId = b.ru8(), lid = b.ru32();
+    var name = b.rstr(), score = b.ru32(), tankId = b.ru16(), lid = b.ru32();
     var fill = rgb(b.ru8(), b.ru8(), b.ru8());
     this.leaderboard.push({ name: name, score: score, tankId: tankId, id: lid, fill: fill, team: null });
   }
@@ -318,8 +323,8 @@ NetGame.prototype.create = function (b) {
   applyFlags(e, ef);
 
   if (isTank) {
-    var idOrBoss = b.ru8();
-    e.level = b.ru8();
+    var idOrBoss = b.ru16();
+    e.level = b.ru16();
     var scale = b.ru16() / 1024;
     if (e.type === 'boss') this.attachBoss(e, idOrBoss);
     else this.attachTank(e, idOrBoss);
@@ -341,7 +346,7 @@ NetGame.prototype.create = function (b) {
 NetGame.prototype.attachTank = function (e, tankId) {
   e.tankId = tankId;
   e.def = TANK_DEFS[tankId] || TANK_DEFS[0];
-  e.scaleFactor = Math.pow(1.01, (e.level || 1) - 1);
+  e.scaleFactor = Math.pow(this.rule('lvlScale', 1.01), (e.level || 1) - 1);
   e.borderWidth = (e.def.borderWidth || 15) / 2;
   e.starPoints = e.def.starPoints || 3;      // isStar itself rides the flag byte
   e.barrels = e.def.barrels.map(function (d) { return { def: d, recoilAnim: 0 }; });
@@ -386,7 +391,7 @@ NetGame.prototype.update = function (b) {
   var level = null;
   var scale = null;
   var idOrBoss = null;
-  if (e && isTank) { idOrBoss = b.ru8(); level = b.ru8(); scale = b.ru16() / 1024; }
+  if (e && isTank) { idOrBoss = b.ru16(); level = b.ru16(); scale = b.ru16() / 1024; }
   if (e && e.name) e.score = b.ru32();
   if (!e) return;                       // unknown id: turret angles can't be sized, bail
 
@@ -424,7 +429,7 @@ NetGame.prototype.update = function (b) {
 // wire for the HUD, so nothing extra is sent for it.
 NetGame.prototype.ownSpeed = function () {
   var p = this.player, d = p.def || TANK_DEFS[0];
-  return d.speed * 2.55 * Math.pow(1.07, p.stats[S_SPEED]) / Math.pow(1.015, p.level - 1);
+  return d.speed * 2.55 * Math.pow(1.07, p.stats[S_SPEED]) / Math.pow(this.rule('lvlSlow', 1.015), p.level - 1);
 };
 
 // One tick of Tank.tick + applyPhysics, movement only. Nothing else in a tick
@@ -511,7 +516,13 @@ NetGame.prototype.send1 = function (op, value) {
   this.ws.send(b.bytes());
 };
 NetGame.prototype.upgradeStat = function (wire) { this.send1(OP.STAT, wire); };
-NetGame.prototype.upgradeTo = function (tankId) { this.send1(OP.UPGRADE, tankId); };
+// Class ids run past 255 (Juggernaut Armageddon's top tiers), so this one is a u16.
+NetGame.prototype.upgradeTo = function (tankId) {
+  if (!this.connected) return;
+  var b = new Buf(4);
+  b.u8(OP.UPGRADE); b.u16(tankId);
+  this.ws.send(b.bytes());
+};
 NetGame.prototype.toggle = function (which) { this.send1(OP.TOGGLE, which); };
 NetGame.prototype.possess = function () { this.send1(OP.POSSESS, 0); };
 NetGame.prototype.sendChat = function (text) {

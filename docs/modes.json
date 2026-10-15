@@ -745,5 +745,28 @@
   "teams": 2,
   "size": 16000,
   "arena": "open"
+ },
+ {
+  "key": "juggarmageddon",
+  "name": "Juggernaut Armageddon",
+  "family": "Asymmetry",
+  "tag": "183 hulls",
+  "blurb": "Juggernaut Royale, and then it keeps going. The same hundred and forty hulls to level 200 — then five more tiers, forty-three more hulls, a cap of 500, and abilities that stack: every loaded verb on the hull goes off at once.",
+  "how": [
+   "Everything in Juggernaut Royale is here, hull for hull: the Brute, eleven branches, sixteen fusions, eight sealed dynasties and the crowns at level 200. The crown is not the end any more.",
+   "The level cap is 500, and above the crowns there are five more tiers. ASCENDANT at 240 (sixteen, two per dynasty), ARCHON at 300 (sixteen), PRIMORDIAL at 370 (eight), ESCHATON at 440 (two) and ARMAGEDDON at 500 — one hull, the end of every road in the game.",
+   "THE DYNASTIES MARRY AGAIN. They were sealed apart at level 52. At 370 they meet on a ring — Pyre, Titan, Ordnance, Bastion, Vermin, Void, Chrono, Glacier and back to Pyre — and each Primordial is the union of two neighbours, so every Archon chooses which neighbour it becomes.",
+   "ABILITIES STACK. In the Royale a hull fires one of its own verbs a tick. Here every loaded verb goes off on the same tick, so a hull with eight of them can land all eight at once. Every cooldown in the arena is also three-quarters as long.",
+   "Every tier is more than the one under it in every column at once. A crown fires four verbs itself and carries six traits; an Ascendant fires five and carries seven; an Archon six and eight; a Primordial seven and nine; an Eschaton eight and ten; the Armageddon ten and twelve.",
+   "And every tier is a bigger step than the last. Past the crowns the tier dividend grows the guns too: an Ascendant takes a quarter of what lands and hits one and a half times as hard with every bullet; the Armageddon takes a twentieth, fires three and a half times as often, rams twelve times as hard and shoots five and a half.",
+   "Eleven new verbs. OVERDRIVE fires every other button on the hull at once. SUPERNOVA is three shockwaves wider than the screen. BLACK HOLE opens a well under the cursor. SKYFALL strikes the seven nearest things from above. TIME STOP holds tanks and bullets in the air for four seconds. RAPTURE lifts the arena and drops it. GENESIS makes an army. TEMPEST is twelve forking bolts. FISSURE splits the ground eight ways. GODRAY is a line of light nine thousand units long. THE BIG BANG is all of them.",
+   "New passives — CORONA, a share of your own bar a second just for standing near it; MAELSTROM, six blades on a fast orbit; STORMCALL, lightning out of a clear sky; QUICKEN, double-time cooldowns — and new traits: IMMORTAL refuses three deaths a life and goes supernova each time, ECHO lands every verb twice, THUNDER calls lightning down on what it hits, NULLIFY shrugs every status off.",
+   "The hulls get BIG. A level-500 tank is four and a half times its own size and the Armageddon is a 560-unit hull before that, so the arena is 28,000 units across and the camera keeps pulling back with every tier.",
+   "The climb is three and a half times as long as the Royale’s and it is paid for mostly in kills: 24,000 a kill on top of nearly half the victim’s score, and polygons at 2.6 times their usual worth with the nest kept stocked.",
+   "Press Y and the wheel shows all of it — thirteen rings, the Royale’s eight and Armageddon’s five, every hull drawn once."
+  ],
+  "teams": 0,
+  "size": 28000,
+  "arena": "open"
  }
 ]

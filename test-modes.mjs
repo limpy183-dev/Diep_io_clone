@@ -1,4 +1,4 @@
-// test-modes.mjs — the Mode Lab's 40 arenas.
+// test-modes.mjs — the Mode Lab's 41 arenas.
 //
 // The soak that matters is not "does it tick" — every mode ticked on the first
 // try. It is the round reset: a mode that leaks entities, walls or flags into
@@ -50,7 +50,7 @@ function forceRound(g) {
 // =========================================================================
 section('registration');
 const keys = Object.keys(LAB_MODES);
-ok('40 lab modes are registered', keys.length === 40, keys.length + ' found');
+ok('41 lab modes are registered', keys.length === 41, keys.length + ' found');
 
 for (const k of keys) {
   const m = GAMEMODES[k];
@@ -113,7 +113,7 @@ for (const k of keys) {
   // comparing it against a sample taken at tick 400 compares two different
   // things. Measured, it settles around 25 with 24 bots and stays there; a flat
   // cap well above that still catches a real leak, which runs to hundreds.
-  const cap = k === 'juggerroyale' ? 80 : Math.max(4, modeEnts * 1.6);
+  const cap = (k === 'juggerroyale' || k === 'juggarmageddon') ? 80 : Math.max(4, modeEnts * 1.6);
   ok(k + ' does not leak mode entities', after <= cap, modeEnts + ' -> ' + after);
   ok(k + ' does not leak walls', g.walls.length <= (GAMEMODES[k].maze ? 4000 : 200),
     g.walls.length + ' walls');
@@ -759,9 +759,9 @@ section('the fixes that have to hold everywhere');
     for (const u of d.upgrades || []) if (!seen.has(u)) { seen.add(u); q.push(u); }
   }
   ok('every hull is reachable from the base', seen.size === H.length, seen.size + '/' + H.length);
-  // The wire writes a tank's class as a single byte. A roster that ran past 255
-  // would come out of the socket as a different hull, and nothing offline would
-  // ever notice — so the constraint is asserted rather than remembered.
+  // The Royale is packed in under 256: the wire wrote a class as one byte when
+  // it was built, and Armageddon's tiers start at 256 on the strength of it
+  // staying there. Asserted rather than remembered.
   ok('every hull id fits in a byte', H.every((h) => B + h.id >= 0 && B + h.id <= 255),
     'max ' + (B + Math.max(...H.map((h) => h.id))));
   ok('and none of them lands on a real class',
@@ -993,11 +993,11 @@ section('the fixes that have to hold everywhere');
   ok('the field is dense enough to farm', g.rule('shapes', 0) >= 2000, String(g.rule('shapes', 0)));
   ok('the class wheel is rooted on the juggernauts', GAMEMODES.juggerroyale.treeRoot === B,
     String(GAMEMODES.juggerroyale.treeRoot));
-  // treeRoot is opt-in, and the two modes that opt in point the wheel at the
+  // treeRoot is opt-in, and the three modes that opt in point the wheel at the
   // same tree — the juggernauts. Nothing else may end up with one by accident.
   const rooted = Object.keys(GAMEMODES).filter((k) => GAMEMODES[k].treeRoot !== undefined);
   ok('only the juggernaut modes claim a tree',
-    rooted.length === 2 && rooted.every((k) => GAMEMODES[k].treeRoot === B), rooted.join(','));
+    rooted.length === 3 && rooted.every((k) => GAMEMODES[k].treeRoot === B), rooted.join(','));
   // ...and the hulls exist before any Game does, because the wheel and the
   // upgrade cards are drawn client-side and online the client never runs init().
   const fresh = vm.createContext({ console, Math, JSON, Map, Set, Infinity, NaN });
@@ -1075,6 +1075,194 @@ section('the fixes that have to hold everywhere');
   ok('and the autonomous buttons fire themselves too',
     autoFired >= sim.JR_HULLS.filter((x) => x.abs).length * 0.6,
     autoFired + '/' + sim.JR_HULLS.filter((x) => x.abs).length);
+}
+{
+  // Juggernaut Armageddon: the Royale's whole tree to level 200, then five more
+  // tiers of its own above the crowns. The crowns stay leaves in the tank table
+  // — the Royale ends at 200 and must keep ending there — so everything above
+  // them is grafted on by the mode: filterUpgrades for the cards and the server
+  // gate, treeGraft for the wheel.
+  const g = boot('juggarmageddon');
+  const JB = sim.JA_BASE, JH = sim.JA_HULLS, B = sim.JR_BASE, RH = sim.JR_HULLS;
+  const def = (h) => TANK_DEFS[JB + h.id];
+  const row = (id) => sim.jrOf({ tankId: id });
+  ok('forty-three hulls past the crowns', JH.length === 43, String(JH.length));
+  ok('every one is in the tank table', JH.every((h) => !!def(h)));
+  ok('all of them above the byte the Royale lives in',
+    JH.every((h) => JB + h.id > 255 && JB + h.id <= 65535));
+  ok('ids are unique', new Set(JH.map((h) => h.id)).size === JH.length);
+  ok('names are unique across both rosters', new Set(RH.concat(JH).map((h) => h.n)).size === RH.length + JH.length);
+  ok('jrOf finds both rosters', !!row(B) && row(B).n === 'Brute' && !!row(JB + 42) && row(JB + 42).n === 'Armageddon');
+
+  const CAP = GAMEMODES.juggarmageddon.rules.maxLevel;
+  ok('the mode runs to level 500', CAP === 500 && g.levelCap() === 500, String(g.levelCap()));
+  ok('and the score curve reaches that far', sim.LEVEL_CAP >= CAP && sim.LEVEL_SCORE[CAP] > sim.LEVEL_SCORE[200] * 3);
+  ok('five tiers, nine through thirteen', JH.every((h) => h.t >= 9 && h.t <= 13));
+  ok('the tiers gate on level', JH.every((h) => def(h).levelRequirement === sim.JR_LVL[h.t]));
+  ok('the top tier sits on the cap', sim.JR_LVL[13] === CAP);
+  ok('and the Royale still ends on its own', sim.JR_LVL[8] === GAMEMODES.juggerroyale.rules.maxLevel);
+  const per = [9, 10, 11, 12, 13].map((t) => JH.filter((h) => h.t === t).length).join(',');
+  ok('sixteen, sixteen, eight, two, one', per === '16,16,8,2,1', per);
+
+  // --- the graft ----------------------------------------------------------
+  const crowns = RH.filter((h) => h.t === 8);
+  ok('every crown grafts onto two ascendants of its own dynasty', crowns.every((c) => {
+    const ids = sim.JA_GRAFT[B + c.id] || [];
+    return ids.length === 2 && ids.every((id) => row(id).t === 9 && row(id).dy === c.dy);
+  }));
+  ok('and the crowns are still leaves in the table', crowns.every((c) => TANK_DEFS[B + c.id].upgrades.length === 0));
+  ok('the wheel is handed the same graft', GAMEMODES.juggarmageddon.treeGraft === sim.JA_GRAFT);
+  {
+    const seen = new Set([B]), q = [B];
+    while (q.length) {
+      const id = q.shift();
+      for (const u of (TANK_DEFS[id].upgrades || []).concat(sim.JA_GRAFT[id] || []))
+        if (!seen.has(u)) { seen.add(u); q.push(u); }
+    }
+    ok('every hull in both rosters is reachable from the Brute', seen.size === RH.length + JH.length,
+      seen.size + '/' + (RH.length + JH.length));
+  }
+  const leaves = JH.filter((h) => h.up.length === 0);
+  ok('and every road ends in exactly one hull', leaves.length === 1 && leaves[0].t === 13, leaves.map((h) => h.n).join(','));
+  ok('every card past the crowns is a group, except the last',
+    JH.every((h) => h.t >= 12 || h.up.length >= 2));
+  ok('an ascendant only ever offers archons of its own dynasty', JH.filter((h) => h.t === 9).every((h) =>
+    h.up.every((u) => { const k = JH.find((o) => o.id === u); return k && k.t === 10 && k.dy === h.dy; })));
+  {
+    // The dynasties marry again on a ring: every primordial has exactly two
+    // dynasties feeding it, and every dynasty feeds exactly two primordials.
+    const feeds = {};
+    for (const h of JH.filter((x) => x.t === 10)) for (const u of h.up) (feeds[u] = feeds[u] || new Set()).add(h.dy);
+    const prim = JH.filter((h) => h.t === 11);
+    ok('each primordial marries two dynasties', prim.every((p) => feeds[p.id] && feeds[p.id].size === 2),
+      prim.map((p) => p.n + ':' + (feeds[p.id] ? [...feeds[p.id]].join('+') : '-')).join(' '));
+    ok('and every archon chooses between two of them', JH.filter((h) => h.t === 10).every((h) =>
+      h.up.length === 2 && h.up.every((u) => JH.find((o) => o.id === u).t === 11)));
+  }
+
+  // --- the cards really are offered, here and only here -------------------
+  {
+    const me = g.player, crown = crowns[0];
+    me.addScore(sim.LEVEL_SCORE[300]);
+    sim.forceTankClass(me, B + crown.id);
+    me.checkUpgrades();
+    const want = sim.JA_GRAFT[B + crown.id];
+    ok('a level-300 crown is offered its ascendants',
+      want.every((id) => me.pendingUpgrades.indexOf(id) >= 0), JSON.stringify(me.pendingUpgrades));
+    ok('and the server gate takes one', me.upgradeTo(want[0]) && me.tankId === want[0], String(me.tankId));
+    const roy = boot('juggerroyale');
+    roy.player.addScore(sim.LEVEL_SCORE[200]);
+    sim.forceTankClass(roy.player, B + crown.id);
+    roy.player.checkUpgrades();
+    ok('while a Royale crown is still the end of its road', roy.player.pendingUpgrades.length === 0);
+    ok('and refuses the card if asked anyway', !roy.player.upgradeTo(want[0]));
+  }
+
+  // --- each tier is more than the one below, and by more each time --------
+  const tierOf = (t) => (t <= 8 ? RH : JH).filter((h) => h.t === t);
+  const med = (t, f) => { const a = tierOf(t).map(f).sort((x, y) => x - y); return a[a.length >> 1]; };
+  const lo = (t, f) => Math.min(...tierOf(t).map(f));
+  const hi = (t, f) => Math.max(...tierOf(t).map(f));
+  const nAbs = (h) => (h.abs || []).length, nTr = (h) => (h.tr || []).length;
+  const nPs = (h) => (h.ps ? [].concat(h.ps).length : 0);
+  for (const t of [9, 10, 11, 12, 13]) {
+    ok('tier ' + t + ' fires more verbs itself than anything below it', lo(t, nAbs) > hi(t - 1, nAbs),
+      lo(t, nAbs) + ' vs ' + hi(t - 1, nAbs));
+    ok('tier ' + t + ' carries more traits than anything below it', lo(t, nTr) > hi(t - 1, nTr),
+      lo(t, nTr) + ' vs ' + hi(t - 1, nTr));
+    ok('tier ' + t + ' carries at least as many passives', lo(t, nPs) >= hi(t - 1, nPs));
+    ok('tier ' + t + ' is bigger', med(t, (h) => h.sz) > med(t - 1, (h) => h.sz));
+    ok('tier ' + t + ' has at least half again the health', med(t, (h) => h.hp) > med(t - 1, (h) => h.hp) * 1.5,
+      med(t, (h) => h.hp) + ' vs ' + med(t - 1, (h) => h.hp));
+  }
+  {
+    const D = sim.JR_DIVIDEND;
+    ok('the dividend keeps going past the crowns', [9, 10, 11, 12, 13].every((t) =>
+      D[t][0] < D[t - 1][0] && D[t][1] < D[t - 1][1] && D[t][2] > D[t - 1][2] && (t === 9 || D[t][3] > D[t - 1][3])));
+    // "every extra level more overpowered than the rest": the jump in contact
+    // damage from one tier to the next is bigger than the jump before it.
+    ok('and every step is a bigger step than the one before it', [10, 11, 12, 13].every((t) =>
+      D[t][2] - D[t - 1][2] > D[t - 1][2] - D[t - 2][2]));
+  }
+
+  // --- every name a row uses is real --------------------------------------
+  ok('every ability verb has a handler', JH.every((h) => !!sim.JR_ABIL[h.ab]));
+  ok('every autonomous verb has a handler', JH.every((h) => h.abs.every((a) => !!sim.JR_ABIL[a])));
+  ok('no hull lists its own right-click as an autonomous one', JH.every((h) => h.abs.indexOf(h.ab) === -1));
+  ok('every passive has a handler', JH.every((h) => [].concat(h.ps).every((x) => !!sim.JR_PASS[x])));
+  ok('every trait is in the roll call',
+    JH.every((h) => h.tr.every((x) => Object.prototype.hasOwnProperty.call(sim.JR_TRAIT, x))),
+    JH.filter((h) => h.tr.some((x) => !(x in sim.JR_TRAIT))).map((h) => h.n).join(','));
+  ok('every addon a hull asks for exists',
+    JH.every((h) => (!h.pre || !!sim.ADDONS[h.pre]) && (!h.post || !!sim.ADDONS[h.post])));
+  {
+    const NEW = ['overdrive', 'supernova', 'blackhole', 'skyfall', 'timestop', 'rapture', 'genesis',
+      'tempest', 'fissure', 'godray', 'bigbang'];
+    const used = new Set(JH.flatMap((h) => [h.ab].concat(h.abs)));
+    ok('all eleven new verbs are carried by somebody', NEW.every((v) => used.has(v)), NEW.filter((v) => !used.has(v)).join(','));
+  }
+  {
+    const GRANTS = ['graft', 'grow', 'stacks', 'invert', 'decay', 'far'];
+    ok('nothing carries growth on top of a passive that already grants',
+      JH.filter((h) => h.tr.indexOf('growth') >= 0).every((h) => [].concat(h.ps).every((x) => GRANTS.indexOf(x) === -1)));
+  }
+  ok('bots classify every new hull', JH.every((h) => !!sim.jrJob(h)));
+  ok('the body hulls are driven as bodies', JH.filter((h) => h.me).every((h) => sim.jrJob(h) === 'ram'));
+  ok('abilities stack and run on a faster clock here',
+    g.rule('jrStack', 0) && g.rule('jrHaste', 1) < 1 && !boot('juggerroyale').rule('jrStack', 0));
+  ok('and no round is wider than the cap', g.rule('shotCap', Infinity) < 1000);
+  ok('the stat budget at 500 does not overrun eight deep bars',
+    sim.statCount(500) <= 8 * sim.STAT_DEEP_MAX, String(sim.statCount(500)));
+}
+{
+  // Every new hull, driven, with victims parked in reach — the same rig the
+  // Royale's hulls go through above, on a small floor so it does not take all
+  // day. Nothing throws, nothing leaves furniture behind, and the autonomous
+  // lists really do fire more than one verb a tick.
+  const JB = sim.JA_BASE;
+  const threw = [], silent = [];
+  let fired = 0, stacked = 0;
+  for (const h of sim.JA_HULLS) {
+    const g = new sim.Game('juggarmageddon', 'tester', { difficulty: 'hard', botCount: 4, size: 9000 });
+    g.wantedShapes = 40;
+    run(g, 20);
+    const me = g.player;
+    me.addScore(sim.LEVEL_SCORE[g.levelCap()]);
+    sim.forceTankClass(me, JB + h.id);
+    me.jrDefId = undefined;
+    // Untouchable rather than merely tough: half the verbs up here bill a share
+    // of the victim's own bar, so no amount of health keeps one alive through a
+    // stacked run-up, and a dead victim is a silent button.
+    const victims = g.entities.filter((e) => e.type === 'tank' && e.bot && !e.dead).slice(0, 3);
+    for (const v of victims) v.godMode = true;
+    try {
+      me.godMode = true;
+      me.input.fire = 1;
+      run(g, 40);
+      for (const v of victims) {
+        if (v.dead) continue;
+        v.x = me.x + me.size * 1.3; v.y = me.y; v.vx = v.vy = 0;
+        v.maxHealth = v.health = 1e12;
+      }
+      run(g, 1);
+      me.jrCool = 0;
+      me.mouse = { x: me.x + 900, y: me.y };
+      if (sim.jrAbility(g, me)) fired++; else silent.push(h.n);
+      me.jrCools = null;
+      for (const v of victims) if (!v.dead) { v.x = me.x + me.size * 1.3; v.y = me.y; }
+      sim.jrAutoAbilities(g, me, h);
+      if (Object.keys(me.jrCools || {}).length >= 2) stacked++;
+      run(g, 3 * TPS);
+      sim.forceTankClass(me, sim.JR_BASE);
+      me.jrDefId = undefined;
+      run(g, 2 * TPS);
+      const left = g.entities.filter((e) => !e.dead && e.type === 'flag' && e.owner === me).length;
+      if (left) threw.push(h.n + ': ' + left + ' blades left behind');
+    } catch (e) { threw.push(h.n + ': ' + e.message); }
+  }
+  ok('no Armageddon hull throws when its verbs fire', threw.length === 0, threw.slice(0, 4).join(' | '));
+  ok('nearly every Armageddon button fires with a target in reach', fired >= 38, fired + ' fired; silent: ' + silent.join(','));
+  ok('and the autonomous verbs stack — several in one tick', stacked >= 36, stacked + '/' + sim.JA_HULLS.length);
 }
 {
   // Chaos: a modifier has to reach a tank that spawned after it landed.

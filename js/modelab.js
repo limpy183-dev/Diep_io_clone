@@ -25,9 +25,10 @@ var MODELAB = (function () {
   var open = false, current = null, filter = 'All';
   var api = { onPlay: null, onPlayOnline: null, diff: null };
 
-  // Juggernaut Royale only, for now: the two knobs that decide how long the
-  // 140-hull climb takes. Multipliers rather than spans, so they scale the
-  // mode's own size out of the table instead of repeating 18000 in here.
+  // The two juggernaut climbs only: the two knobs that decide how long the
+  // climb takes. Multipliers rather than spans, so they scale the mode's own
+  // size out of the table instead of repeating 18000 in here.
+  var KNOB_MODES = { juggerroyale: 1, juggarmageddon: 1 };
   var MAP_SIZES = [
     { k: 'xs', label: 'Extra Small', mul: 0.45, note: 'Knife-fight range. You meet the whole field inside a minute.' },
     { k: 's', label: 'Small', mul: 0.7, note: 'Tight. Farming and fighting happen in the same square.' },
@@ -38,6 +39,7 @@ var MODELAB = (function () {
   ];
   var mapSize = 'm';
   var botCap = null;                  // null = whatever the mode pins
+  var botCapFor = null;               // which mode botCap was set for
 
   // --- styles ------------------------------------------------------------
   var CSS = [
@@ -782,9 +784,9 @@ var MODELAB = (function () {
     }
 
     // Map size and field size, offline only: an online match is the server's
-    // arena, not yours. Scoped to the one mode whose whole shape is the length
-    // of the climb — every other mode is tuned to its own numbers.
-    if (m.key === 'juggerroyale') {
+    // arena, not yours. Scoped to the modes whose whole shape is the length of
+    // the climb — every other mode is tuned to its own numbers.
+    if (KNOB_MODES[m.key]) {
       var base = modeSize(m.key);
       p.appendChild(el('div', 'lab-h', 'Map size'));
       var srow = el('div', 'lab-diff');
@@ -806,7 +808,8 @@ var MODELAB = (function () {
       p.appendChild(snote);
 
       p.appendChild(el('div', 'lab-h', 'Bot amount'));
-      if (botCap === null) botCap = modeBots(m.key);
+      // Each mode starts from its own pin; the slider is not carried across.
+      if (botCap === null || botCapFor !== m.key) { botCap = modeBots(m.key); botCapFor = m.key; }
       var brow = el('div', 'lab-slide');
       var rng = el('input');
       rng.type = 'range'; rng.min = '0'; rng.max = '100'; rng.step = '1'; rng.value = String(botCap);
@@ -860,7 +863,7 @@ var MODELAB = (function () {
     closeDetail(true);
     hide();
     // Only the mode that owns the knobs sends them, and only offline.
-    var extra = (!online && key === 'juggerroyale')
+    var extra = (!online && KNOB_MODES[key])
       ? { size: Math.round(modeSize(key) * currentSize().mul), botCap: botCap }
       : undefined;
     fn(key, extra);

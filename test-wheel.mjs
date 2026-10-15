@@ -125,5 +125,24 @@ assert.ok(Math.abs(jspan.get(0) - TAU) < 1e-9, 'the eleven branches do not tile 
 // ...and it really is a bigger wheel than the Basic one
 assert.ok(JR > R, 'the deep wheel is not drawn any bigger than the three-ring one');
 
+// --- the third tree ------------------------------------------------------
+// Juggernaut Armageddon grows the same root as the Royale and keeps going: its
+// five tiers hang off the crowns through the mode's treeGraft, because in the
+// tank table the crowns are leaves and have to stay leaves for the Royale. The
+// cache is keyed on the mode, so the two wheels never trade places.
+const AMODE = sandbox.GAMEMODES.juggarmageddon;
+assert.ok(AMODE.treeGraft && AMODE.treeRoot === B, 'Armageddon does not graft onto the juggernaut tree');
+const ar = new sandbox.Renderer(canvas, { player: { def: sandbox.TANK_DEFS[B], level: 1 }, mode: AMODE, tick: 0 });
+ar.treeT0 = performance.now() - 5000;
+ar.drawClassTree();
+assert.strictEqual(ar.treeRings, 13, `Armageddon wheel came out ${ar.treeRings} rings deep`);
+let anodes = 0;
+(function count(n) { n.kids.forEach(k => { anodes++; count(k); }); })(ar.tree);
+assert.strictEqual(anodes, sandbox.JR_HULLS.length + sandbox.JA_HULLS.length - 1,
+  `${anodes} Armageddon sectors for ${sandbox.JR_HULLS.length + sandbox.JA_HULLS.length - 1} hulls`);
+jr.mode = JMODE; jr.drawClassTree();
+assert.strictEqual(jr.treeRings, RINGS, 'the graft leaked into the Royale wheel');
+
 console.log(`wheel ok — ${sectors} sectors, ${leaves} tier-4 leaves, both animations clockwise`);
+console.log(`armageddon wheel ok — ${anodes} sectors over ${ar.treeRings} rings`);
 console.log(`juggernaut wheel ok — ${jsectors} sectors over ${RINGS} rings, ${jleaves} endings, radius ${(JR / R).toFixed(2)}x`);

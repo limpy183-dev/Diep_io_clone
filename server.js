@@ -201,7 +201,7 @@ function writeCreate(b, e, client) {
   b.u8(entityFlags(e));
   // Bosses carry a boss-table index instead of a tank id; the client rebuilds
   // their barrels from the same BOSSES table.
-  if (isTank) { b.u8(e.type === 'boss' ? (e.bossIndex | 0) : (e.tankId === undefined ? 0 : e.tankId)); b.u8(Math.min(255, e.level || 1)); b.u16(scaleWord(e)); }
+  if (isTank) { b.u16(e.type === 'boss' ? (e.bossIndex | 0) : (e.tankId === undefined ? 0 : e.tankId)); b.u16(Math.min(65535, e.level || 1)); b.u16(scaleWord(e)); }
   if (e.sides === 2) b.u16(Math.min(65535, Math.round(e.width * 4)));
   if (e.name) { b.str(e.name); b.u32(Math.max(0, e.score | 0)); }
   writeTurrets(b, e);
@@ -218,7 +218,7 @@ function writeUpdate(b, e) {
   // The class id rides every update, not just the create: upgrading (or /class)
   // mutates a tank the client has already seen, and without it the old barrels,
   // body shape and turret count stick around forever.
-  if (e.type === 'tank' || e.type === 'boss') { b.u8(e.type === 'boss' ? (e.bossIndex | 0) : (e.tankId === undefined ? 0 : e.tankId)); b.u8(Math.min(255, e.level || 1)); b.u16(scaleWord(e)); }
+  if (e.type === 'tank' || e.type === 'boss') { b.u16(e.type === 'boss' ? (e.bossIndex | 0) : (e.tankId === undefined ? 0 : e.tankId)); b.u16(Math.min(65535, e.level || 1)); b.u16(scaleWord(e)); }
   if (e.name) b.u32(Math.max(0, e.score | 0));
   writeTurrets(b, e);
 }
@@ -287,12 +287,12 @@ function sendUpdate(client, arena) {
   b.u8((alive ? 1 : 0) | (alive && ctrl === t ? 2 : 0));
   if (alive) {
     b.u32(Math.max(0, Math.round(t.score)));
-    b.u8(t.level);
-    b.u8(t.tankId);
+    b.u16(t.level);
+    b.u16(t.tankId);
     b.u8(t.statsAvailable);
     for (let i = 0; i < 8; i++) b.u8(t.stats[i]);
     b.u8(t.pendingUpgrades.length);
-    for (const id of t.pendingUpgrades) b.u8(id);
+    for (const id of t.pendingUpgrades) b.u16(id);
     b.u8(t.autoFire ? 1 : 0);
     b.u8(t.autoSpin ? 1 : 0);
     b.u32(t.spawnTick);
@@ -309,8 +309,8 @@ function sendUpdate(client, arena) {
   const seen = client.viewing ? watching(client) : null;
   b.u8(seen && seen.stats ? 1 : 0);
   if (seen && seen.stats) {
-    b.u8(seen.tankId === undefined ? 0 : seen.tankId);
-    b.u8(Math.min(255, seen.level || 1));
+    b.u16(seen.tankId === undefined ? 0 : seen.tankId);
+    b.u16(Math.min(65535, seen.level || 1));
     for (let i = 0; i < 8; i++) b.u8(seen.stats[i] || 0);
     // Your own parked tank: the camera rides the target, so this is the only
     // way the client still knows where to put your arrow on the minimap.
@@ -334,7 +334,7 @@ function sendUpdate(client, arena) {
   }
   b.u8(lb.length);
   for (const p of lb) {
-    b.str(p.name); b.u32(Math.max(0, Math.round(p.score))); b.u8(p.tankId); b.u32(p.id);
+    b.str(p.name); b.u32(Math.max(0, Math.round(p.score))); b.u16(p.tankId); b.u32(p.id);
     // Same rule as the world: your row is blue, the rest are red.
     const own = t && p.id === t.id;
     const c = hex(p.fill === sim.C.blue && !own ? sim.C.red : p.fill);
@@ -409,7 +409,7 @@ function sendMapState(client, g) {
     for (const row of pod.top) {
       b.str(row.name || '');
       b.u32(Math.max(0, Math.min(0xFFFFFFFF, Math.round(row.score))));
-      b.u8(Math.min(255, row.level || 0));
+      b.u16(Math.min(65535, row.level || 0));
       b.u16(Math.min(65535, row.kills || 0));
       b.str(row.tank || '');
       b.u8(row.isPlayer ? 1 : 0);
@@ -494,8 +494,8 @@ function sendDeath(client, tank) {
   b.u8(SV.DEATH);
   b.str(tank.killedBy || 'an unnamed tank');
   b.u32(Math.max(0, Math.round(tank.score)));
-  b.u8(tank.level);
-  b.u8(tank.tankId);
+  b.u16(tank.level);
+  b.u16(tank.tankId);
   b.u32(Math.max(0, tank.game.tick - tank.spawnTick));
   b.u8(Math.min(255, tank.kills));
   send(client, b.bytes());
@@ -672,7 +672,7 @@ function handle(client, b) {
       break;
     }
     case OP.UPGRADE: {
-      const id = b.ru8();
+      const id = b.ru16();
       t.upgradeTo(id);                              // validates the class is actually offered
       break;
     }

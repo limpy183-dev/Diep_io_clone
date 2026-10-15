@@ -39,6 +39,9 @@ function labMode(key, spec) {
   // ...and whether that tree is a DAG deep enough that every hull wants drawing
   // once rather than once per path into it.
   if (spec.treeUnique) g.treeUnique = true;
+  // ...and any edges the mode adds to that tree which the tank table does not
+  // carry: {tankId: [ids]}. Armageddon hangs its tiers off the Royale's crowns.
+  if (spec.treeGraft) g.treeGraft = spec.treeGraft;
   if (spec.logic) { g.logic = key; MODE_LOGIC[key] = spec.logic; }
   GAMEMODES[key] = g;
   LAB_MODES[key] = { key: key, name: spec.name, family: spec.family, tag: spec.tag || '',
@@ -2934,16 +2937,15 @@ labMode('chaos', {
 // are all the game's own.
 
 // ids 112..251. Past every real class (the table stops at 111) and clear of the
-// Juggernaut, which was parked at 200 and moved to 255 to get out of the way —
-// and, critically, inside a byte: the wire writes a tank's class as a u8, so a
-// roster that ran past 255 would come out of the socket as a different hull.
-// A hundred and forty hulls is nearly all of that byte, which is why the base
-// moved down from 120 to sit directly on top of the real table.
+// Juggernaut, which was parked at 200 and moved to 255 to get out of the way.
+// The roster was packed in under 256 back when the wire wrote a class as a u8;
+// it is a u16 now, which is what lets Juggernaut Armageddon's tiers live at 256
+// and up (JA_BASE) without the Royale's ids moving.
 var JR_BASE = 112;
-// The level each tier opens at. Nine tiers, and the last one is the level cap:
-// a Crown is a thing you spend a whole round becoming, not a thing you buy.
-var JR_LVL = [0, 12, 24, 36, 52, 70, 100, 140, 200];
-var JR_TOP = 139;                  // highest hull id in the roster
+// The level each tier opens at. Nine tiers in the Royale, and the ninth is its
+// level cap: a Crown is a thing you spend a whole round becoming, not a thing
+// you buy. Tiers 9..13 are Armageddon's and only exist under its 500 cap.
+var JR_LVL = [0, 12, 24, 36, 52, 70, 100, 140, 200, 240, 300, 370, 440, 500];
 
 // Lighten (t > 0) or darken (t < 0) a hex. The branch palette is one colour
 // per branch and a tier ramp derived from it, rather than ninety-six literals
@@ -2980,7 +2982,14 @@ var JR_BR = {
   // Tier 7 and 8 get a painter of their own: a fusion aura is two colours
   // arguing, a sovereign aura is one thing the arena is arranged around.
   titan:    { label: 'Titan',     hex: '#241C2E', tone: '255,235,200', aura: 'sovereign' },
-  crown:    { label: 'Crown',     hex: '#14141C', tone: '255,255,255', aura: 'crown' }
+  crown:    { label: 'Crown',     hex: '#14141C', tone: '255,255,255', aura: 'crown' },
+  // Juggernaut Armageddon's five. Each has a painter of its own in modefx.js,
+  // and each one is louder than the one below it on purpose.
+  ascendant:  { label: 'Ascendant',  hex: '#1E1A2A', tone: '255,240,200', aura: 'ascendant' },
+  archon:     { label: 'Archon',     hex: '#181428', tone: '220,235,255', aura: 'archon' },
+  primordial: { label: 'Primordial', hex: '#120E1E', tone: '255,255,255', aura: 'primordial' },
+  eschaton:   { label: 'Eschaton',   hex: '#0C0A14', tone: '255,250,235', aura: 'eschaton' },
+  armageddon: { label: 'Armageddon', hex: '#06050A', tone: '255,255,255', aura: 'armageddon' }
 };
 
 // --- the dynasties -------------------------------------------------------
@@ -3297,6 +3306,50 @@ var JR_GUNS = {
       reload: o.reload || 7, recoil: 1.6, trap: true,
       bullet: jrBullet({ type: 'firework', ratio: 1.35, hp: 34, dmg: o.dmg || 1.8, speed: 0.8,
         scatter: 0.4, life: 1.4, absorb: 0.18, color: o.color })
+    }));
+    return out;
+  },
+
+  // --- Armageddon's vocabulary ------------------------------------------
+  // Three guns that only exist past the crowns.
+
+  // Godspear: a barrel longer than anything else in the game, and a round that
+  // crosses the screen before the shot you dodged last time has landed.
+  godspear: function (n, o) {
+    o = o || {}; var out = [];
+    for (var i = 0; i < n; i++) out.push(jrBarrel({
+      angle: (i - (n - 1) / 2) * (o.spread === undefined ? 0.12 : o.spread) + (o.spin || 0),
+      size: o.size || 236, width: o.width || 64, delay: (i % 2) * 0.5,
+      reload: o.reload || 3.6, recoil: 3.4,
+      bullet: jrBullet({ ratio: 1.0, hp: 90, dmg: o.dmg || 6.5, speed: o.speed || 2.9, scatter: 0.02,
+        life: 2.8, absorb: 0.05, sides: o.sides, color: o.color || '#FFF4D6' })
+    }));
+    return out;
+  },
+
+  // Nova: a full ring of shells the size of hellbores. There is no side of an
+  // Armageddon hull that is safe to stand on.
+  nova: function (n, o) {
+    o = o || {}; var out = [];
+    for (var i = 0; i < n; i++) out.push(jrBarrel({
+      angle: Math.PI * 2 * (i / n) + (o.spin || 0),
+      size: o.size || 138, width: o.width || 132, delay: i / n,
+      reload: o.reload || 6.5, recoil: 1.2, trap: true,
+      bullet: jrBullet({ ratio: o.ratio || 2.6, hp: 120, dmg: o.dmg || 4.2, speed: 0.62, scatter: 0.2,
+        life: 1.9, absorb: 0.02, sides: o.sides, color: o.color })
+    }));
+    return out;
+  },
+
+  // Gatling: a tight forward cluster on a reload measured in frames.
+  gatling: function (n, o) {
+    o = o || {}; var out = [];
+    for (var i = 0; i < n; i++) out.push(jrBarrel({
+      angle: (i - (n - 1) / 2) * 0.07 + (o.spin || 0),
+      size: o.size || 170, width: o.width || 44, delay: i / n,
+      reload: o.reload || 0.55, recoil: 0.25,
+      bullet: jrBullet({ ratio: 0.8, hp: 12, dmg: o.dmg || 1.6, speed: 2.1, scatter: 1.4,
+        life: 1.2, absorb: 0.15, sides: o.sides, color: o.color })
     }));
     return out;
   }
@@ -4194,20 +4247,435 @@ var JR_HULLS = [
     bl: 'Forty-four things on the field and every one of them is it. Everything it damages bleeds into it, everything it kills stands back up for it, anything nearly dead that touches it is simply gone, and it does not accept the first death you hand it.' }
 ];
 
+// =========================================================================
+// Juggernaut Armageddon's roster — five tiers past the crowns
+// =========================================================================
+//
+// The Royale ends at level 200 with eight crowns. Armageddon does not: every
+// crown opens onto its dynasty's two ASCENDANTS at 240, they open onto two
+// ARCHONS at 300, and then the dynasties that were sealed apart at level 52
+// start marrying again. Eight PRIMORDIALS at 370, each the union of two
+// neighbouring dynasties on a ring, so every archon chooses which neighbour it
+// becomes. Both ESCHATONS at 440 sit on top of all eight, and the one thing at
+// 500 sits on top of both:
+//
+//   9  ascendant   240   16   two per dynasty
+//   10 archon      300   16   two per dynasty
+//   11 primordial  370    8   pyre-titan-siege-wall-flesh-void-chrono-glacier
+//   12 eschaton    440    2   First Light, Last Dark
+//   13 armageddon  500    1
+//
+// The rows are the Royale's own shape (see the key above JR_HULLS) with one
+// addition: `lb` names a hull's family when it has no single dynasty to name,
+// and `raw` paints the hull exactly the colour written.
+//
+// Every tier is meant to be MORE than the one below it in every column at
+// once — another self-firing verb, another passive, another trait, a bigger
+// hull, more health, and a dividend in jrTickTank that is a bigger step than
+// the one before it. A crown carries four verbs it fires itself and six traits;
+// the Armageddon carries ten and twelve.
+
+var JA_BASE = 256;
+
+var JA_HULLS = [
+  // ---- tier 9: the ascendants, level 240 ----------------------------------
+  { id: 0, n: 'Helios', br: 'ascendant', dy: 'pyre', t: 9, sd: 22, sz: 344, hp: 158000, bd: 270, sp: 0.70, post: 'jrascend',
+    g: function () { return JRG.ember(14).concat(JRG.hellbore(3)).concat(JRG.starfall(6)).concat(JRG.godspear(2)); },
+    up: [16, 17], ab: 'supernova', abs: ['apocalypse', 'meteor', 'eclipse', 'overload', 'enthrone'],
+    ps: ['pyre', 'ruin', 'corona'], tr: ['aegis', 'revive', 'regalia', 'wake', 'pierce', 'warcry', 'echo'],
+    bl: 'The Solar Tyrant set the screen on fire once. Helios does it three times a press, a second apart, and every one of the five verbs it fires itself lands twice.' },
+
+  { id: 1, n: 'Phoenix Throne', br: 'ascendant', dy: 'pyre', t: 9, sd: 14, sz: 336, hp: 150000, bd: 290, sp: 0.80, post: 'jrascend',
+    g: function () { return JRG.gatling(6, { color: '#FF9A4E' }).concat(JRG.ember(12)).concat(JRG.nova(6)); },
+    up: [16, 17], ab: 'fissure', abs: ['ignite', 'meteor', 'avatar', 'eclipse', 'enthrone'],
+    ps: ['trail', 'pyre', 'corona'], tr: ['wake', 'vampire', 'overclock', 'revive', 'pierce', 'regalia', 'echo'],
+    bl: 'A gatling, a ring of novas and twelve embers on a hull fast enough to drag the fire wherever it likes. FISSURE splits the ground open in eight directions at once.' },
+
+  { id: 2, n: 'Polar Night', br: 'ascendant', dy: 'rime', t: 9, sd: 6, sz: 352, hp: 166000, bd: 250, sp: 0.60, post: 'jrascend', fov: 0.56,
+    g: function () { return JRG.cryo(14).concat(JRG.hellbore(3)).concat(JRG.spine(4, { color: '#BFEFFF' })); },
+    up: [18, 19], ab: 'timestop', abs: ['stasis', 'terraform', 'freeze', 'slick', 'enthrone'],
+    ps: ['chill', 'ruin', 'sovereign'], tr: ['aegis', 'revive', 'regalia', 'dread', 'bulwark', 'reflect', 'nullify'],
+    bl: 'TIME STOP holds the screen for four seconds — tanks AND the shots in the air — and nothing you throw at it sticks: burn, freeze and bleed are gone by the end of its own tick.' },
+
+  { id: 3, n: 'Diamond Dust', br: 'ascendant', dy: 'rime', t: 9, sd: 12, sz: 340, hp: 152000, bd: 270, sp: 0.74, post: 'jrascend',
+    g: function () {
+      return JRG.cryo(10).concat(JRG.godspear(3, { color: '#DFF8FF' }))
+        .concat(JRG.gatling(4, { color: '#BFEFFF' })).concat(JRG.orbit(10, { color: '#BFEFFF' }));
+    },
+    up: [18, 19], ab: 'godray', abs: ['beam', 'stasis', 'freeze', 'slick', 'skyfall'],
+    ps: ['chill', 'beat', 'stormcall'], tr: ['reflect', 'pierce', 'aegis', 'blinkstep', 'overclock', 'revive', 'thunder'],
+    bl: 'GODRAY is a line of light nine thousand units long that bills everything in it a share of its own health. Lightning falls on its own every second and a half, and some of its hits call more.' },
+
+  { id: 4, n: 'Continent', br: 'ascendant', dy: 'titan', t: 9, sd: 32, sz: 372, hp: 185000, bd: 320, sp: 0.62, post: 'jrascend', me: true,
+    g: function () { return []; },
+    up: [20, 21], ab: 'fissure', abs: ['rupture', 'quake', 'warpstorm', 'avatar', 'enthrone'],
+    ps: ['swing', 'thorns', 'momentum'], tr: ['bulwark', 'aegis', 'revive', 'regalia', 'growth', 'executioner', 'nullify'],
+    bl: 'A hundred and eighty-five thousand health, three hundred and twenty contact damage, thirty-two sides and still not one barrel. It is not a tank so much as a landmass that has decided where you are standing.' },
+
+  { id: 5, n: 'Juggernaut Absolute', br: 'ascendant', dy: 'titan', t: 9, sd: 20, sz: 358, hp: 172000, bd: 300, sp: 0.72, post: 'jrascend',
+    g: function () { return JRG.hellbore(3).concat(JRG.nova(6)).concat(JRG.cannon(6, { spread: 0.18 })); },
+    up: [20, 21], ab: 'rapture', abs: ['quake', 'judgement', 'avatar', 'rupture', 'genesis'],
+    ps: ['momentum', 'thorns', 'maelstrom'], tr: ['bulwark', 'growth', 'overclock', 'retinue', 'aegis', 'revive', 'pierce'],
+    bl: 'RAPTURE lifts everything in reach off the floor and drops it a second and a half later from a great height. Six blades on a fast orbit, a ring of novas and an army it makes on demand.' },
+
+  { id: 6, n: 'Doomsday Engine', br: 'ascendant', dy: 'siege', t: 9, sd: 14, sz: 360, hp: 168000, bd: 240, sp: 0.40, pre: 'jrplinth', post: 'jrascend', fov: 0.54,
+    g: function () {
+      return JRG.hellbore(3).concat(JRG.starfall(8)).concat(JRG.godspear(3)).concat(JRG.cannon(6, { spread: 0.16 }));
+    },
+    up: [22, 23], ab: 'skyfall', abs: ['judgement', 'meteor', 'unmake', 'turrets', 'enthrone'],
+    ps: ['dug', 'sovereign', 'tyrant'], tr: ['retinue', 'bulwark', 'aegis', 'revive', 'regalia', 'pierce', 'echo'],
+    bl: 'SKYFALL picks the seven nearest things it dislikes and strikes each one from above. With ECHO it picks them again a second later.' },
+
+  { id: 7, n: 'Iron Rain', br: 'ascendant', dy: 'siege', t: 9, sd: 10, sz: 348, hp: 160000, bd: 250, sp: 0.50, pre: 'dombase', post: 'jrascend',
+    g: function () { return JRG.starfall(6).concat(JRG.gatling(6)).concat(JRG.mortar()).concat(JRG.lance(3)); },
+    up: [22, 23], ab: 'tempest', abs: ['meteor', 'arc', 'turrets', 'citadel', 'skyfall'],
+    ps: ['dug', 'ruin', 'stormcall'], tr: ['retinue', 'aegis', 'dread', 'overclock', 'revive', 'pierce', 'thunder'],
+    bl: 'TEMPEST is twelve bolts over three seconds, each forking twice. Six mortars, a gatling battery and three lances underneath it, and the sky never quite clears.' },
+
+  { id: 8, n: 'World Wall', br: 'ascendant', dy: 'wall', t: 9, sd: 20, sz: 362, hp: 176000, bd: 250, sp: 0.42, pre: 'dombase', post: 'jrascend',
+    g: function () {
+      return JRG.traps(18, { reload: 2, life: 20, hp: 48 }).concat(JRG.cannon(6, { spread: 0.2 })).concat(JRG.starfall(6));
+    },
+    up: [24, 25], ab: 'genesis', abs: ['citadel', 'barricade', 'enthrone', 'turrets', 'conscript'],
+    ps: ['husks', 'thorns', 'tyrant'], tr: ['aegis', 'regalia', 'bulwark', 'revive', 'reflect', 'retinue', 'nullify'],
+    bl: 'Eighteen launchers, a husk wall, a fort it builds in one press, and GENESIS — eighteen more husks and six escorts out of nothing. It does not hold ground. It populates it.' },
+
+  { id: 9, n: 'Charnel Throne', br: 'ascendant', dy: 'wall', t: 9, sd: 13, sz: 350, hp: 162000, bd: 280, sp: 0.60, pre: 'dombase', post: 'jrascend',
+    g: function () {
+      return JRG.hangar(14, { color: '#8C2438', size: 112, width: 94 })
+        .concat(JRG.traps(12, { color: '#7A3346', reload: 2.4, life: 15 })).concat(JRG.siphon(6));
+    },
+    up: [24, 25], ab: 'rapture', abs: ['conscript', 'raise', 'reap', 'dominion', 'genesis'],
+    ps: ['husks', 'drain', 'ruin'], tr: ['vampire', 'tithe', 'aegis', 'dread', 'revive', 'regalia', 'echo'],
+    bl: 'Everything it kills gets up for it, everything it touches pays it, and every army it raises it raises twice.' },
+
+  { id: 10, n: 'Event Zero', br: 'ascendant', dy: 'voidd', t: 9, sd: 18, sz: 346, hp: 150000, bd: 270, sp: 0.80, iv: true, post: 'jrascend', fov: 0.56,
+    g: function () {
+      return JRG.hellbore(3).concat(JRG.phase(12)).concat(JRG.orbit(12)).concat(JRG.godspear(2));
+    },
+    up: [26, 27], ab: 'blackhole', abs: ['collapse', 'unmake', 'warpstorm', 'blink', 'enthrone'],
+    ps: ['well', 'mirror', 'tyrant'], tr: ['blinkstep', 'pierce', 'aegis', 'revive', 'reflect', 'omniscient', 'echo'],
+    bl: 'BLACK HOLE opens a well under your cursor that is not attached to anything — and Event Zero is the invisible well that already was. Two of them, and you are standing between.' },
+
+  { id: 11, n: 'Starless', br: 'ascendant', dy: 'voidd', t: 9, sd: 16, sz: 354, hp: 164000, bd: 260, sp: 0.70, post: 'jrascend',
+    g: function () { return JRG.flak(3).concat(JRG.nova(8)).concat(JRG.spine(4)); },
+    up: [26, 27], ab: 'timestop', abs: ['collapse', 'pull', 'judgement', 'unmake', 'blackhole'],
+    ps: ['well', 'sovereign', 'corona'], tr: ['aegis', 'pierce', 'dread', 'bulwark', 'revive', 'regalia', 'nullify'],
+    bl: 'A ring of novas around a singularity, a corona that takes a share of your own bar a second, and a clock it stops whenever you get close enough to matter.' },
+
+  { id: 12, n: 'Clockwork God', br: 'ascendant', dy: 'time', t: 9, sd: 24, sz: 348, hp: 156000, bd: 260, sp: 0.82, post: 'jrascend',
+    g: function () {
+      return JRG.ring(16, { reload: 0.85, dmg: 1.1 }).concat(JRG.cannon(6, { spread: 0.16 }))
+        .concat(JRG.orbit(12)).concat(JRG.spine(4));
+    },
+    up: [28, 29], ab: 'timestop', abs: ['epoch', 'stasis', 'judgement', 'rewind', 'enthrone'],
+    ps: ['beat', 'sovereign', 'quicken'], tr: ['blinkstep', 'aegis', 'revive', 'regalia', 'reflect', 'overclock', 'echo'],
+    bl: 'QUICKEN runs every one of its cooldowns at double time, and ECHO lands every verb twice. Thirty-eight barrels on a four-second beat, holding the screen still in between.' },
+
+  { id: 13, n: 'Paradox Eternal', br: 'ascendant', dy: 'time', t: 9, sd: 19, sz: 342, hp: 150000, bd: 280, sp: 0.86, iv: true, post: 'jrascend', fov: 0.58,
+    g: function () {
+      return JRG.phase(12).concat(JRG.ring(10, { reload: 1 })).concat(JRG.lance(4)).concat(JRG.orbit(10));
+    },
+    up: [28, 29], ab: 'overdrive', abs: ['stasis', 'epoch', 'dilate', 'arc', 'rewind'],
+    ps: ['beat', 'split', 'mirror'], tr: ['blinkstep', 'reflect', 'aegis', 'pierce', 'revive', 'omniscient', 'thunder'],
+    bl: 'OVERDRIVE fires every other button the hull has, all at once, loaded or not. The first ascendant whose right-click is the other five.' },
+
+  { id: 14, n: 'Hive Absolute', br: 'ascendant', dy: 'flesh', t: 9, sd: 14, sz: 352, hp: 158000, bd: 270, sp: 0.80, post: 'jrascend',
+    g: function () {
+      return JRG.hangar(22, { color: '#C8F05A', size: 116, width: 98 }).concat(JRG.factory(8, { color: '#C8F05A' }))
+        .concat(JRG.orbit(14, { color: '#C8F05A' })).concat(JRG.needles(8, { color: '#C8F05A' }));
+    },
+    up: [30, 31], ab: 'genesis', abs: ['conscript', 'swarm', 'dominion', 'arc', 'judgement'],
+    ps: ['choir', 'plague', 'sovereign'], tr: ['vampire', 'tithe', 'retinue', 'aegis', 'revive', 'regalia', 'echo'],
+    bl: 'Forty-four of it before it presses anything, every one of them better for every other, and GENESIS adds two dozen more.' },
+
+  { id: 15, n: 'Red King', br: 'ascendant', dy: 'flesh', t: 9, sd: 12, sz: 348, hp: 165000, bd: 300, sp: 0.76, post: 'jrascend',
+    g: function () {
+      return JRG.siphon(8).concat(JRG.hangar(14, { color: '#8C2438', size: 112, width: 94 }))
+        .concat(JRG.needles(10, { color: '#D4324F' }));
+    },
+    up: [30, 31], ab: 'rapture', abs: ['dominion', 'reap', 'raise', 'conscript', 'enthrone'],
+    ps: ['husks', 'bleed', 'undying'], tr: ['vampire', 'tithe', 'executioner', 'aegis', 'revive', 'regalia', 'nullify'],
+    bl: 'Everything it lifts it drops, everything it drops bleeds, and everything that bleeds feeds it. The lower it gets the faster it comes back.' },
+
+  // ---- tier 10: the archons, level 300 ------------------------------------
+  { id: 16, n: 'Archon of Ash', br: 'archon', dy: 'pyre', t: 10, sd: 24, sz: 396, hp: 296000, bd: 420, sp: 0.70, post: 'jrarchon',
+    g: function () {
+      return JRG.ember(16).concat(JRG.hellbore(4)).concat(JRG.starfall(8)).concat(JRG.godspear(3));
+    },
+    up: [32, 39], ab: 'overdrive', abs: ['supernova', 'apocalypse', 'meteor', 'eclipse', 'fissure', 'enthrone'],
+    ps: ['pyre', 'ruin', 'corona', 'tyrant'], tr: ['aegis', 'revive', 'regalia', 'wake', 'pierce', 'warcry', 'echo', 'thunder'],
+    bl: 'Six self-firing verbs, every one of them landing twice, and a right-click that fires all six again at once. A supernova and an apocalypse in the same second is the quiet part.' },
+
+  { id: 17, n: 'Sunforge', br: 'archon', dy: 'pyre', t: 10, sd: 16, sz: 388, hp: 284000, bd: 450, sp: 0.80, post: 'jrarchon',
+    g: function () { return JRG.gatling(8, { color: '#FF9A4E' }).concat(JRG.nova(8)).concat(JRG.ember(12)); },
+    up: [32, 39], ab: 'fissure', abs: ['supernova', 'ignite', 'avatar', 'meteor', 'skyfall', 'enthrone'],
+    ps: ['trail', 'pyre', 'corona', 'maelstrom'], tr: ['wake', 'vampire', 'overclock', 'revive', 'pierce', 'regalia', 'echo', 'nullify'],
+    bl: 'A forge that walks: eight gatlings, eight novas, six blades on the orbit and burning ground behind it. AVATAR doubles all of it for eight seconds.' },
+
+  { id: 18, n: 'Ninth Winter', br: 'archon', dy: 'rime', t: 10, sd: 6, sz: 404, hp: 312000, bd: 400, sp: 0.60, post: 'jrarchon', fov: 0.52,
+    g: function () {
+      return JRG.cryo(16).concat(JRG.hellbore(4)).concat(JRG.spine(6, { color: '#BFEFFF' }))
+        .concat(JRG.starfall(6, { color: '#BFEFFF' }));
+    },
+    up: [38, 39], ab: 'overdrive', abs: ['timestop', 'stasis', 'terraform', 'freeze', 'slick', 'enthrone'],
+    ps: ['chill', 'ruin', 'sovereign', 'quicken'], tr: ['aegis', 'revive', 'regalia', 'dread', 'bulwark', 'reflect', 'nullify', 'echo'],
+    bl: 'Every winter before it was a season. This one is a verdict: two time stops, two stases and a terraform in one press, twice.' },
+
+  { id: 19, n: 'Prism Lord', br: 'archon', dy: 'rime', t: 10, sd: 12, sz: 392, hp: 290000, bd: 420, sp: 0.74, post: 'jrarchon',
+    g: function () {
+      return JRG.cryo(12).concat(JRG.godspear(4, { color: '#DFF8FF' }))
+        .concat(JRG.gatling(6, { color: '#BFEFFF' })).concat(JRG.orbit(12, { color: '#BFEFFF' }));
+    },
+    up: [38, 39], ab: 'godray', abs: ['beam', 'skyfall', 'stasis', 'freeze', 'tempest', 'timestop'],
+    ps: ['chill', 'beat', 'stormcall', 'corona'], tr: ['reflect', 'pierce', 'aegis', 'blinkstep', 'overclock', 'revive', 'thunder', 'echo'],
+    bl: 'Light, bent until it hurts. Two beams at once, lightning on its own, a tempest when it wants one, and every round you fire at it comes straight back.' },
+
+  { id: 20, n: 'Pangaea', br: 'archon', dy: 'titan', t: 10, sd: 36, sz: 420, hp: 340000, bd: 500, sp: 0.62, post: 'jrarchon', me: true,
+    g: function () { return []; },
+    up: [32, 33], ab: 'overdrive', abs: ['fissure', 'rupture', 'quake', 'warpstorm', 'avatar', 'enthrone'],
+    ps: ['swing', 'thorns', 'momentum', 'maelstrom'], tr: ['bulwark', 'aegis', 'revive', 'regalia', 'growth', 'executioner', 'nullify', 'echo'],
+    bl: 'Every continent at once. Five hundred contact damage, a wrecking mass and six blades orbiting a hull with no barrel on it, and a cap on how much any hit is allowed to take.' },
+
+  { id: 21, n: 'Unstoppable', br: 'archon', dy: 'titan', t: 10, sd: 22, sz: 404, hp: 318000, bd: 470, sp: 0.74, post: 'jrarchon',
+    g: function () {
+      return JRG.hellbore(4).concat(JRG.nova(8)).concat(JRG.cannon(6, { spread: 0.16 })).concat(JRG.gatling(4));
+    },
+    up: [32, 33], ab: 'rapture', abs: ['quake', 'judgement', 'avatar', 'rupture', 'genesis', 'fissure'],
+    ps: ['momentum', 'thorns', 'maelstrom', 'corona'], tr: ['bulwark', 'growth', 'overclock', 'retinue', 'aegis', 'revive', 'pierce', 'thunder'],
+    bl: 'The name is a description. It rams, it shoots, it grows, it lifts you up and drops you, and the faster it is going the more of you comes off.' },
+
+  { id: 22, n: 'Final Argument', br: 'archon', dy: 'siege', t: 10, sd: 14, sz: 400, hp: 300000, bd: 380, sp: 0.40, pre: 'jrplinth', post: 'jrarchon', fov: 0.50,
+    g: function () {
+      return JRG.hellbore(4).concat(JRG.starfall(10)).concat(JRG.godspear(4)).concat(JRG.cannon(6, { spread: 0.16 }));
+    },
+    up: [33, 34], ab: 'skyfall', abs: ['judgement', 'meteor', 'unmake', 'turrets', 'tempest', 'enthrone'],
+    ps: ['dug', 'sovereign', 'tyrant', 'stormcall'], tr: ['retinue', 'bulwark', 'aegis', 'revive', 'regalia', 'pierce', 'echo', 'thunder'],
+    bl: 'The Last Word, rebutted. Twenty-four barrels and ten turrets on a plinth, and the sky itself as an eleventh argument.' },
+
+  { id: 23, n: 'Ten Thousand Guns', br: 'archon', dy: 'siege', t: 10, sd: 12, sz: 392, hp: 288000, bd: 400, sp: 0.50, pre: 'dombase', post: 'jrarchon',
+    g: function () {
+      return JRG.gatling(10).concat(JRG.starfall(6)).concat(JRG.lance(4)).concat(JRG.mortar());
+    },
+    up: [33, 34], ab: 'overdrive', abs: ['meteor', 'arc', 'turrets', 'citadel', 'skyfall', 'tempest'],
+    ps: ['dug', 'ruin', 'stormcall', 'quicken'], tr: ['retinue', 'aegis', 'dread', 'overclock', 'revive', 'pierce', 'thunder', 'echo'],
+    bl: 'It is not ten thousand. It only feels like it, because every one of them is firing on a reload measured in frames and it presses its buttons on double time.' },
+
+  { id: 24, n: "Heaven's Gate", br: 'archon', dy: 'wall', t: 10, sd: 22, sz: 410, hp: 326000, bd: 380, sp: 0.42, pre: 'dombase', post: 'jrarchon',
+    g: function () {
+      return JRG.traps(20, { reload: 1.8, life: 22, hp: 54 }).concat(JRG.cannon(8, { spread: 0.18 })).concat(JRG.starfall(8));
+    },
+    up: [34, 35], ab: 'genesis', abs: ['citadel', 'barricade', 'enthrone', 'turrets', 'conscript', 'timestop'],
+    ps: ['husks', 'thorns', 'tyrant', 'corona'], tr: ['aegis', 'regalia', 'bulwark', 'revive', 'reflect', 'retinue', 'nullify', 'echo'],
+    bl: 'Twenty launchers lay a city wall, a fort goes up inside it, an army walks out of the fort, and the clock stops while you work out which of those to shoot first.' },
+
+  { id: 25, n: 'Ossuarch', br: 'archon', dy: 'wall', t: 10, sd: 15, sz: 398, hp: 304000, bd: 440, sp: 0.60, pre: 'dombase', post: 'jrarchon',
+    g: function () {
+      return JRG.hangar(16, { color: '#8C2438', size: 114, width: 96 })
+        .concat(JRG.traps(14, { color: '#7A3346', reload: 2.2, life: 16 })).concat(JRG.siphon(8));
+    },
+    up: [34, 35], ab: 'rapture', abs: ['conscript', 'raise', 'reap', 'dominion', 'genesis', 'enthrone'],
+    ps: ['husks', 'drain', 'ruin', 'undying'], tr: ['vampire', 'tithe', 'aegis', 'dread', 'revive', 'regalia', 'echo', 'executioner'],
+    bl: 'A graveyard that walks and a king that reigns over it. Anything under a tenth of its health that touches it is simply finished.' },
+
+  { id: 26, n: 'Hollow Crown', br: 'archon', dy: 'voidd', t: 10, sd: 18, sz: 394, hp: 290000, bd: 420, sp: 0.80, iv: true, post: 'jrarchon', fov: 0.52,
+    g: function () {
+      return JRG.hellbore(4).concat(JRG.phase(14)).concat(JRG.orbit(14)).concat(JRG.godspear(3));
+    },
+    up: [36, 37], ab: 'blackhole', abs: ['collapse', 'unmake', 'warpstorm', 'blink', 'timestop', 'enthrone'],
+    ps: ['well', 'mirror', 'tyrant', 'corona'], tr: ['blinkstep', 'pierce', 'aegis', 'revive', 'reflect', 'omniscient', 'echo', 'nullify'],
+    bl: 'An empty patch of map wearing a crown. You see the black hole it opened. You do not see the one it is.' },
+
+  { id: 27, n: 'Abyss Throne', br: 'archon', dy: 'voidd', t: 10, sd: 16, sz: 402, hp: 310000, bd: 410, sp: 0.70, post: 'jrarchon',
+    g: function () { return JRG.flak(4).concat(JRG.nova(10)).concat(JRG.spine(6)); },
+    up: [36, 37], ab: 'overdrive', abs: ['blackhole', 'collapse', 'pull', 'judgement', 'unmake', 'timestop'],
+    ps: ['well', 'sovereign', 'corona', 'quicken'], tr: ['aegis', 'pierce', 'dread', 'bulwark', 'revive', 'regalia', 'nullify', 'thunder'],
+    bl: 'Six ways of dragging you somewhere you did not want to be, pressed all at once, on double time.' },
+
+  { id: 28, n: 'Chronarch', br: 'archon', dy: 'time', t: 10, sd: 26, sz: 396, hp: 296000, bd: 410, sp: 0.82, post: 'jrarchon',
+    g: function () {
+      return JRG.ring(18, { reload: 0.8, dmg: 1.2 }).concat(JRG.cannon(8, { spread: 0.14 }))
+        .concat(JRG.orbit(14)).concat(JRG.spine(4));
+    },
+    up: [37, 38], ab: 'overdrive', abs: ['timestop', 'epoch', 'stasis', 'judgement', 'rewind', 'enthrone'],
+    ps: ['beat', 'sovereign', 'quicken', 'stormcall'], tr: ['blinkstep', 'aegis', 'revive', 'regalia', 'reflect', 'overclock', 'echo', 'thunder'],
+    bl: 'The arena keeps its time. Its own clock runs at double speed, the screen is held still twice a press, and the last three seconds are put back whenever it disliked them.' },
+
+  { id: 29, n: 'Ouroboric Hour', br: 'archon', dy: 'time', t: 10, sd: 21, sz: 390, hp: 284000, bd: 430, sp: 0.86, iv: true, post: 'jrarchon', fov: 0.54,
+    g: function () {
+      return JRG.phase(14).concat(JRG.ring(12, { reload: 0.9 })).concat(JRG.lance(4)).concat(JRG.orbit(12));
+    },
+    up: [37, 38], ab: 'timestop', abs: ['overdrive', 'stasis', 'epoch', 'dilate', 'arc', 'rewind'],
+    ps: ['beat', 'split', 'mirror', 'quicken'], tr: ['blinkstep', 'reflect', 'aegis', 'pierce', 'revive', 'omniscient', 'thunder', 'echo'],
+    bl: 'An hour that eats its own tail: invisible, phasing out on a timer, splitting when it dies, and pressing OVERDRIVE by itself whenever you get close.' },
+
+  { id: 30, n: 'Locust God', br: 'archon', dy: 'flesh', t: 10, sd: 16, sz: 400, hp: 296000, bd: 420, sp: 0.80, post: 'jrarchon',
+    g: function () {
+      return JRG.hangar(24, { color: '#C8F05A', size: 118, width: 100 }).concat(JRG.factory(8, { color: '#C8F05A' }))
+        .concat(JRG.orbit(16, { color: '#C8F05A' })).concat(JRG.needles(10, { color: '#C8F05A' }));
+    },
+    up: [35, 36], ab: 'genesis', abs: ['conscript', 'swarm', 'dominion', 'arc', 'judgement', 'tempest'],
+    ps: ['choir', 'plague', 'sovereign', 'corona'], tr: ['vampire', 'tithe', 'retinue', 'aegis', 'revive', 'regalia', 'echo', 'nullify'],
+    bl: 'Forty-eight of it at rest, and it is never at rest. The swarm is the weapon, the armour, the score and the weather.' },
+
+  { id: 31, n: 'Crimson Deluge', br: 'archon', dy: 'flesh', t: 10, sd: 13, sz: 394, hp: 306000, bd: 460, sp: 0.76, post: 'jrarchon',
+    g: function () {
+      return JRG.siphon(10).concat(JRG.hangar(16, { color: '#8C2438', size: 114, width: 96 }))
+        .concat(JRG.needles(12, { color: '#D4324F' }));
+    },
+    up: [35, 36], ab: 'overdrive', abs: ['rapture', 'dominion', 'reap', 'raise', 'conscript', 'enthrone'],
+    ps: ['husks', 'bleed', 'undying', 'corona'], tr: ['vampire', 'tithe', 'executioner', 'aegis', 'revive', 'regalia', 'nullify', 'echo'],
+    bl: 'Every drop it spills it drinks. A rapture, a reap, a raise and a dominion in one press, and it heals harder than you can hit it.' },
+
+  // ---- tier 11: the primordials, level 370 --------------------------------
+  // The dynasties marry again. Eight of them on a ring, each one the union of
+  // a dynasty and its neighbour, so an archon chooses which neighbour it becomes.
+  { id: 32, n: 'Magma Colossus', br: 'primordial', lb: 'Pyre × Titan', hx: '#6B2A14', t: 11, sd: 34, sz: 448, hp: 560000, bd: 680, sp: 0.66, post: 'jrprimal',
+    tone: '255,150,60', tone2: '255,190,140',
+    g: function () {
+      return JRG.ember(14).concat(JRG.hellbore(4)).concat(JRG.nova(8)).concat(JRG.cannon(6, { spread: 0.16 }));
+    },
+    up: [40, 41], ab: 'overdrive', abs: ['supernova', 'fissure', 'rupture', 'quake', 'meteor', 'apocalypse', 'enthrone'],
+    ps: ['pyre', 'corona', 'maelstrom', 'momentum'], tr: ['bulwark', 'aegis', 'immortal', 'regalia', 'wake', 'pierce', 'echo', 'thunder', 'nullify'],
+    bl: 'PYRE x TITAN. A mountain that is also on fire. IMMORTAL means it refuses three deaths a life — and every refusal is a supernova.' },
+
+  { id: 33, n: 'Moving Mountain', br: 'primordial', lb: 'Titan × Ordnance', hx: '#4A3A2A', t: 11, sd: 30, sz: 456, hp: 580000, bd: 640, sp: 0.55, post: 'jrprimal', fov: 0.50,
+    tone: '255,190,140', tone2: '200,215,240',
+    g: function () {
+      return JRG.hellbore(5).concat(JRG.starfall(8)).concat(JRG.godspear(4)).concat(JRG.cannon(6, { spread: 0.16 }));
+    },
+    up: [40, 41], ab: 'skyfall', abs: ['overdrive', 'judgement', 'rupture', 'quake', 'meteor', 'turrets', 'enthrone'],
+    ps: ['momentum', 'dug', 'sovereign', 'stormcall'], tr: ['retinue', 'bulwark', 'aegis', 'immortal', 'regalia', 'pierce', 'echo', 'thunder', 'growth'],
+    bl: 'TITAN x ORDNANCE. The siege engine that decided to walk. It has not finished growing, and the sky falls wherever it points.' },
+
+  { id: 34, n: 'Eternal Siege', br: 'primordial', lb: 'Ordnance × Bastion', hx: '#34402E', t: 11, sd: 18, sz: 452, hp: 590000, bd: 600, sp: 0.42, pre: 'dombase', post: 'jrprimal',
+    tone: '200,215,240', tone2: '170,230,150',
+    g: function () {
+      return JRG.traps(18, { reload: 1.8, life: 22, hp: 54 }).concat(JRG.starfall(8))
+        .concat(JRG.godspear(3)).concat(JRG.cannon(6, { spread: 0.16 }));
+    },
+    up: [40, 41], ab: 'genesis', abs: ['citadel', 'skyfall', 'judgement', 'turrets', 'barricade', 'tempest', 'enthrone'],
+    ps: ['dug', 'husks', 'tyrant', 'stormcall'], tr: ['retinue', 'bulwark', 'aegis', 'immortal', 'regalia', 'reflect', 'echo', 'dread', 'nullify'],
+    bl: 'ORDNANCE x BASTION. The siege that never lifts: walls that lay themselves, a garrison that walks out of them, and artillery over the top.' },
+
+  { id: 35, n: 'Necropolis Rex', br: 'primordial', lb: 'Bastion × Vermin', hx: '#4A1E2A', t: 11, sd: 20, sz: 446, hp: 572000, bd: 660, sp: 0.60, pre: 'dombase', post: 'jrprimal',
+    tone: '255,80,105', tone2: '200,240,90',
+    g: function () {
+      return JRG.hangar(20, { color: '#8C2438', size: 116, width: 98 })
+        .concat(JRG.traps(14, { color: '#7A3346', reload: 2, life: 16 }))
+        .concat(JRG.siphon(8)).concat(JRG.factory(6, { color: '#C8F05A' }));
+    },
+    up: [40, 41], ab: 'rapture', abs: ['genesis', 'conscript', 'dominion', 'raise', 'reap', 'citadel', 'enthrone'],
+    ps: ['husks', 'plague', 'undying', 'corona'], tr: ['vampire', 'tithe', 'executioner', 'aegis', 'immortal', 'regalia', 'retinue', 'echo', 'nullify'],
+    bl: 'BASTION x VERMIN. A city of the dead with a king in the middle of it, and every one of its citizens was somebody you brought.' },
+
+  { id: 36, n: 'Maw of Nothing', br: 'primordial', lb: 'Vermin × Void', hx: '#2A1E3A', t: 11, sd: 17, sz: 440, hp: 548000, bd: 650, sp: 0.78, post: 'jrprimal',
+    tone: '200,240,90', tone2: '150,165,255',
+    g: function () {
+      return JRG.hangar(18, { color: '#C8F05A', size: 114, width: 96 }).concat(JRG.phase(12))
+        .concat(JRG.flak(3)).concat(JRG.needles(10, { color: '#C8F05A' }));
+    },
+    up: [40, 41], ab: 'blackhole', abs: ['overdrive', 'dominion', 'collapse', 'unmake', 'conscript', 'warpstorm', 'judgement'],
+    ps: ['well', 'plague', 'choir', 'corona'], tr: ['vampire', 'tithe', 'pierce', 'aegis', 'immortal', 'reflect', 'omniscient', 'echo', 'thunder'],
+    bl: 'VERMIN x VOID. A swarm with a singularity for a mouth. Everything the flock catches falls in, and everything that falls in feeds it.' },
+
+  { id: 37, n: 'Null Clock', br: 'primordial', lb: 'Void × Chrono', hx: '#1E2238', t: 11, sd: 24, sz: 438, hp: 540000, bd: 640, sp: 0.84, iv: true, post: 'jrprimal', fov: 0.50,
+    tone: '150,165,255', tone2: '255,225,130',
+    g: function () {
+      return JRG.phase(14).concat(JRG.ring(12, { reload: 0.85 })).concat(JRG.hellbore(3)).concat(JRG.orbit(14));
+    },
+    up: [40, 41], ab: 'timestop', abs: ['overdrive', 'blackhole', 'epoch', 'collapse', 'unmake', 'stasis', 'blink'],
+    ps: ['well', 'beat', 'mirror', 'quicken'], tr: ['blinkstep', 'pierce', 'aegis', 'immortal', 'reflect', 'omniscient', 'echo', 'thunder', 'nullify'],
+    bl: 'VOID x CHRONO. The time after time ends. Invisible, phasing, pulling, rewinding the arena and stopping the clock — on double time.' },
+
+  { id: 38, n: 'Frozen Moment', br: 'primordial', lb: 'Chrono × Glacier', hx: '#24405A', t: 11, sd: 28, sz: 444, hp: 556000, bd: 630, sp: 0.72, post: 'jrprimal',
+    tone: '255,225,130', tone2: '170,235,255',
+    g: function () {
+      return JRG.cryo(14).concat(JRG.ring(14, { reload: 0.85 })).concat(JRG.spine(6, { color: '#BFEFFF' }))
+        .concat(JRG.orbit(12, { color: '#BFEFFF' }));
+    },
+    up: [40, 41], ab: 'overdrive', abs: ['timestop', 'epoch', 'stasis', 'terraform', 'freeze', 'godray', 'enthrone'],
+    ps: ['beat', 'chill', 'sovereign', 'quicken'], tr: ['blinkstep', 'reflect', 'aegis', 'immortal', 'regalia', 'dread', 'echo', 'thunder', 'nullify'],
+    bl: 'CHRONO x GLACIER. Cold enough that time stops. Every press holds the screen, puts it back three seconds and freezes it where it lands.' },
+
+  { id: 39, n: 'Equinox', br: 'primordial', lb: 'Glacier × Pyre', hx: '#4A2E4A', t: 11, sd: 26, sz: 450, hp: 566000, bd: 660, sp: 0.70, post: 'jrprimal',
+    tone: '170,235,255', tone2: '255,150,60',
+    g: function () {
+      return JRG.cryo(10).concat(JRG.ember(12, { spin: JRPI / 12 })).concat(JRG.hellbore(4)).concat(JRG.nova(8));
+    },
+    up: [40, 41], ab: 'supernova', abs: ['overdrive', 'apocalypse', 'terraform', 'stasis', 'meteor', 'eclipse', 'freeze'],
+    ps: ['chill', 'pyre', 'corona', 'ruin'], tr: ['aegis', 'immortal', 'regalia', 'dread', 'wake', 'pierce', 'echo', 'thunder', 'nullify'],
+    bl: 'GLACIER x PYRE. Fire and ice in perfect balance, which is to say twice as much of both. The ground around it is never one thing for long.' },
+
+  // ---- tier 12: the eschatons, level 440 ----------------------------------
+  { id: 40, n: 'First Light', br: 'eschaton', hx: '#F2D27A', raw: true, t: 12, sd: 30, sz: 492, hp: 1050000, bd: 940, sp: 0.70, post: 'jreschaton', fov: 0.48,
+    tone: '255,248,215', tone2: '255,190,110',
+    g: function () {
+      return JRG.godspear(6).concat(JRG.nova(10, { color: '#FFE7A8' }))
+        .concat(JRG.gatling(8, { color: '#FFF4D6' })).concat(JRG.starfall(8, { color: '#FFE7A8' }));
+    },
+    up: [42], ab: 'overdrive', abs: ['supernova', 'skyfall', 'genesis', 'godray', 'tempest', 'judgement', 'fissure', 'enthrone'],
+    ps: ['corona', 'sovereign', 'stormcall', 'quicken', 'tyrant'],
+    tr: ['aegis', 'immortal', 'regalia', 'retinue', 'pierce', 'reflect', 'echo', 'thunder', 'nullify', 'warcry'],
+    bl: 'The first thing there was. A million health, a hull the colour of the sun, eight verbs it fires itself and a right-click that fires them all again. Everybody can see it, and it earns for the privilege.' },
+
+  { id: 41, n: 'Last Dark', br: 'eschaton', hx: '#24123F', raw: true, t: 12, sd: 18, sz: 500, hp: 1100000, bd: 960, sp: 0.76, post: 'jreschaton', fov: 0.48,
+    tone: '190,160,255', tone2: '255,90,120',
+    g: function () {
+      return JRG.hellbore(5).concat(JRG.phase(14)).concat(JRG.orbit(16)).concat(JRG.flak(4)).concat(JRG.spine(6));
+    },
+    up: [42], ab: 'blackhole', abs: ['overdrive', 'timestop', 'rapture', 'collapse', 'unmake', 'apocalypse', 'warpstorm', 'judgement'],
+    ps: ['well', 'corona', 'maelstrom', 'undying', 'tyrant'],
+    tr: ['blinkstep', 'pierce', 'aegis', 'immortal', 'reflect', 'omniscient', 'echo', 'thunder', 'nullify', 'vampire'],
+    bl: 'The last thing there will be. It opens black holes, stops the clock, lifts the arena and drops it, and drinks a fifth of everything it does.' },
+
+  // ---- tier 13: Armageddon, level 500 -------------------------------------
+  // The only card at 440 is this one, and it is the end of every road in the
+  // game: both eschatons, all eight primordials, every dynasty, here.
+  { id: 42, n: 'Armageddon', br: 'armageddon', hx: '#1A0B10', raw: true, t: 13, sd: 24, sz: 560, hp: 2200000, bd: 1500, sp: 0.66, post: 'jrarmageddon', fov: 0.44,
+    tone: '255,130,80', tone2: '255,40,60',
+    g: function () {
+      return JRG.godspear(8).concat(JRG.nova(12, { color: '#FF5A5A' }))
+        .concat(JRG.gatling(10, { color: '#FFF4D6' })).concat(JRG.hellbore(4)).concat(JRG.starfall(8, { color: '#FF8A5A' }));
+    },
+    up: [], ab: 'bigbang',
+    abs: ['overdrive', 'supernova', 'timestop', 'skyfall', 'blackhole', 'rapture', 'genesis', 'tempest', 'godray', 'judgement'],
+    ps: ['corona', 'maelstrom', 'stormcall', 'quicken', 'tyrant', 'sovereign'],
+    tr: ['aegis', 'immortal', 'regalia', 'retinue', 'pierce', 'reflect', 'echo', 'thunder', 'nullify', 'warcry', 'omniscient', 'executioner'],
+    bl: 'Two point two million health, fifteen hundred contact damage, forty-two barrels, twenty-four turrets, ten verbs that fire themselves and land twice, six passives, twelve traits, and THE BIG BANG on right-click. There is nothing after it.' }
+];
+
+// Which ascendants each crown opens onto. A crown is a leaf in the Royale's own
+// table and stays one — the Royale ends at 200 — so Armageddon offers these
+// through filterUpgrades and the wheel draws them through the mode's treeGraft.
+// Two per dynasty, keyed by the crown's real tank id.
+var JA_GRAFT = {};
+JR_HULLS.forEach(function (h) {
+  if (h.t !== 8) return;
+  JA_GRAFT[JR_BASE + h.id] = JA_HULLS
+    .filter(function (a) { return a.t === 9 && a.dy === h.dy; })
+    .map(function (a) { return JA_BASE + a.id; });
+});
+
 // Indexed on first use rather than scanned: jrOf runs once a tick for every
 // juggernaut on the board and a linear filter over a hundred and forty rows
 // allocated an array per call to answer a question with a constant answer.
+//
+// Keyed on the real tank id, because two rosters live in here: the Royale's at
+// JR_BASE and Armageddon's at JA_BASE. Every row learns its own id as `tid`,
+// which is what everything below it reads instead of adding a base itself.
 var JR_BY_ID = null;
-function jrHull(id) {
-  if (!JR_BY_ID) {
-    JR_BY_ID = [];
-    for (var i = 0; i < JR_HULLS.length; i++) JR_BY_ID[JR_HULLS[i].id] = JR_HULLS[i];
-  }
-  return JR_BY_ID[id];
+function jrIndex() {
+  if (JR_BY_ID) return JR_BY_ID;
+  JR_BY_ID = [];
+  [[JR_HULLS, JR_BASE], [JA_HULLS, JA_BASE]].forEach(function (r) {
+    for (var i = 0; i < r[0].length; i++) { r[0][i].tid = r[1] + r[0][i].id; JR_BY_ID[r[0][i].tid] = r[0][i]; }
+  });
+  return JR_BY_ID;
 }
-function jrOf(t) {
-  return (t && t.tankId >= JR_BASE && t.tankId <= JR_BASE + JR_TOP) ? jrHull(t.tankId - JR_BASE) : null;
-}
+// A Royale hull by its row id — what the tests and Last Juggernaut ask for.
+function jrHull(id) { return jrIndex()[JR_BASE + id]; }
+function jrOf(t) { return (t && jrIndex()[t.tankId]) || null; }
 
 // Tier defaults. A row only overrides what makes it that hull.
 var JR_TIER = [
@@ -4219,7 +4687,13 @@ var JR_TIER = [
   { ar: 0.01, fov: 0.78 },
   { ar: 0.00, fov: 0.74 },
   { ar: 0.00, fov: 0.70 },
-  { ar: 0.00, fov: 0.66 }
+  { ar: 0.00, fov: 0.66 },
+  // Armageddon. The camera keeps pulling back, because the hull keeps growing.
+  { ar: 0.00, fov: 0.62 },
+  { ar: 0.00, fov: 0.58 },
+  { ar: 0.00, fov: 0.54 },
+  { ar: 0.00, fov: 0.50 },
+  { ar: 0.00, fov: 0.46 }
 ];
 
 // diep quotes every barrel size against a 50-radius body, so bolting a 70-unit
@@ -4241,8 +4715,13 @@ function jrFitGuns(guns, size) {
 
 function buildJuggHulls() {
   if (TANK_DEFS[JR_BASE]) return;
-  for (var i = 0; i < JR_HULLS.length; i++) {
-    var h = JR_HULLS[i], br = JR_BR[h.br], tier = JR_TIER[h.t];
+  jrBuildRoster(JR_HULLS, JR_BASE);
+  jrBuildRoster(JA_HULLS, JA_BASE);
+}
+
+function jrBuildRoster(rows, base) {
+  for (var i = 0; i < rows.length; i++) {
+    var h = rows[i], br = JR_BR[h.br], tier = JR_TIER[h.t];
     var dyn = h.dy ? JR_DYN[h.dy] : null;
     var guns = jrFitGuns(h.g(), h.sz);
     // Every stat runs to STAT_DEEP_MAX rather than 7. The pill in the corner is
@@ -4254,11 +4733,14 @@ function buildJuggHulls() {
     // what it is as plainly as the silhouette does — and upgradeTo's smasher
     // refund path picks it up for free.
     if (h.me) { st[S_RELOAD] = guns.length ? STAT_DEEP_MAX : 0; st[S_DAMAGE] = 0; st[S_PEN] = 0; st[S_BSPEED] = 0; }
-    var fill = jrMix(h.hx || (dyn && dyn.hex) || br.hex, h.t * 0.06);
-    TANK_DEFS[JR_BASE + h.id] = {
-      id: JR_BASE + h.id, name: h.n, levelRequirement: JR_LVL[h.t],
+    // Lightened a step a tier up to the crowns, then no further — an
+    // Armageddon hull lightened thirteen steps is white. `raw` takes the colour
+    // exactly as written, for the hulls that are meant to be dark.
+    var fill = h.raw ? h.hx : jrMix(h.hx || (dyn && dyn.hex) || br.hex, Math.min(h.t, 8) * 0.06);
+    TANK_DEFS[base + h.id] = {
+      id: base + h.id, name: h.n, levelRequirement: JR_LVL[h.t],
       upgradeMessage: h.t >= 4 ? 'YOU ARE A ' + h.n.toUpperCase() : 'You are a ' + h.n,
-      upgrades: h.up.map(function (u) { return JR_BASE + u; }),
+      upgrades: h.up.map(function (u) { return base + u; }),
       flags: { invisibility: !!h.iv, zoomAbility: false, canClaimSquares: false, devOnly: false },
       visibilityRateShooting: 0.23, visibilityRateMoving: 0.09, invisibilityRate: 0.025,
       fieldFactor: h.fov || tier.fov, absorbtionFactor: h.ar === undefined ? tier.ar : h.ar, speed: h.sp,
@@ -4277,7 +4759,7 @@ function buildJuggHulls() {
       // is the branch you are committing to; from tier 4 up it is the dynasty,
       // which is the only place the card can tell you that this pick closes
       // every door but eight.
-      jrLabel: (dyn && dyn.label) || br.label,
+      jrLabel: h.lb || (dyn && dyn.label) || br.label,
       jrAbility: h.ab || null,
       jrAuto: h.abs || null,
       jrPassive: h.ps ? [].concat(h.ps).join(' · ') : null,
@@ -4325,9 +4807,16 @@ function jrGrant(t, hp, sizeMult) {
 
 // Everything hostile inside a circle, deduped — g.nearby hands the same entity
 // back once per grid cell it straddles.
+//
+// The stamp is fresh every call. It used to be (tick, caster), which deduped
+// across calls as well as within one: whatever a hull's passive had already
+// scanned that tick was invisible to the button it pressed next, so a FREEZE
+// inside its own chill ring found nobody, and of eight stacked verbs only the
+// first hit anything.
+var JR_TAG = 0;
 function jrEach(g, t, r, types, fn) {
-  var tag = g.tick * 131071 + t.id, n = 0, r2 = r * r;
-  g.nearby(t.x, t.y, r, function (e) {
+  var tag = ++JR_TAG, n = 0, r2 = r * r;
+  function visit(e) {
     if (e === t || e.dead || e.jrTag === tag) return;
     if (!types[e.type]) return;
     var dx = e.x - t.x, dy = e.y - t.y, d2 = dx * dx + dy * dy;
@@ -4335,7 +4824,13 @@ function jrEach(g, t, r, types, fn) {
     e.jrTag = tag;
     n++;
     fn(e, Math.sqrt(d2) || 1);
-  });
+  }
+  // g.nearby walks every grid cell in the box, and a level-500 hull asks about
+  // circles wider than the arena. Past the point where the box holds more cells
+  // than there are entities, walking the entity list is the cheaper answer.
+  var span = 2 * r / HASH_CELL;
+  if (span * span > g.entities.length) for (var i = 0; i < g.entities.length; i++) visit(g.entities[i]);
+  else g.nearby(t.x, t.y, r, visit);
   return n;
 }
 var JR_T_TANK = { tank: 1 };
@@ -4525,6 +5020,8 @@ function jrClear(g, t) {
   t.jrCools = null; t.jrShield = undefined; t.jrShieldMax = 0; t.jrShieldAt = 0;
   t.jrAvatar = 0; t.jrAvaOn = 0; t.jrPhaseUntil = 0; t.jrDominion = 0;
   t.jrGrown = 0; t.jrCourt = 0; t.jrDread = 0;
+  // ...and Armageddon's: the blades, the ray and anything still due to land.
+  jrKillList(t.jaBlades); t.jaLater = null; t.jaRay = 0;
   jrGrant(t, 0, 1);
 }
 
@@ -4532,7 +5029,7 @@ function jrFx(g, kind, o) {
   if (!g.jrFx) g.jrFx = [];
   o = o || {}; o.kind = kind; o.at = g.tick;
   g.jrFx.push(o);
-  if (g.jrFx.length > 20) g.jrFx.shift();
+  if (g.jrFx.length > (g.jrFxCap || 20)) g.jrFx.shift();
 }
 
 // A drone with no barrel behind it. The engine's drone tick does not care where
@@ -4546,10 +5043,14 @@ function jrFx(g, kind, o) {
 // wall back up every forty ticks, so a Sepulchre keeps its armour and a
 // CONSCRIPT stays a burst rather than an annexation.
 var JR_HUSK_LIFE = 45 * TPS;
+// ...and no owner keeps more than this many at once, oldest first. The Royale
+// never gets near it; an Armageddon pressing GENESIS through ECHO and OVERDRIVE
+// stood three hundred and sixty up and kept them.
+var JR_HUSK_CAP = 80;
 function jrHusk(g, t, x, y, col) {
   var st = t.stats;
   var e = new Entity(g, {
-    type: 'drone', sides: 3, size: Math.max(8, t.size * 0.2), x: x, y: y,
+    type: 'drone', sides: 3, size: Math.min(180, Math.max(8, t.size * 0.2)), x: x, y: y,
     team: t.team, owner: t, fill: col || '#8C2438', stroke: jrMix(col || '#8C2438', -0.34),
     maxHealth: (1.5 * st[S_PEN] + 2) * 12, damage: (7 + st[S_DAMAGE] * 3) * 0.5, absorb: 1, push: 4
   });
@@ -4559,6 +5060,10 @@ function jrHusk(g, t, x, y, col) {
   e.jrDie = g.tick + JR_HUSK_LIFE;
   if (!g.jrHusks) g.jrHusks = [];
   g.jrHusks.push(e);
+  var mine = t.jrHuskQ || (t.jrHuskQ = []);
+  mine.push(e);
+  while (mine.length && mine[0].dead) mine.shift();
+  while (mine.length > JR_HUSK_CAP) { var old = mine.shift(); if (!old.dead) old.kill(null); }
   return g.add(e);
 }
 
@@ -5275,17 +5780,263 @@ var JR_ABIL = {
     jrFx(g, 'rewind', { x: t.x, y: t.y, r: r, tone: t.def.jrTone });
     t.notify('EPOCH x' + n, 50);
     return 24;
+  },
+
+  // --- Armageddon's verbs ------------------------------------------------
+  // The five tiers past the crowns. The late verbs above reach the screen; these
+  // reach the arena, and most of them keep happening for a while after the
+  // press — jaLater is how a button goes on landing for three seconds.
+
+  // OVERDRIVE: every other button on the hull, all at once, cooldown or not.
+  // The point of a hull with eight verbs is that sometimes you get all eight.
+  overdrive: function (g, t, h) {
+    var list = (h && h.abs) || [], n = 0;
+    if (!t.jrCools) t.jrCools = {};
+    for (var i = 0; i < list.length; i++) {
+      if (list[i] === 'overdrive') continue;
+      var cd = jrCast(g, t, h, list[i]);
+      if (cd) { n++; t.jrCools[list[i]] = g.tick + cd * TPS; }
+    }
+    if (!n) return 0;
+    jrFx(g, 'overdrive', { x: t.x, y: t.y, r: t.size * 7, tone: t.def.jrTone, tone2: t.def.jrTone2 });
+    t.notify('OVERDRIVE x' + n, 70);
+    return 32;
+  },
+
+  // SUPERNOVA: APOCALYPSE was the screen. This is three shockwaves a second
+  // apart, each wider than the last, and a ring of fire and ice left behind.
+  supernova: function (g, t) {
+    var r = t.size * 22;
+    function wave(k) {
+      if (t.dead) return;
+      var rr = r * (0.5 + 0.5 * k);
+      jrEnemies(g, t, rr, function (e, d) {
+        e.applyDamage((e.maxHealth * 0.08 + t.maxHealth * 0.02) * (1 - d / (rr * 1.6)), t);
+        e.addVelocity(Math.atan2(e.y - t.y, e.x - t.x), 44);
+        jrBurn(e, 8 * TPS, t.maxHealth * 0.0015 + 30, t);
+        jrChill(e, 4 * TPS, 0.4);
+      });
+      jrEach(g, t, rr, JR_T_SHOT, function (e) { if (!jrOwn(e, t)) e.kill(null); });
+      jrFx(g, 'supernova', { x: t.x, y: t.y, r: rr, tone: t.def.jrTone, tone2: t.def.jrTone2 });
+    }
+    wave(0);
+    jaLater(g, t, 1.1 * TPS, function () { wave(0.5); });
+    jaLater(g, t, 2.2 * TPS, function () { wave(1); });
+    for (var i = 0; i < 10; i++) {
+      var a = Math.PI * 2 * (i / 10);
+      jrField(g, t, i % 2 ? 'ice' : 'burn', t.x + Math.cos(a) * r * 0.45, t.y + Math.sin(a) * r * 0.45,
+        t.size * 2.6, 14 * TPS, i % 2 ? '#7FD4F0' : '#8A3B1E');
+    }
+    g.notify((t.name || 'Something') + ' went supernova', 90);
+    t.notify('SUPERNOVA', 80);
+    return 34;
+  },
+
+  // BLACK HOLE: a well that is not bolted to anything. It opens under the
+  // cursor, drags tanks and shots in, and whatever reaches the middle is taken
+  // apart a percentage at a time. jrTickFields runs it.
+  blackhole: function (g, t, h, at) {
+    var x = at ? at.x : t.mouse.x, y = at ? at.y : t.mouse.y, r = t.size * 4.5;
+    jrField(g, t, 'well', x, y, r, 9 * TPS, '#0B0816');
+    jrFx(g, 'blackhole', { x: x, y: y, r: r * 2.4, tone: t.def.jrTone });
+    t.notify('BLACK HOLE', 50);
+    return 16;
+  },
+
+  // SKYFALL: the seven nearest things it does not like are struck from above,
+  // one after another, wherever they happen to be standing.
+  skyfall: function (g, t) {
+    var list = labTanks(g, JA_SCRATCH), foes = [];
+    for (var i = 0; i < list.length; i++) {
+      var e = list[i];
+      if (e === t || !jrFoe(t, e)) continue;
+      var d = Math.hypot(e.x - t.x, e.y - t.y);
+      if (d < t.size * 20) foes.push({ e: e, d: d });
+    }
+    if (!foes.length) return 0;
+    foes.sort(function (a, b) { return a.d - b.d; });
+    foes.length = Math.min(7, foes.length);
+    foes.forEach(function (f, k) {
+      jaLater(g, t, k * 5, function () {
+        var e = f.e;
+        if (e.dead || t.dead) return;
+        jrBlast(g, t, e.x, e.y, Math.max(e.size * 1.4, t.size * 0.8),
+          e.maxHealth * 0.07 + t.maxHealth * 0.01, { push: 18, burn: 3 });
+        jrFx(g, 'skyfall', { x: e.x, y: e.y, r: Math.max(e.size * 2, t.size), tone: t.def.jrTone });
+      });
+    });
+    t.notify('SKYFALL x' + foes.length, 50);
+    return 14;
+  },
+
+  // TIME STOP: STASIS held the screen for two seconds. This holds it for four,
+  // and it holds the shots in the air as well, so the volley you fired at it is
+  // still hanging there, pointed at you, when the clock starts again.
+  timestop: function (g, t) {
+    var r = t.size * 18, hit = 0, until = g.tick + 4 * TPS;
+    jrEnemies(g, t, r, function (e) { hit++; jrHold(e, 4 * TPS); jrChill(e, 7 * TPS, 0.4); });
+    if (!hit) return 0;
+    if (!g.jaFrozen) g.jaFrozen = [];
+    jrEach(g, t, r, JR_T_SHOT, function (e) {
+      if (jrOwn(e, t)) return;
+      e.vx = 0; e.vy = 0; e.jaFrozen = until;
+      g.jaFrozen.push(e);
+    });
+    g.jaTimestop = { at: g.tick, until: until, x: t.x, y: t.y, r: r, tone: t.def.jrTone };
+    jrFx(g, 'timestop', { x: t.x, y: t.y, r: r, tone: t.def.jrTone });
+    t.notify('TIME STOP', 60);
+    return 24;
+  },
+
+  // RAPTURE: everything in reach is lifted off the floor — held, guns dead —
+  // and a second and a half later it is dropped from a great height.
+  rapture: function (g, t) {
+    var r = t.size * 15, caught = [];
+    jrEnemies(g, t, r, function (e) { caught.push(e); jrHold(e, 1.6 * TPS); e.jaLift = g.tick; });
+    if (!caught.length) return 0;
+    jrFx(g, 'rapture', { x: t.x, y: t.y, r: r, tone: t.def.jrTone });
+    jaLater(g, t, 1.5 * TPS, function () {
+      for (var i = 0; i < caught.length; i++) {
+        var e = caught[i];
+        if (e.dead) continue;
+        e.applyDamage(e.maxHealth * 0.15 + t.maxHealth * 0.008, t);
+        e.hurtFlash = 8;
+        jrFx(g, 'slam', { x: e.x, y: e.y, r: e.size * 3, tone: t.def.jrTone });
+      }
+    });
+    t.notify('RAPTURE x' + caught.length, 60);
+    return 22;
+  },
+
+  // GENESIS: it makes an army. Eighteen husks in a ring and six escorts that
+  // fly with the hull for twenty seconds.
+  genesis: function (g, t) {
+    var i;
+    for (i = 0; i < 18; i++) {
+      var a = Math.PI * 2 * (i / 18);
+      jrHusk(g, t, t.x + Math.cos(a) * t.size * 1.8, t.y + Math.sin(a) * t.size * 1.8, jrMix(t.fill, 0.25));
+    }
+    for (i = 0; i < 6; i++) {
+      var u = jrTurret(g, t, Math.PI * 2 * (i / 6), 20 * TPS);
+      u.jrEscort = true; u.jrPhase = Math.PI * 2 * (i / 6);
+    }
+    jrFx(g, 'genesis', { x: t.x, y: t.y, r: t.size * 4, tone: t.def.jrTone });
+    t.notify('GENESIS', 60);
+    return 26;
+  },
+
+  // TEMPEST: twelve bolts over three seconds, each at somebody in reach when
+  // it lands, and each one forking on to the two nearest after that.
+  tempest: function (g, t) {
+    if (!jrNearestFoe(g, t, t.size * 18)) return 0;
+    for (var i = 0; i < 12; i++)
+      jaLater(g, t, i * 6, function () { jaStrike(g, t, t.size * 18, t.maxHealth * 0.009 + 260, 2); });
+    t.notify('TEMPEST', 50);
+    return 15;
+  },
+
+  // FISSURE: RUPTURE, in eight directions at once.
+  fissure: function (g, t) {
+    var hit = 0, reach = t.size * 9, spin = g.tick * 0.013;
+    for (var k = 0; k < 8; k++) {
+      var a = Math.PI * 2 * (k / 8) + spin;
+      for (var i = 1; i <= 5; i++) {
+        var x = t.x + Math.cos(a) * reach * (i / 5), y = t.y + Math.sin(a) * reach * (i / 5);
+        hit += jrBlast(g, t, x, y, t.size * 0.9, t.maxHealth * 0.016 + 140, { push: 22, burn: 3 });
+      }
+      jrFx(g, 'fissure', { x: t.x, y: t.y, tx: t.x + Math.cos(a) * reach, ty: t.y + Math.sin(a) * reach, tone: t.def.jrTone });
+    }
+    t.notify('FISSURE', 50);
+    return hit ? 13 : 8;
+  },
+
+  // GODRAY: BEAM's elder. Two and a half seconds of a line of light that takes
+  // a share of the maximum health off anything standing in it. jrTickTank runs it.
+  godray: function (g, t) {
+    t.jaRay = g.tick + 2.5 * TPS;
+    jrFx(g, 'godray', { x: t.x, y: t.y, r: t.size * 3, tone: t.def.jrTone });
+    t.notify('GODRAY', 50);
+    return 14;
+  },
+
+  // THE BIG BANG: the last button in the game. A black hole under its own
+  // feet, the clock stopped, a supernova, the sky falling and a storm on top.
+  bigbang: function (g, t, h) {
+    JR_ABIL.blackhole(g, t, h, { x: t.x, y: t.y });
+    JR_ABIL.timestop(g, t, h);
+    JR_ABIL.supernova(g, t, h);
+    JR_ABIL.skyfall(g, t, h);
+    JR_ABIL.tempest(g, t, h);
+    jrFx(g, 'bigbang', { x: t.x, y: t.y, r: t.size * 26, tone: t.def.jrTone, tone2: t.def.jrTone2 });
+    g.notify('THE BIG BANG', 120);
+    return 45;
   }
 };
+
+// Something a verb wants to happen later — the second wave of a supernova, the
+// drop at the end of a rapture, the next bolt of a tempest. Runs on the hull's
+// own tick and is swept with everything else when it dies or changes hull.
+function jaLater(g, t, ticks, fn) {
+  if (!t.jaLater) t.jaLater = [];
+  t.jaLater.push({ at: g.tick + Math.max(0, Math.round(ticks)), fn: fn });
+}
+var JA_SCRATCH = [];
+
+// One bolt of lightning: a random foe in reach, struck from the sky, and then
+// it walks on to the nearest one it has not hit yet `forks` more times.
+function jaStrike(g, t, reach, dmg, forks) {
+  if (t.dead) return 0;
+  var list = labTanks(g, JA_SCRATCH), pool = [], i;
+  for (i = 0; i < list.length; i++) {
+    var e = list[i];
+    if (e !== t && jrFoe(t, e) && Math.hypot(e.x - t.x, e.y - t.y) < reach) pool.push(e);
+  }
+  if (!pool.length) return 0;
+  var from = pool[(Math.random() * pool.length) | 0], seen = [from];
+  from.applyDamage(dmg, t); jrHold(from, 0.3 * TPS); from.hurtFlash = 5;
+  jrFx(g, 'bolt', { x: from.x, y: from.y, sky: 1, r: from.size * 2, tone: t.def.jrTone });
+  for (var f = 0; f < forks; f++) {
+    var next = null, bd = Math.max(t.size * 5, 1400);
+    for (i = 0; i < pool.length; i++) {
+      if (seen.indexOf(pool[i]) >= 0 || pool[i].dead) continue;
+      var d = Math.hypot(pool[i].x - from.x, pool[i].y - from.y);
+      if (d < bd) { bd = d; next = pool[i]; }
+    }
+    if (!next) break;
+    seen.push(next);
+    next.applyDamage(dmg * 0.6, t); jrHold(next, 0.2 * TPS);
+    jrFx(g, 'bolt', { x: from.x, y: from.y, tx: next.x, ty: next.y, r: next.size * 1.5, tone: t.def.jrTone });
+    from = next;
+  }
+  return 1;
+}
+
+// Every press goes through here, the hull's own and the ones it makes itself,
+// so the mode-wide haste and the echo trait apply to all of them the same way.
+// Returns the cooldown in seconds, already hastened, or 0 for "nothing to do".
+function jrCast(g, t, h, name) {
+  var fn = JR_ABIL[name];
+  if (!fn) return 0;
+  var cd = fn(g, t, h);
+  if (!cd) return 0;
+  // ECHO: every verb lands a second time a little over a second later. Once —
+  // an echo does not echo.
+  if (h.tr && h.tr.indexOf('echo') >= 0 && !t.jaEchoing) {
+    jaLater(g, t, 1.2 * TPS, function () {
+      if (t.dead || jrOf(t) !== h) return;
+      t.jaEchoing = true;
+      try { fn(g, t, h); } finally { t.jaEchoing = false; }
+    });
+  }
+  return cd * g.rule('jrHaste', 1);
+}
 
 // Fire the hull's ability if it has one and the cooldown is up.
 function jrAbility(g, t) {
   var h = jrOf(t);
   if (!h || !h.ab) return false;
   if (g.tick < (t.jrCool || 0)) return false;
-  var fn = JR_ABIL[h.ab];
-  if (!fn) return false;
-  var cd = fn(g, t, h);
+  var cd = jrCast(g, t, h, h.ab);
   if (!cd) return false;
   t.jrCool = g.tick + cd * TPS;
   return true;
@@ -5298,19 +6049,22 @@ function jrAbility(g, t) {
 // That is what makes an omega feel like a boss fight rather than a big tank,
 // and it costs no new key, no new wire field and no new input path.
 //
-// At most one a tick, so a crown does not empty its whole list into an empty
-// field the moment it spawns.
+// At most one a tick in the Royale, so a crown does not empty its whole list
+// into an empty field the moment it spawns. A mode that sets jrStack lets every
+// loaded verb go off on the same tick instead — Armageddon does, and stacking
+// them is the whole idea.
 function jrAutoAbilities(g, t, h) {
   if (!h.abs || !h.abs.length) return;
   if (!t.jrCools) t.jrCools = {};
+  var stack = g.rule('jrStack', 0);
   for (var i = 0; i < h.abs.length; i++) {
-    var name = h.abs[i], fn = JR_ABIL[name];
-    if (!fn || g.tick < (t.jrCools[name] || 0)) continue;
+    var name = h.abs[i];
+    if (!JR_ABIL[name] || g.tick < (t.jrCools[name] || 0)) continue;
     if (!jrWants(g, t, name)) continue;
-    var cd = fn(g, t, h);
+    var cd = jrCast(g, t, h, name);
     if (!cd) continue;
     t.jrCools[name] = g.tick + cd * TPS;
-    return;
+    if (!stack) return;
   }
 }
 
@@ -5666,6 +6420,45 @@ var JR_PASS = {
     }
   },
 
+  // --- Armageddon's passives ---------------------------------------------
+
+  // CORONA — standing near it is a share of your own health a second, whoever
+  // you are. A pyre ring is a flat number; this is not.
+  corona: function (g, t) {
+    var r = t.size * (2.6 + Math.max(0, (t.def.jrTier || 9) - 8) * 0.25);
+    jrEnemies(g, t, r, function (e) {
+      e.applyDamage(e.maxHealth * 0.0011 + t.maxHealth * 0.00006, t);
+      jrBurn(e, 2 * TPS, t.maxHealth * 0.0003 + 10, t);
+    });
+    t.jrGlowR = Math.max(t.jrGlowR || 0, r);
+  },
+
+  // MAELSTROM — six blades on a fast orbit. jrTickTank flies them; this only
+  // keeps the count topped up, one every twenty ticks.
+  maelstrom: function (g, t) {
+    if (!t.jaBlades) t.jaBlades = [];
+    t.jaBlades = t.jaBlades.filter(function (o) { return !o.dead; });
+    if (t.jaBlades.length < 6 && g.tick % 20 === t.id % 20)
+      t.jaBlades.push(jrOrbiter(g, t, t.jaBlades.length, 6, {
+        sides: 3, size: t.size * 0.28, hp: t.maxHealth * 0.06, dmg: t.damagePerTick * 0.8,
+        fill: jrMix(t.fill, 0.35), stroke: t.stroke, hideBar: true
+      }));
+  },
+
+  // STORMCALL — a bolt out of a clear sky every second and a half, at
+  // somebody in reach, forking once.
+  stormcall: function (g, t) {
+    if (g.tick % 38 !== t.id % 38) return;
+    jaStrike(g, t, t.size * 12, t.maxHealth * 0.005 + 160, 1);
+  },
+
+  // QUICKEN — its clocks run at double time. Every cooldown on the hull, the
+  // right-click and the ones it presses itself, loses an extra tick a tick.
+  quicken: function (g, t) {
+    if (t.jrCool > g.tick) t.jrCool--;
+    if (t.jrCools) for (var k in t.jrCools) if (t.jrCools[k] > g.tick) t.jrCools[k]--;
+  },
+
   // FUSION — the Thermocline alternates the two halves of itself.
   thermal: function (g, t) {
     var hot = Math.floor(g.tick / (4 * TPS)) % 2 === 0;
@@ -5699,6 +6492,9 @@ var JR_TRAIT = {
   tithe: 0,         // everything it damages pays it, in score
   pierce: 0,        // its damage goes through armour rather than into it
   executioner: 0,   // anything nearly dead that touches it is finished
+  immortal: 0,      // refuses three more deaths a life, and goes supernova each time
+  thunder: 0,       // what it hits is sometimes struck by lightning as well
+  echo: 0,          // every verb lands twice — resolved in jrCast, not here
 
   // --- resolved once a tick ----------------------------------------------
 
@@ -5789,7 +6585,14 @@ var JR_TRAIT = {
   },
 
   // Nothing hides from it.
-  omniscient: function (g, t) { jrSet(t, 'seesInvisible', true); t.jrSeer = true; }
+  omniscient: function (g, t) { jrSet(t, 'seesInvisible', true); t.jrSeer = true; },
+
+  // Statuses do not stick to it. Burn, chill, the freeze, the bleed and the
+  // dread are all gone by the end of its own tick.
+  nullify: function (g, t) {
+    t.jrBurn = 0; t.jrBurnDps = 0; t.jrChill = 0; t.jrChillF = 1; t.jrHold = 0; t.jrBleed = null;
+    t.jrDread = 0;
+  }
 };
 
 // Installed on every juggernaut at spawn, chained the same way onKill is.
@@ -5819,6 +6622,16 @@ function jrTakeDamage(t, dmg, src, base) {
     }
   }
   if (tr.indexOf('bulwark') >= 0) dmg = Math.min(dmg, t.maxHealth * 0.03);
+  // IMMORTAL: three refusals a life on top of whatever revive gives, and every
+  // one of them is a supernova centred on the thing you thought you had killed.
+  if (tr.indexOf('immortal') >= 0 && dmg >= t.health && (t.jaRefused || 0) < 3) {
+    t.jaRefused = (t.jaRefused || 0) + 1;
+    t.health = t.maxHealth * 0.6;
+    t.jrBurn = 0; t.jrBurnDps = 0; t.jrChill = 0; t.jrChillF = 1; t.jrHold = 0; t.jrBleed = null;
+    JR_ABIL.supernova(g, t);
+    g.notify((t.name || 'A juggernaut') + ' refused to die (' + t.jaRefused + '/3)', 80);
+    return;
+  }
   if (tr.indexOf('revive') >= 0 && dmg >= t.health && !t.jrRevived) {
     t.jrRevived = 1;
     t.health = t.maxHealth * 0.45;
@@ -5835,6 +6648,16 @@ function jrTakeDamage(t, dmg, src, base) {
       t.score = Math.max(0, t.score - take);
       attacker.addScore(take);
     }
+    // THUNDER: one hit in twelve calls a bolt down on whatever it landed on,
+    // no more than one every ten ticks. The bolt is its own hit, so the clock
+    // is set before it lands or it would call itself.
+    if (str.indexOf('thunder') >= 0 && g.tick >= (attacker.jaThunderAt || 0) && Math.random() < 0.083) {
+      attacker.jaThunderAt = g.tick + 10;
+      jrFx(g, 'bolt', { x: t.x, y: t.y, sky: 1, r: t.size * 2, tone: attacker.def.jrTone });
+      jrHold(t, 0.25 * TPS);
+      base.call(t, t.maxHealth * 0.012 + attacker.maxHealth * 0.002, attacker);
+      if (t.dead) return;
+    }
   }
   base.call(t, dmg, src);
 }
@@ -5848,6 +6671,17 @@ function jrTickTank(g, t) {
   jrRestore(t);
   if (t.jrDefId !== t.tankId) { jrClear(g, t); t.jrDefId = t.tankId; t.jrCool = 0; }
   jrStatus(g, t);
+
+  // Whatever its verbs left to land later. Swapped out before running, so a
+  // callback that schedules another one lands it on the next pass, not this one.
+  if (t.jaLater && t.jaLater.length) {
+    var due = t.jaLater;
+    t.jaLater = [];
+    for (var di = 0; di < due.length; di++) {
+      if (g.tick >= due[di].at) due[di].fn();
+      else t.jaLater.push(due[di]);
+    }
+  }
 
   // three seconds of history, sampled five times a second
   if (g.tick % 5 === 0) {
@@ -5929,6 +6763,27 @@ function jrTickTank(g, t) {
       t.jrBeamA = ba;
     }
   }
+  // GODRAY: the beam grown up — wider, longer, and billed as a share of the
+  // victim's own bar rather than the caster's, so nothing is too big for it.
+  if (t.jaRay) {
+    if (g.tick > t.jaRay) t.jaRay = 0;
+    else {
+      var ga = Math.atan2(t.mouse.y - t.y, t.mouse.x - t.x), greach = 9000 + t.size * 4;
+      var glist = labTanks(g, JR_SCRATCH);
+      for (i = 0; i < glist.length; i++) {
+        var go = glist[i];
+        if (!jrFoe(t, go)) continue;
+        var gx = go.x - t.x, gy = go.y - t.y;
+        var galong = gx * Math.cos(ga) + gy * Math.sin(ga);
+        if (galong < 0 || galong > greach) continue;
+        if (Math.abs(-gx * Math.sin(ga) + gy * Math.cos(ga)) > go.size + t.size * 0.6) continue;
+        go.applyDamage(go.maxHealth * 0.0055 + t.maxHealth * 0.0006, t);
+        go.hurtFlash = 3;
+        jrBurn(go, 2 * TPS, t.maxHealth * 0.0004 + 20, t);
+      }
+      t.jaRayA = ga;
+    }
+  }
 
   // decoys, orbiters, turrets, tether host — the furniture it is dragging
   if (t.jrDecoys && t.jrDecoys.length) {
@@ -5958,6 +6813,17 @@ function jrTickTank(g, t) {
       o2.x = t.x + Math.cos(o2.jrPhase) * rr;
       o2.y = t.y + Math.sin(o2.jrPhase) * rr;
       o2.angle = o2.jrPhase;
+    }
+  }
+  if (t.jaBlades && t.jaBlades.length) {
+    for (i = 0; i < t.jaBlades.length; i++) {
+      var bl = t.jaBlades[i];
+      if (bl.dead) continue;
+      bl.jrPhase += 0.075;
+      bl.px = bl.x; bl.py = bl.y;
+      bl.x = t.x + Math.cos(bl.jrPhase) * t.size * 2.7;
+      bl.y = t.y + Math.sin(bl.jrPhase) * t.size * 2.7;
+      bl.angle = bl.jrPhase * 3;
     }
   }
   if (t.jrTurrets && t.jrTurrets.length) {
@@ -6021,17 +6887,30 @@ function jrTickTank(g, t) {
     t.damageReduction = Math.min(t.damageReduction, div[0]);
     jrSet(t, 'reloadTime', t.reloadTime * div[1]);
     jrSet(t, 'damagePerTick', t.damagePerTick * div[2]);
+    // Past the crowns the guns get it too: Barrel.spawn reads bulletDamage off
+    // the tank, so every round leaves the barrel this much heavier.
+    if (div[3]) jrSet(t, 'bulletDamage', (t.bulletDamage === undefined ? 1 : t.bulletDamage) * div[3]);
   }
 }
 
 // [damage taken, reload multiplier, contact multiplier] by tier. Tiers 0-4 draw
 // nothing; the rows above it are what "even more overpowered than the last one"
 // costs the people fighting them, and a crown takes a third of what lands.
+//
+// Armageddon's five carry a fourth number, bullet damage, and every row is a
+// bigger step than the one before it was: an Armageddon takes a twentieth of
+// what lands, fires three and a half times as often and hits twelve times as
+// hard with its body and five and a half with its guns.
 var JR_DIVIDEND = [null, null, null, null, null,
   [0.86, 0.85, 1.30],   // 5  apex
   [0.70, 0.70, 1.65],   // 6  omega
   [0.50, 0.56, 2.20],   // 7  titan
-  [0.33, 0.44, 3.00]];  // 8  crown
+  [0.33, 0.44, 3.00],   // 8  crown
+  [0.24, 0.40, 4.0, 1.5],    // 9  ascendant
+  [0.17, 0.37, 5.2, 2.1],    // 10 archon
+  [0.12, 0.34, 6.8, 2.9],    // 11 primordial
+  [0.08, 0.31, 8.8, 4.0],    // 12 eschaton
+  [0.05, 0.28, 12.0, 5.5]];  // 13 armageddon
 
 // --- death ---------------------------------------------------------------
 function jrSplinter(g, t) {
@@ -6070,6 +6949,9 @@ function jrPs(h, name) {
 
 function jrDeath(g, t, src) {
   jrClear(g, t);
+  // Only a mode with a trapCap keeps this queue, so the Royale's traps outlive
+  // their owner the way diep's always have.
+  jrKillList(t.capTraps);
   var h = jrOf(t);
   if (jrPs(h, 'split') && !t.jrSplinter) jrSplinter(g, t);
   var root = src; while (root && root.owner) root = root.owner;
@@ -6097,6 +6979,7 @@ function jrTickFields(g) {
     if (f.dead) continue;
     if (g.tick > f.jrDie) { f.kill(null); continue; }
     live.push(f);
+    if (f.jrKind === 'well') { jaTickWell(g, f); continue; }
     if (g.tick % 5) continue;
     var list = labTanks(g, JR_SCRATCH2);
     for (j = 0; j < list.length; j++) {
@@ -6108,6 +6991,47 @@ function jrTickFields(g) {
     }
   }
   g.jrFields = live;
+}
+
+// A BLACK HOLE, every tick: tanks and shots fall toward the middle, shots that
+// reach it are gone, and a tank inside the inner third loses a share of its
+// own bar. Whoever opened it, and their team, are left alone — and it closes
+// when they die, because a well with nobody behind it has no side to be on and
+// would bill everyone in reach, its own caster's team included, for nothing.
+function jaTickWell(g, f) {
+  var by = f.jrBy;
+  if (!by || by.dead) { f.kill(null); return; }
+  var reach = f.size * 2.6, core = f.size * 0.35, list = labTanks(g, JR_SCRATCH2);
+  for (var j = 0; j < list.length; j++) {
+    var t = list[j];
+    if (t === by || !jrFoe(by, t)) continue;
+    var d = Math.hypot(t.x - f.x, t.y - f.y);
+    if (d > reach + t.size) continue;
+    t.addVelocity(Math.atan2(f.y - t.y, f.x - t.x), Math.min(6, 1.2 + 4 * (1 - d / (reach + t.size))));
+    if (d < core + t.size) { t.applyDamage(t.maxHealth * 0.0045, by); t.hurtFlash = 2; }
+  }
+  jrEach(g, f, reach, JR_T_SHOT, function (e, d) {
+    if (jrOwn(e, by)) return;
+    if (d < core) { e.kill(null); return; }
+    e.addVelocity(Math.atan2(f.y - e.y, f.x - e.x), 5 * (1 - d / reach) + 1);
+  });
+}
+
+// TIME STOP's shots: held where they were, velocity and clock both, until the
+// stop runs out. A bullet's life ticks down on its own tick, so it is handed
+// the tick back here.
+function jaTickFrozen(g) {
+  if (!g.jaFrozen || !g.jaFrozen.length) return;
+  var live = [];
+  for (var i = 0; i < g.jaFrozen.length; i++) {
+    var e = g.jaFrozen[i];
+    if (e.dead || g.tick > (e.jaFrozen || 0)) continue;
+    e.vx = 0; e.vy = 0;
+    if (typeof e.life === 'number' && isFinite(e.life)) e.life++;
+    live.push(e);
+  }
+  g.jaFrozen = live;
+  if (g.jaTimestop && g.tick > g.jaTimestop.until) g.jaTimestop = null;
 }
 
 function jrTickLoans(g) {
@@ -6137,7 +7061,8 @@ function jrTickLoans(g) {
 // 'root'  siege hulls: stop moving once anything is in reach and shoot
 function jrJob(h) {
   if (h.jb) return h.jb;
-  var d = TANK_DEFS[JR_BASE + h.id], job = 'mid';
+  jrIndex();                                       // stamps h.tid
+  var d = TANK_DEFS[h.tid], job = 'mid';
   // A hull is a sniper if it asked for MORE camera than its tier hands out, or
   // if it carries a barrel longer than three body radii. Both of those used to
   // be absolute numbers, and both stopped meaning anything once the tiers
@@ -6196,7 +7121,10 @@ function jrBotWants(g, t, h) {
 // and a player's hull picks its own moments exactly as a bot's does.
 function jrWants(g, t, ab) {
   var hurt = t.health < t.maxHealth * 0.55;
-  var near = jrNearestFoe(g, t, 3400);
+  // A hull past the crowns is several thousand units across and its verbs reach
+  // the arena, so it looks as far as they do. Everything at or below a crown
+  // keeps the Royale's 3,400.
+  var near = jrNearestFoe(g, t, (t.def.jrTier || 0) > 8 ? Math.max(3400, t.size * 20) : 3400);
   var d = near ? Math.hypot(near.x - t.x, near.y - t.y) : Infinity;
 
   switch (ab) {
@@ -6260,6 +7188,18 @@ function jrWants(g, t, ab) {
       return d < t.size * 9 || hurt;
     case 'enthrone':
       return t.health < t.maxHealth * 0.45;
+
+    // --- Armageddon's verbs -----------------------------------------------
+    case 'overdrive': case 'bigbang': case 'supernova':
+      return d < t.size * 14;
+    case 'skyfall': case 'tempest':
+      return d < t.size * 18;
+    case 'timestop': case 'rapture': case 'blackhole': case 'godray':
+      return d < t.size * 12;
+    case 'fissure':
+      return d < t.size * 8;
+    case 'genesis':
+      return d < t.size * 14 || hurt;
     default:
       return d < 2000;
   }
@@ -6289,6 +7229,61 @@ function jrBotUpgrade(g, t) {
 }
 
 // =========================================================================
+
+// The Royale's whole tick, shared with Armageddon: every juggernaut's own pass,
+// its autonomous verbs and its button, the ground and the husks, the nest kept
+// stocked, and the one line of HUD with the mode's name on the front of it.
+function jrRoyaleTick(g, title) {
+  var list = labTanks(g), i, t;
+  for (i = 0; i < list.length; i++) {
+    t = list[i];
+    if (!jrOf(t)) continue;
+    jrTickTank(g, t);
+    var h = jrOf(t);
+    // The autonomous buttons run for players and bots alike — they are part
+    // of the hull, not part of the AI, and a crown a player is flying is the
+    // same boss fight a crown a bot is flying is.
+    if (h) jrAutoAbilities(g, t, h);
+    if (t.bot) {
+      jrBotUpgrade(g, t);
+      if (h && jrBotWants(g, t, h)) jrAbility(g, t);
+    } else if (t.input.altFire) jrAbility(g, t);
+  }
+  jrTickFields(g);
+  jrTickHusks(g);
+  jrTickLoans(g);
+  // age the effect ring buffer out
+  if (g.jrFx && g.jrFx.length) {
+    while (g.jrFx.length && g.tick - g.jrFx[0].at > 2 * TPS) g.jrFx.shift();
+  }
+  // Keep the nest stocked as well as the field: the global top-up spreads
+  // over the whole map and the middle is where the big polygons are.
+  if (g.tick % 4 === 0) {
+    var nestR = g.arena.right * 0.3, n = 0;
+    for (i = 0; i < g.entities.length; i++) {
+      var e = g.entities[i];
+      if (e.type === 'shape' && !e.dead && Math.hypot(e.x, e.y) < nestR) n++;
+    }
+    if (n < 260) for (var k = 0; k < 3; k++) {
+      var a = Math.random() * Math.PI * 2, r = Math.random() * nestR;
+      var deep = r < nestR * 0.4;
+      g.add(new Shape(g, deep ? (Math.random() < 0.16 ? 'alpha' : 'hexagon') : 'pentagon',
+        Math.cos(a) * r, Math.sin(a) * r));
+    }
+  }
+  g.fx = { royale: true, jrFx: g.jrFx };
+  if (g.tick % 25) return;
+  var best = null, players = labPlayers(g);
+  for (i = 0; i < players.length; i++) if (!best || players[i].score > best.score) best = players[i];
+  var bd = best && best.def;
+  // From the fusions up the label is the dynasty (or, past the archons, the
+  // marriage of two), which is what the bracket is for.
+  setHud(g, best
+    ? title + '  ·  ' + (best.name || '?') + '  ·  ' + (bd ? bd.name : '')
+      + (bd && bd.jrTier >= 4 && bd.jrLabel ? '  [' + bd.jrLabel.toUpperCase() + ']' : '')
+      + (bd && bd.jrTier ? '  T' + bd.jrTier : '') + '  lvl ' + best.level
+    : title);
+}
 
 labMode('juggerroyale', {
   name: 'Juggernaut Royale', family: 'Asymmetry', tag: '140 hulls',
@@ -6350,13 +7345,14 @@ labMode('juggerroyale', {
     },
     onSpawn: function (g, t) {
       buildJuggHulls();
-      if (t.tankId < JR_BASE || t.tankId > JR_BASE + JR_TOP) forceTankClass(t, JR_BASE);
+      if (!jrOf(t)) forceTankClass(t, JR_BASE);
       t.jrCool = 0; t.jrDefId = t.tankId; t.jrHp0 = t.health;
       t.jrHist = null; t.jrPlates = 0; t.jrHeat = 0; t.jrStack = 0;
       t.jrDecoys = null; t.jrTurrets = null; t.jrOrbs = null; t.jrPads = null;
       t.jrHpOn = 0; t.jrSzOn = 1;
       t.jrCools = null; t.jrShield = undefined; t.jrShieldAt = 0; t.jrRevived = 0;
       t.jrAvatar = 0; t.jrPhaseUntil = 0; t.jrDominion = 0; t.jrGrown = 0;
+      t.jaRefused = 0; t.jaBlades = null; t.jaLater = null; t.jaRay = 0;
       t.jrPath = JR_PATHS[(g.jrSeat = (g.jrSeat || 0) + 1) % JR_PATHS.length];
       // Chain, don't replace: the prototype's onKill is the kill feed, the kill
       // count, the death screen's killer and the bot respawn queue.
@@ -6370,55 +7366,7 @@ labMode('juggerroyale', {
       t.applyDamage = function (d, s) { return jrTakeDamage(this, d, s, baseDmg); };
       t.checkUpgrades();
     },
-    tick: function (g) {
-      var list = labTanks(g), i, t;
-      for (i = 0; i < list.length; i++) {
-        t = list[i];
-        if (!jrOf(t)) continue;
-        jrTickTank(g, t);
-        var h = jrOf(t);
-        // The autonomous buttons run for players and bots alike — they are part
-        // of the hull, not part of the AI, and a crown a player is flying is the
-        // same boss fight a crown a bot is flying is.
-        if (h) jrAutoAbilities(g, t, h);
-        if (t.bot) {
-          jrBotUpgrade(g, t);
-          if (h && jrBotWants(g, t, h)) jrAbility(g, t);
-        } else if (t.input.altFire) jrAbility(g, t);
-      }
-      jrTickFields(g);
-      jrTickHusks(g);
-      jrTickLoans(g);
-      // age the effect ring buffer out
-      if (g.jrFx && g.jrFx.length) {
-        while (g.jrFx.length && g.tick - g.jrFx[0].at > 2 * TPS) g.jrFx.shift();
-      }
-      // Keep the nest stocked as well as the field: the global top-up spreads
-      // over the whole map and the middle is where the big polygons are.
-      if (g.tick % 4 === 0) {
-        var nestR = g.arena.right * 0.3, n = 0;
-        for (i = 0; i < g.entities.length; i++) {
-          var e = g.entities[i];
-          if (e.type === 'shape' && !e.dead && Math.hypot(e.x, e.y) < nestR) n++;
-        }
-        if (n < 260) for (var k = 0; k < 3; k++) {
-          var a = Math.random() * Math.PI * 2, r = Math.random() * nestR;
-          var deep = r < nestR * 0.4;
-          g.add(new Shape(g, deep ? (Math.random() < 0.16 ? 'alpha' : 'hexagon') : 'pentagon',
-            Math.cos(a) * r, Math.sin(a) * r));
-        }
-      }
-      g.fx = { royale: true, jrFx: g.jrFx };
-      if (g.tick % 25) return;
-      var best = null, players = labPlayers(g);
-      for (i = 0; i < players.length; i++) if (!best || players[i].score > best.score) best = players[i];
-      var bd = best && best.def;
-      setHud(g, best
-        ? 'JUGGERNAUT ROYALE  ·  ' + (best.name || '?') + '  ·  ' + (bd ? bd.name : '')
-          + (bd && bd.jrDynasty ? '  [' + JR_DYN[bd.jrDynasty].label.toUpperCase() + ']' : '')
-          + (bd && bd.jrTier ? '  T' + bd.jrTier : '') + '  lvl ' + best.level
-        : 'JUGGERNAUT ROYALE');
-    },
+    tick: function (g) { jrRoyaleTick(g, 'JUGGERNAUT ROYALE'); },
     botDrive: function (g, t) { if (jrOf(t)) jrBotDrive(g, t); },
     // Husks are ordinary drones rather than mode furniture, so clearModeEntities
     // does not see them and dropping the list alone would orphan a live army.
@@ -6607,6 +7555,93 @@ labMode('lastjugg', {
 });
 
 
+// =========================================================================
+// Juggernaut Armageddon — the Royale, and then five more tiers
+// =========================================================================
+//
+// Everything the Royale is, to the hull: the same Brute, the same eleven
+// branches, the same sixteen fusions and eight sealed dynasties, the same
+// crowns at level 200. Then it keeps going. The cap is 500, the crowns open
+// onto JA_HULLS through filterUpgrades, and the five tiers up there are each a
+// bigger step than any step below them — more health, more hull, another verb
+// that fires itself, another passive, another trait, and a dividend that grows
+// faster than the one before it did.
+//
+// Two rules that are not the Royale's:
+//   jrStack  every loaded autonomous verb goes off on the same tick, rather
+//            than one a tick, so a hull with eight of them stacks all eight
+//   jrHaste  every cooldown in the mode is three-quarters as long
+labMode('juggarmageddon', {
+  name: 'Juggernaut Armageddon', family: 'Asymmetry', tag: '183 hulls',
+  //   maxLevel 500 and the score curve: level 500 costs 3.6x what level 200
+  //     does, and the climb is meant to cost about that much longer. Polygons
+  //     pay less than in the Royale, because the nest refill is the Royale's
+  //     too and the hulls up here clear it with one verb: at 11x a bot banked
+  //     140k a second and reached level 455 inside the first minute, and at
+  //     3.6x one still went from 220 to 500 in sixty seconds. Kills pay 2.7x,
+  //     because the things you kill up here grew too.
+  //   lvlScale/lvlSlow: softer again than the Royale's. At these numbers a
+  //     level-500 tank is 4.5x its own size and a third of its own speed.
+  //   statHealthPct/statBodyPct: a little richer, because a level-500 build is
+  //     184 points and two of the stats are Max Health and Body Damage.
+  //   size 28000, because the hull at the top is four thousand units across.
+  //   shotCap 360: no round wider than that, however big the hull firing it.
+  //     Uncapped, one archon's hellbores cost the collision pass 100 ms a tick.
+  //   trapCap/bulletCap: how many traps and rounds one tank may have out at
+  //     once. Uncapped, a Bastion-line hull held 2,700 traps and the Armageddon
+  //     2,900 rounds, and the arena ran at a tenth of real time. A juggernaut's
+  //     capped traps also go down with it rather than standing for a minute.
+  rules: { forceClass: JR_BASE, shapes: 2600, bots: 22, killBounty: 24000, killShare: 0.45,
+    shapeXp: 2.6, regen: 0.6, maxLevel: 500, lvlScale: 1.003, lvlSlow: 1.0022,
+    statHealthPct: 0.07, statBodyPct: 0.06, jrStack: 1, jrHaste: 0.75, shotCap: 360, trapCap: 90, bulletCap: 450 },
+  size: 28000,
+  treeRoot: JR_BASE,
+  treeUnique: true,
+  treeGraft: JA_GRAFT,
+  fx: true,
+  blurb: 'Juggernaut Royale, and then it keeps going. The same hundred and forty hulls to level 200 — then five more tiers, forty-three more hulls, a cap of 500, and abilities that stack: every loaded verb on the hull goes off at once.',
+  how: [
+    'Everything in Juggernaut Royale is here, hull for hull: the Brute, eleven branches, sixteen fusions, eight sealed dynasties and the crowns at level 200. The crown is not the end any more.',
+    'The level cap is 500, and above the crowns there are five more tiers. ASCENDANT at 240 (sixteen, two per dynasty), ARCHON at 300 (sixteen), PRIMORDIAL at 370 (eight), ESCHATON at 440 (two) and ARMAGEDDON at 500 — one hull, the end of every road in the game.',
+    'THE DYNASTIES MARRY AGAIN. They were sealed apart at level 52. At 370 they meet on a ring — Pyre, Titan, Ordnance, Bastion, Vermin, Void, Chrono, Glacier and back to Pyre — and each Primordial is the union of two neighbours, so every Archon chooses which neighbour it becomes.',
+    'ABILITIES STACK. In the Royale a hull fires one of its own verbs a tick. Here every loaded verb goes off on the same tick, so a hull with eight of them can land all eight at once. Every cooldown in the arena is also three-quarters as long.',
+    'Every tier is more than the one under it in every column at once. A crown fires four verbs itself and carries six traits; an Ascendant fires five and carries seven; an Archon six and eight; a Primordial seven and nine; an Eschaton eight and ten; the Armageddon ten and twelve.',
+    'And every tier is a bigger step than the last. Past the crowns the tier dividend grows the guns too: an Ascendant takes a quarter of what lands and hits one and a half times as hard with every bullet; the Armageddon takes a twentieth, fires three and a half times as often, rams twelve times as hard and shoots five and a half.',
+    'Eleven new verbs. OVERDRIVE fires every other button on the hull at once. SUPERNOVA is three shockwaves wider than the screen. BLACK HOLE opens a well under the cursor. SKYFALL strikes the seven nearest things from above. TIME STOP holds tanks and bullets in the air for four seconds. RAPTURE lifts the arena and drops it. GENESIS makes an army. TEMPEST is twelve forking bolts. FISSURE splits the ground eight ways. GODRAY is a line of light nine thousand units long. THE BIG BANG is all of them.',
+    'New passives — CORONA, a share of your own bar a second just for standing near it; MAELSTROM, six blades on a fast orbit; STORMCALL, lightning out of a clear sky; QUICKEN, double-time cooldowns — and new traits: IMMORTAL refuses three deaths a life and goes supernova each time, ECHO lands every verb twice, THUNDER calls lightning down on what it hits, NULLIFY shrugs every status off.',
+    'The hulls get BIG. A level-500 tank is four and a half times its own size and the Armageddon is a 560-unit hull before that, so the arena is 28,000 units across and the camera keeps pulling back with every tier.',
+    'The climb is three and a half times as long as the Royale’s and it is paid for mostly in kills: 24,000 a kill on top of nearly half the victim’s score, and polygons at 2.6 times their usual worth with the nest kept stocked.',
+    'Press Y and the wheel shows all of it — thirteen rings, the Royale’s eight and Armageddon’s five, every hull drawn once.'
+  ],
+  logic: {
+    init: function (g) {
+      MODE_LOGIC.juggerroyale.init(g);
+      // Eleven verbs firing at once on a dozen hulls is more than twenty bursts.
+      g.jrFxCap = 96;
+      g.jaFrozen = []; g.jaTimestop = null;
+    },
+    onSpawn: function (g, t) { MODE_LOGIC.juggerroyale.onSpawn(g, t); },
+    // A crown is a leaf in the tank table. Here it is not.
+    filterUpgrades: function (g, t, avail) {
+      var more = JA_GRAFT[t.tankId];
+      if (!more) return avail;
+      return avail.concat(more.filter(function (id) { return t.level >= TANK_DEFS[id].levelRequirement; }));
+    },
+    tick: function (g) {
+      jrRoyaleTick(g, 'JUGGERNAUT ARMAGEDDON');
+      jaTickFrozen(g);
+    },
+    botDrive: function (g, t) { if (jrOf(t)) jrBotDrive(g, t); },
+    reset: function (g) {
+      jrKillList(g.jrHusks);
+      g.jrFx = []; g.jrFields = []; g.jrHusks = []; g.jrSeat = 0;
+      g.jaFrozen = []; g.jaTimestop = null;
+      labReset(g, 'juggarmageddon');
+    }
+  }
+});
+
+
 // Built at load rather than in init(): the class-tree overlay and the upgrade
 // cards are drawn by the client, and online the client never runs a mode's
 // init() at all — it only mirrors snapshots. The builder is idempotent.
@@ -6617,6 +7652,7 @@ if (typeof module !== 'undefined') module.exports = {
   LAB_MODES: LAB_MODES, CHAOS: CHAOS, GUN_CHAIN: GUN_CHAIN, JUGGERNAUT_ID: JUGGERNAUT_ID,
   buildJuggernautDef: buildJuggernautDef, JR_BASE: JR_BASE, JR_HULLS: JR_HULLS,
   buildJuggHulls: buildJuggHulls, jrHull: jrHull, jrAbility: jrAbility,
+  JA_BASE: JA_BASE, JA_HULLS: JA_HULLS, JA_GRAFT: JA_GRAFT, jrCast: jrCast,
   JR_BR: JR_BR, JR_DYN: JR_DYN, JR_LVL: JR_LVL, JR_ABIL: JR_ABIL, JR_PASS: JR_PASS,
   JR_TRAIT: JR_TRAIT, JR_GUNS: JR_GUNS, JR_TIER: JR_TIER, JR_DIVIDEND: JR_DIVIDEND,
   jrOf: jrOf, jrJob: jrJob, jrAutoAbilities: jrAutoAbilities,

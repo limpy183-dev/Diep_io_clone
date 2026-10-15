@@ -58,7 +58,7 @@ as the tiles in the game. To publish it, turn on GitHub Pages with the source se
 |---|---|
 | **Rules** — one constant, whole new game | Chaos Rotation, Score Attack, Instagib, Vampire, Ice Rink, Blood Money, Locust |
 | **The Tree** — the 56 classes are the content | Gun Game, Draft Roulette, Mirror Match, Randomizer |
-| **Asymmetry** | Juggernaut, Juggernaut Royale, Last Juggernaut, Infection, Boss Rush, Siege, Closer Gauntlet, Boss Royale |
+| **Asymmetry** | Juggernaut, Juggernaut Royale, Juggernaut Armageddon, Last Juggernaut, Infection, Boss Rush, Siege, Closer Gauntlet, Boss Royale |
 | **Physics** — knockback over damage | Sumo, Diep Ball, Grand Prix, Red Light Green Light, Singularity |
 | **Deception** | Prop Hunt, Hide and Seek, Fog of War, Nightfall |
 | **Territory** | King of the Hill, Payload, Alpha Hunt, Nest Wars, Roaming Domination, Bounty King |
@@ -246,6 +246,48 @@ A few that are worth calling out:
   as a tier-3 hull rather than as a 900 hp Brute. `killBounty` is the one number neither parent
   mode had: in the Royale a kill pays more every tier because the thing you killed grew too, and
   here the hunters are level 45 all round, so the bounty carries the top half of the climb alone.
+- **Juggernaut Armageddon** is the Royale with the ceiling taken off. All 140 hulls, all nine
+  tiers and the crowns at 200 are exactly the Royale's — and then **five more tiers, forty-three
+  more hulls and a level cap of 500**. The crowns stay leaves in `TANK_DEFS`, because the Royale
+  ends at 200 and has to keep ending there; Armageddon hangs its tiers off them with two hooks the
+  engine already had — `filterUpgrades` adds the cards (so the server gate in `upgradeTo` is still
+  the gate) and a new `treeGraft` mode field adds the same edges to the Y wheel, which grows to
+  thirteen rings. The hulls live at ids 256-298, which is why a tank's class id and level now ride
+  the wire as a `u16` rather than a byte.
+
+  | Tier | Level | Hulls | Fires itself | Traits | Dividend (taken / reload / ram / guns) |
+  |---|---|---|---|---|---|
+  | crown (Royale) | 200 | 8 | 4 | 6 | 33% / 0.44 / 3x / — |
+  | **Ascendant** | 240 | 16, two per dynasty | 5 | 7 | 24% / 0.40 / 4x / 1.5x |
+  | **Archon** | 300 | 16 | 6 | 8 | 17% / 0.37 / 5.2x / 2.1x |
+  | **Primordial** | 370 | 8 | 7 | 9 | 12% / 0.34 / 6.8x / 2.9x |
+  | **Eschaton** | 440 | 2 — First Light, Last Dark | 8 | 10 | 8% / 0.31 / 8.8x / 4x |
+  | **Armageddon** | 500 | 1 | 10 | 12 | 5% / 0.28 / 12x / 5.5x |
+
+  Every tier beats the one under it in every column at once, and each step is a bigger step than
+  the last — the test suite asserts both. **The dynasties marry again** at 370: sealed apart at 52,
+  they meet on a ring (Pyre, Titan, Ordnance, Bastion, Vermin, Void, Chrono, Glacier), so each
+  Primordial is the union of two neighbours and each Archon chooses which neighbour it becomes.
+  **Abilities stack**: the `jrStack` rule lets every loaded autonomous verb fire on the same tick
+  instead of one a tick, and `jrHaste` shortens every cooldown by a quarter. Eleven new verbs —
+  `OVERDRIVE` (every other button at once), `SUPERNOVA` (three widening shockwaves), `BLACK HOLE`
+  (a free-standing well under the cursor), `SKYFALL`, `TIME STOP` (tanks *and* bullets held for
+  four seconds), `RAPTURE`, `GENESIS`, `TEMPEST`, `FISSURE`, `GODRAY` and `THE BIG BANG` — four new
+  passives (`corona`, `maelstrom`, `stormcall`, `quicken`) and four new traits (`immortal` refuses
+  three deaths a life and goes supernova each time, `echo` lands every verb twice, `thunder`,
+  `nullify`). Past the crowns the dividend grows the guns too, through the tank's own
+  `bulletDamage` multiplier. The effects escalate tier by tier — sunbursts, wings and orbiting
+  runes, lightning, binary-star auras, a black sun with a red heartbeat — with screen flashes, a
+  grey-out while the clock is stopped, and a world-only screen shake that switches itself off under
+  `prefers-reduced-motion`. The soft light — glows, god-rays, the darkening — is drawn into a
+  quarter-resolution buffer and laid over the arena once a frame, which took the Armageddon's
+  aura from 33 ms a frame to under 6. And whenever a hull past the crowns is near the screen the
+  floor dusks toward a bruised purple, because additive light on diep's light grey is white in two
+  layers. Three engine rules came out of it, all mode-gated: `shotCap` caps projectile radius
+  (the broadphase is a uniform 128-unit grid, and an uncapped level-400 hellbore landed in seven
+  hundred cells on its own), and `trapCap` / `bulletCap` cap how many traps and rounds one tank
+  may have out at once (uncapped, a Bastion-line hull held 2,700 traps and the arena ran at a
+  tenth of real time).
 - **Chaos Rotation** draws one of fifteen modifiers every ninety seconds from a Fisher-Yates
   shuffle, drawn without replacement. Each modifier is written as an arena part and a *per-tank*
   part, and the per-tank part re-applies on every spawn while it is live — otherwise a modifier
@@ -318,7 +360,7 @@ node -e "const fs=require('fs'),vm=require('vm');const s=vm.createContext({conso
 | `js/data.js` | Constants, palette, XP curve, shapes, addons, bosses, game modes |
 | `js/engine.js` | 25 Hz simulation: entities, physics, damage, barrels, projectiles, AI, bots |
 | `js/modes.js` | The six objective modes + possession (H) |
-| `js/modes-extra.js` | The Mode Lab's 40 arenas — rules, logic, the Juggernaut and the 72 Royale hulls |
+| `js/modes-extra.js` | The Mode Lab's 41 arenas — rules, logic, the Juggernaut, the 140 Royale hulls and Armageddon's 43 |
 | `js/modefx.js` | Per-mode screen effects and the animated menu thumbnails |
 | `js/modelab.js` | The Mode Lab button and its menu, markup and styles included |
 | `js/protocol.js` | Binary wire format, shared by client and server |

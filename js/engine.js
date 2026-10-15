@@ -296,10 +296,14 @@ Barrel.prototype.spawn = function (m, accel, b, d, t, g) {
   var root = host; while (root.owner) root = root.owner;
   var scatter = (Math.PI / 180) * b.scatterRate * (Math.random() - 0.5) * 10;
   var ang = m.a + scatter;
+  // `shotCap` is a mode's ceiling on how wide one round may be. The broadphase is
+  // a uniform 128-unit grid, so a shell's cost goes with the square of its
+  // radius — and a level-400 Armageddon hull's hellbore came out 3,400 across
+  // and landed in seven hundred cells on its own.
   var proj = new Entity(g, {
     type: b.type === 'necrodrone' ? 'necro' : b.type,
     x: m.x, y: m.y, angle: ang,
-    size: Math.max(2, (d.width / 2) * b.sizeRatio * t.scaleFactor * bsize),
+    size: Math.max(2, Math.min(g.rule('shotCap', Infinity), (d.width / 2) * b.sizeRatio * t.scaleFactor * bsize)),
     sides: b.sides !== undefined ? b.sides : (b.type === 'drone' || b.type === 'swarm' ? 3 : b.type === 'necrodrone' ? 4 : b.type === 'trap' ? 3 : 1),
     // A turret is not an entity, so its shots must be owned by the tank it is
     // bolted to — otherwise canInteract() never matches and they hit their own
@@ -394,6 +398,21 @@ Barrel.prototype.spawn = function (m, accel, b, d, t, g) {
   if (b.type === 'trap') proj.accel = 0;            // traps coast to a stop and stay put
   g.add(proj);
   if (d.droneCount) this.children.push(proj);
+  // A mode's ceiling on how many traps, and how many plain rounds, one tank may
+  // have out at once; past it the oldest goes. Juggernaut Armageddon needs both:
+  // a Warden-line hull with eighteen launchers on a minute-long fuse held 2,700
+  // traps, the Armageddon itself kept 2,900 rounds in the air, and the
+  // broadphase spent the tick on them. The queue only ever over-counts (a trap
+  // shot down early still holds its place until it reaches the front), so the
+  // live number never passes the cap.
+  var capKey = b.type === 'trap' ? 'trapCap' : b.type === 'bullet' ? 'bulletCap' : null;
+  var cap = capKey ? g.rule(capKey, 0) : 0;
+  if (cap) {
+    var q = b.type === 'trap' ? (root.capTraps || (root.capTraps = [])) : (root.capShots || (root.capShots = []));
+    q.push(proj);
+    while (q.length && q[0].dead) q.shift();
+    while (q.length > cap) { var old = q.shift(); if (!old.dead) old.kill(null); }
+  }
   return proj;
 };
 

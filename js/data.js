@@ -8,8 +8,9 @@ var GRID = 50;                 // background grid cell, diep units
 var ARENA_PADDING = 200;       // walkable grey margin outside the play field
 var MAX_LEVEL = 45;
 // A mode may raise its own ceiling with the `maxLevel` rule (Juggernaut Royale
-// runs to 200). LEVEL_SCORE is built this far so the curve is there when it does.
-var LEVEL_CAP = 200;
+// runs to 200, Juggernaut Armageddon to 500). LEVEL_SCORE is built this far so
+// the curve is there when it does. Levels ride the wire as a u16.
+var LEVEL_CAP = 500;
 // diep's per-level cost compounds at 6%, which is fine to 45 and merely steep to
 // 100. Run it to 200 and level 199 alone costs four hundred times level 100 —
 // the ladder stops being a climb and becomes a wall. So the compounding stops
@@ -242,6 +243,62 @@ var ADDONS = {
                           { sides: 24, ratio: 1.48, spin: 0.06 },
                           { sides: 12, ratio: 1.30, spin: -0.12 },
                           { sides: 6, ratio: 1.12, spin: 0.22 }] },
+  // Juggernaut Armageddon's five tiers above the crowns. Each one is the shell
+  // below it with another star of blades bolted outside it, turning the other
+  // way, so the outline alone counts how far past level 200 the pilot got. They
+  // carry their own turret ring too — guards and turrets read off the same
+  // addon, so a shell up here does not have to choose between them.
+  jrascend:    { guards: [{ sides: 4, ratio: 2.05, spin: 0.05, offset: 0 },
+                          { sides: 4, ratio: 2.05, spin: 0.05, offset: Math.PI / 4 },
+                          { sides: 3, ratio: 1.82, spin: -0.07, offset: Math.PI / 6 },
+                          { sides: 3, ratio: 1.82, spin: -0.07, offset: Math.PI / 2 },
+                          { sides: 24, ratio: 1.52, spin: 0.08 },
+                          { sides: 12, ratio: 1.32, spin: -0.14 },
+                          { sides: 6, ratio: 1.12, spin: 0.24 }], turrets: 8, arc: true },
+  jrarchon:    { guards: [{ sides: 3, ratio: 2.15, spin: 0.04, offset: 0 },
+                          { sides: 3, ratio: 2.15, spin: 0.04, offset: Math.PI / 6 },
+                          { sides: 3, ratio: 2.15, spin: 0.04, offset: Math.PI / 3 },
+                          { sides: 3, ratio: 2.15, spin: 0.04, offset: Math.PI / 2 },
+                          { sides: 5, ratio: 1.86, spin: -0.09 },
+                          { sides: 5, ratio: 1.86, spin: -0.09, offset: Math.PI / 5 },
+                          { sides: 30, ratio: 1.56, spin: 0.1 },
+                          { sides: 16, ratio: 1.36, spin: -0.16 },
+                          { sides: 8, ratio: 1.16, spin: 0.26 }], turrets: 10, arc: true },
+  jrprimal:    { guards: [{ sides: 3, ratio: 2.25, spin: -0.03, offset: 0 },
+                          { sides: 3, ratio: 2.25, spin: -0.03, offset: Math.PI / 9 },
+                          { sides: 3, ratio: 2.25, spin: -0.03, offset: Math.PI * 2 / 9 },
+                          { sides: 3, ratio: 2.25, spin: -0.03, offset: Math.PI / 3 },
+                          { sides: 3, ratio: 2.25, spin: -0.03, offset: Math.PI * 4 / 9 },
+                          { sides: 3, ratio: 2.25, spin: -0.03, offset: Math.PI * 5 / 9 },
+                          { sides: 7, ratio: 1.94, spin: 0.08 },
+                          { sides: 36, ratio: 1.66, spin: -0.1 },
+                          { sides: 18, ratio: 1.44, spin: 0.15 },
+                          { sides: 9, ratio: 1.24, spin: -0.22 },
+                          { sides: 6, ratio: 1.1, spin: 0.3 }], turrets: 12, arc: true },
+  jreschaton:  { guards: [{ sides: 4, ratio: 2.35, spin: 0.06, offset: 0 },
+                          { sides: 4, ratio: 2.35, spin: 0.06, offset: Math.PI / 8 },
+                          { sides: 4, ratio: 2.35, spin: 0.06, offset: Math.PI / 4 },
+                          { sides: 4, ratio: 2.35, spin: 0.06, offset: Math.PI * 3 / 8 },
+                          { sides: 3, ratio: 2.08, spin: -0.11, offset: 0 },
+                          { sides: 3, ratio: 2.08, spin: -0.11, offset: Math.PI / 3 },
+                          { sides: 12, ratio: 1.86, spin: 0.13 },
+                          { sides: 48, ratio: 1.66, spin: -0.07 },
+                          { sides: 24, ratio: 1.46, spin: 0.18 },
+                          { sides: 12, ratio: 1.28, spin: -0.26 },
+                          { sides: 6, ratio: 1.12, spin: 0.34 }], turrets: 16, arc: true },
+  jrarmageddon:{ guards: [{ sides: 3, ratio: 2.45, spin: 0.05, offset: 0 },
+                          { sides: 3, ratio: 2.45, spin: 0.05, offset: Math.PI / 12 },
+                          { sides: 3, ratio: 2.45, spin: 0.05, offset: Math.PI / 6 },
+                          { sides: 3, ratio: 2.45, spin: 0.05, offset: Math.PI / 4 },
+                          { sides: 3, ratio: 2.45, spin: 0.05, offset: Math.PI / 3 },
+                          { sides: 3, ratio: 2.45, spin: 0.05, offset: Math.PI * 5 / 12 },
+                          { sides: 4, ratio: 2.12, spin: -0.12, offset: 0 },
+                          { sides: 4, ratio: 2.12, spin: -0.12, offset: Math.PI / 4 },
+                          { sides: 60, ratio: 1.86, spin: 0.09 },
+                          { sides: 30, ratio: 1.66, spin: -0.15 },
+                          { sides: 15, ratio: 1.46, spin: 0.2 },
+                          { sides: 10, ratio: 1.28, spin: -0.3 },
+                          { sides: 5, ratio: 1.12, spin: 0.4 }], turrets: 24, arc: true },
   auto12:      { turrets: 12, arc: true }
 };
 // A mounted turret is a fixed 25-radius base carrying a 55 x 29.4 barrel, grown
