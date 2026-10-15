@@ -6772,7 +6772,8 @@ function jrTickTank(g, t) {
       var glist = labTanks(g, JR_SCRATCH);
       for (i = 0; i < glist.length; i++) {
         var go = glist[i];
-        if (!jrFoe(t, go)) continue;
+        // jrFoe is true of yourself in a free-for-all, and the beam starts on you.
+        if (go === t || !jrFoe(t, go)) continue;
         var gx = go.x - t.x, gy = go.y - t.y;
         var galong = gx * Math.cos(ga) + gy * Math.sin(ga);
         if (galong < 0 || galong > greach) continue;
@@ -7258,13 +7259,15 @@ function jrRoyaleTick(g, title) {
   }
   // Keep the nest stocked as well as the field: the global top-up spreads
   // over the whole map and the middle is where the big polygons are.
+  // nestCap / nestBatch are rules so a mode that shares this tick can thin the
+  // nest; the Royale sets neither and keeps 260 and three a pass.
   if (g.tick % 4 === 0) {
     var nestR = g.arena.right * 0.3, n = 0;
     for (i = 0; i < g.entities.length; i++) {
       var e = g.entities[i];
       if (e.type === 'shape' && !e.dead && Math.hypot(e.x, e.y) < nestR) n++;
     }
-    if (n < 260) for (var k = 0; k < 3; k++) {
+    if (n < g.rule('nestCap', 260)) for (var k = 0, nb = g.rule('nestBatch', 3); k < nb; k++) {
       var a = Math.random() * Math.PI * 2, r = Math.random() * nestR;
       var deep = r < nestR * 0.4;
       g.add(new Shape(g, deep ? (Math.random() < 0.16 ? 'alpha' : 'hexagon') : 'pentagon',

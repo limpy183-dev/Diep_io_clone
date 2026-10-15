@@ -1279,6 +1279,28 @@ section('the fixes that have to hold everywhere');
   ok('and the autonomous verbs stack — several in one tick', stacked >= 36, stacked + '/' + sim.JA_HULLS.length);
 }
 {
+  // GODRAY starts on its caster, and jrFoe is true of yourself in a free-for-all,
+  // so the ray once billed its own caster every tick it was lit. A kill by
+  // yourself pays nobody: that is how a level-500 Armageddon vanished with its score.
+  const g = new sim.Game('juggarmageddon', 'tester', { difficulty: 'hard', botCount: 0, size: 9000 });
+  g.wantedShapes = 0;
+  run(g, 20);
+  const me = g.player;
+  me.addScore(sim.LEVEL_SCORE[g.levelCap()]);
+  sim.forceTankClass(me, sim.JA_BASE + sim.JA_HULLS.find((h) => h.n === 'Armageddon').id);
+  let selfHits = 0;
+  const hit = me.applyDamage;
+  me.applyDamage = function (d, s) {
+    let r = s; while (r && r.owner) r = r.owner;
+    if (r === me) selfHits++;
+    return hit.call(this, d, s);
+  };
+  me.mouse = { x: me.x + 900, y: me.y };
+  sim.JR_ABIL.godray(g, me, sim.jrOf(me));
+  run(g, 100);
+  ok('GODRAY never bills its own caster', selfHits === 0, selfHits + ' self hits');
+}
+{
   // Chaos: a modifier has to reach a tank that spawned after it landed.
   const g = boot('chaos');
   g.chaosAt = g.tick;
